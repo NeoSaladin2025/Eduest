@@ -1,42 +1,38 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
-}
+@import "tailwindcss";
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
-}
+/* 🫦 테일윈드 v4에서는 수동 테마 설정을 아래처럼 합니다. */
+@theme {
+  --animate-shimmer: shimmer 4s linear infinite;
+  --animate-fade-in: fadeIn 1.5s ease-out forwards;
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
+  @keyframes shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
   }
-  to {
-    transform: rotate(360deg);
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+/* 🫦 텍스트 빛 번짐 효과 클래스 */
+.animate-shimmer {
+  background: linear-gradient(to right, #18181b 20%, #a1a1aa 50%, #18181b 80%);
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
 }
 
-.card {
-  padding: 2em;
+.animate-fade-in {
+  animation: var(--animate-fade-in);
 }
 
-.read-the-docs {
-  color: #888;
+/* 🫦 배경색을 테일윈드 클래스 대신 깡 CSS로 강제 주입 (에러 원천 차단) */
+body {
+  background-color: #fafafa !important; /* zinc-50 */
+  margin: 0;
+  font-family: sans-serif;
 }

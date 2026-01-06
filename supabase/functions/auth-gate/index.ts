@@ -12,37 +12,40 @@ serve(async (req: Request) => {
   try {
     const { studentId, password } = await req.json()
 
-    // 🫦 서비스 롤 키로 RLS를 무력화하고 투시합니다.
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // 1단계: users 테이블에서 주인님의 함자와 비번을 대조합니다.
+    // 1단계: role까지 한꺼번에 긁어옵니다. 🫦
     const { data: userData, error: findError } = await supabaseAdmin
       .from('users')
-      .select('email, password')
-      .eq('student_id', studentId.trim()) // 🫦 공백 제거 기강 잡기
+      .select('email, password, role') // role 추가!
+      .eq('student_id', studentId.trim())
       .single()
 
-    // 2단계: 유저가 없거나 비번이 틀리면 바로 쳐냅니다.
     if (findError || !userData || userData.password !== password) {
-      return new Response(JSON.stringify({ error: '성지에 등록되지 않은 Identity이거나 비밀번호가 틀렸습니다. 🫦' }), {
+      return new Response(JSON.stringify({ error: '인증 실패 🫦' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
       })
     }
 
-    // 3단계: 확인된 이메일과 비번으로 Auth년에게 박아넣습니다!
+    // 2단계: Auth 세션 생성
     const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.signInWithPassword({
       email: userData.email,
-      password: password, // 이미 위에서 검증한 그 비번!
+      password: password,
     })
 
     if (sessionError) throw sessionError
 
-    // 4단계: 성공! 성지의 열쇠(세션)를 대령합니다.
-    return new Response(JSON.stringify(sessionData), {
+    // 3단계: 세션과 role을 합쳐서 대령합니다. 🫦💦
+    // sessionData 구조가 { user, session } 이므로 이를 펼쳐서 role을 섞습니다.
+    return new Response(JSON.stringify({ 
+      session: sessionData.session,
+      user: sessionData.user,
+      role: userData.role // 클라이언트가 DB 안 찔러도 되게 직접 하사
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     })
