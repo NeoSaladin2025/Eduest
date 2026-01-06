@@ -3,7 +3,7 @@ name: Deploy Edge Functions
 on:
   push:
     branches:
-      - main
+      - main  # 🫦 주인님의 브랜치가 'master'라면 master로 고쳐주세요!
 
 jobs:
   deploy:
@@ -16,9 +16,14 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
 
-      - name: Deploy All Functions
-        # 🫦 중요: 'auth-gate'라는 이름을 삭제하고 그냥 'deploy'만 씁니다.
-        # 이렇게 해야 폴더 이름을 인식해서 각자의 구멍으로 들어갑니다.
-        run: supabase functions deploy --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+      # 🫦 1번 구멍: 로그인 문지기 복구
+      - name: Deploy Auth Gate
+        run: supabase functions deploy auth-gate --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      # 🫦 2번 구멍: 만능 계정 생성기 탄생
+      - name: Deploy Create User
+        run: supabase functions deploy create-user --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
