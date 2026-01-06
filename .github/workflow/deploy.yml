@@ -3,22 +3,22 @@ name: Deploy Edge Functions
 on:
   push:
     branches:
-      - main  # 🫦 주인님의 브랜치 명 확인 (main 또는 master)
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
-  steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-    - name: Setup Supabase CLI
-      uses: supabase/setup-cli@v1
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
 
-    - name: Deploy All Functions
-      # 🫦 핵심: 특정 이름(auth-gate)을 빼버리고 'deploy'만 써서 
-      # 모든 폴더(auth-gate, create-user)를 각각의 이름으로 배포합니다.
-      run: supabase functions deploy --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
-      env:
-        SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - name: Deploy All Functions
+        # 🫦 중요: 'auth-gate'라는 이름을 삭제하고 그냥 'deploy'만 씁니다.
+        # 이렇게 해야 폴더 이름을 인식해서 각자의 구멍으로 들어갑니다.
+        run: supabase functions deploy --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
