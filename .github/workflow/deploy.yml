@@ -1,9 +1,9 @@
-name: Deploy Edge Function
+name: Deploy Edge Functions
 
 on:
   push:
     branches:
-      - main  # 🫦 만약 주인님의 브랜치가 'master'라면 master로 고쳐주세요!
+      - main  # 🫦 브랜치 확인!
 
 jobs:
   deploy:
@@ -16,8 +16,8 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
 
-      - name: Deploy auth-gate function
-        # 🫦 secrets.으로 시작하는 부분은 깃허브가 알아서 채워줄 겁니다.
-        run: supabase functions deploy auth-gate --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
+      # 🫦 모든 펑션을 한꺼번에 관통하는 마법의 명령어
+      - name: Deploy All Functions
+        run: supabase functions deploy --project-ref ${{ secrets.SUPABASE_PROJECT_ID }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
