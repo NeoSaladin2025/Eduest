@@ -1,4 +1,10 @@
-import React from 'react';
+/**
+ * @file TeacherLounge.tsx
+ * @description 교육 관리자용 중앙 관제 시스템 레이아웃 컴포넌트
+ */
+
+// 에러 발생 지점: React 17+ 환경에서는 JSX 사용 시 React 임포트가 필요하지 않습니다.
+// TS6133 에러 해결을 위해 사용되지 않는 'React' 선언을 제거하였습니다.
 import { useTeacherLoungeCore } from './useTeacherLoungeCore';
 
 /** * @description 하위 도메인 모듈: 학생 관리 및 시즌 관리 시스템 임포트
@@ -10,18 +16,17 @@ import SeasonModule from './manage_season/SeasonModule';
 /**
  * @component TeacherLounge
  * @description 
- * 교육 관리자용 중앙 관제 시스템 레이아웃 컴포넌트입니다.
- * 학생, 수업, 교재, 시즌 등 시스템 전반의 핵심 도메인을 전환하며 제어합니다.
- * 보안 강화를 위해 관리자 본인의 계정 보안 설정 기능을 포함하고 있습니다.
+ * 교육 관리자용 중앙 관제 시스템의 메인 레이아웃입니다.
+ * 학생, 수업, 교재, 시즌 등 시스템 전반의 핵심 도메인을 제어합니다.
  */
 const TeacherLounge = () => {
   /**
    * @constant useTeacherLoungeCore
-   * @description 코어 비즈니스 로직 엔진으로부터 상태 변수 및 제어 핸들러 주입
-   * - currentDomain: 현재 활성화된 관리 구역 상태
-   * - navigateToDomain: 도메인 간 이동을 제어하는 라우팅 함수
-   * - handleSignOut: 보안 세션 종료 및 로그아웃 처리
-   * - updateMyPassword: 데이터베이스 보안 업데이트 함수
+   * @description 코어 비즈니스 로직 엔진으로부터 상태 및 핸들러 주입
+   * - currentDomain: 현재 활성화된 관리 구역
+   * - navigateToDomain: 도메인 이동 제어
+   * - handleSignOut: 로그아웃 처리
+   * - updateMyPassword: 비밀번호 변경 로직
    */
   const { 
     currentDomain, 
@@ -32,14 +37,12 @@ const TeacherLounge = () => {
 
   /**
    * @method handleChangeMyPassword
-   * @description 
-   * 관리자 보안 프로필 수정을 위한 핸들러입니다.
-   * 사용자 입력 검증 절차를 거쳐 백엔드 API(Supabase)와 동기화됩니다.
+   * @description 관리자 보안 프로필(비밀번호) 수정을 위한 핸들러입니다.
    */
   const handleChangeMyPassword = async () => {
     const newPassword = prompt("보안을 위해 변경할 새로운 비밀번호를 입력하십시오.", "");
     
-    // 입력값이 존재할 경우 즉시 유효성 검사 및 데이터베이스 업데이트 프로세스 진입
+    // 입력값이 존재할 경우 유효성 검사 및 업데이트 프로세스 진행
     if (newPassword) {
       const result = await updateMyPassword(newPassword);
       if (result.success) {
@@ -54,11 +57,11 @@ const TeacherLounge = () => {
     <div className="min-h-screen bg-[#ffffff] text-[#111827] antialiased font-sans">
       
       {/* @section Global Navigation Bar (GNB)
-          시스템의 최상위 계층 통제 구역으로, 도메인 전환 로직을 포함합니다.
+          시스템의 최상위 계층 통제 구역입니다.
       */}
       <nav className="fixed top-0 z-50 w-full bg-[#ffffff] border-b border-[#f3f4f6] px-10 h-20 flex justify-between items-center shadow-sm">
         
-        {/* 브랜딩 로고 및 메인 도메인 내비게이션 섹션 */}
+        {/* 브랜딩 및 메인 메뉴 섹션 */}
         <div className="flex items-center gap-14">
           <div 
             className="flex items-center gap-3 cursor-pointer" 
@@ -90,7 +93,7 @@ const TeacherLounge = () => {
           </div>
         </div>
 
-        {/* 세션 관리 및 보안 설정 인터페이스 */}
+        {/* 보안 및 세션 제어 섹션 */}
         <div className="flex items-center gap-6">
           <button 
             onClick={handleChangeMyPassword}
@@ -111,33 +114,31 @@ const TeacherLounge = () => {
       </nav>
 
       {/* @section Dynamic Module Container
-          선택된 도메인(currentDomain)에 따라 해당 비즈니스 모듈을 렌더링합니다.
+          선택된 도메인에 따라 해당 비즈니스 컴포넌트를 동적으로 렌더링합니다.
       */}
       <div className="pt-20">
         <main className="animate-in fade-in duration-500">
           
-          {/* 학생 관리 도메인: 인적 자원 및 성적 데이터 제어 */}
+          {/* 학생 관리: 인적 자원 제어 모듈 */}
           {currentDomain === 'STUDENT_MGMT' && (
             <StudentModule />
           )}
 
-          {/* 수업 관리 도메인: 커리큘럼 및 시간표 스케줄링 (구축 중) */}
+          {/* 수업 관리: 구축 중 상태 표시 */}
           {currentDomain === 'COURSE_MGMT' && (
             <div className="flex items-center justify-center h-[calc(100vh-5rem)] text-[#d1d5db] font-bold tracking-widest text-xs bg-[#fafafa]">
               수업_관리_모듈_구축_중
             </div>
           )}
 
-          {/* 교재 관리 도메인: 인벤토리 및 교안 데이터베이스 (구축 중) */}
+          {/* 교재 관리: 구축 중 상태 표시 */}
           {currentDomain === 'TEXTBOOK_MGMT' && (
             <div className="flex items-center justify-center h-[calc(100vh-5rem)] text-[#d1d5db] font-bold tracking-widest text-xs bg-[#fafafa]">
               교재_인벤토리_모듈_구축_중
             </div>
           )}
 
-          {/* 시즌 관리 도메인: 교육 기수 초기화 및 티어 시스템 제어 
-              통치 강령에 따른 핵심 비즈니스 로직 모듈 통합 완료
-          */}
+          {/* 시즌 관리: 통합 완료된 비즈니스 로직 모듈 */}
           {currentDomain === 'SEASON_MGMT' && (
             <SeasonModule />
           )}
