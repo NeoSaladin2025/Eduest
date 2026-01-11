@@ -2,33 +2,53 @@
 
 @theme {
   --animate-shimmer: shimmer 3s infinite linear;
-  --animate-fade-in: fadeIn 1s ease-out forwards;
+  --animate-fade-in: fadeIn 1.2s ease-out forwards;
 
   @keyframes shimmer {
-    0% { background-position: -200% center; }
-    100% { background-position: 200% center; }
+    0% {
+      background-position: -200% center;
+    }
+
+    100% {
+      background-position: 200% center;
+    }
   }
+
   @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(30px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }
 
-/* 🫦 브랜드명 빛 관통 효과 (Shimmer) */
 .animate-shimmer {
-  background: linear-gradient(
-    90deg, 
-    #18181b 0%, 
-    #18181b 40%, 
-    #ffffff 50%, 
-    #18181b 60%, 
-    #18181b 100%
-  );
+  background: linear-gradient(90deg,
+      #001f3f 0%,
+      #001f3f 35%,
+      #ffffff 50%,
+      #001f3f 65%,
+      #001f3f 100%);
   background-size: 200% auto;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: var(--animate-shimmer);
+  animation: shimmer 3s infinite linear;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% center;
+  }
+
+  100% {
+    background-position: 200% center;
+  }
 }
 
 .animate-fade-in {

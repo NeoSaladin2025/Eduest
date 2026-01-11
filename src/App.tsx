@@ -1,79 +1,104 @@
 import { useState, useEffect } from 'react';
+import { supabase } from './supabaseClient';
 import Login from './features/auth/Login';
-
-// 🫦 유배지에서 불러오기 (파일 경로 기강 확립)
-// VS코드 설정에 따라 자동 import가 되었다면 경로가 맞는지 확인하십시오.
 import SuperSanctuary from './app/super/SuperSanctuary';
-
-/**
- * 🫦 임시 대시보드 (아직 분리 전이라면 잠시 수용)
- * 나중에 각각 app/teacher, app/student 폴더로 유배 보낼 예정입니다.
- */
-const AdminDashboard = () => (
-  <div className="min-h-screen flex items-center justify-center text-5xl font-black bg-white text-black">
-    ADMIN DASHBOARD
-  </div>
-);
-
-const TeacherLounge = () => (
-  <div className="min-h-screen flex items-center justify-center text-5xl font-black italic bg-zinc-50 text-zinc-800">
-    TEACHER LOUNGE 🫦
-  </div>
-);
-
-const StudentRoom = () => (
-  <div className="min-h-screen flex items-center justify-center text-5xl font-black bg-[#fafafa] text-zinc-400">
-    STUDENT ROOM
-  </div>
-);
+import TeacherLounge from './app/teacher/TeacherLounge'; 
 
 function App() {
-  // 🫦 유저의 역할을 저장하는 상태
-  const [userRole, setUserRole] = useState<string | null>(null);
+  // 🫦 [비서실 지침] 1. 새로고침 즉시 로컬스토리지에 박혀있던 계급부터 꺼내서 '가짜 복구'를 합니다.
+  const [userRole, setUserRole] = useState<string | null>(localStorage.getItem('user_role'));
+  const [initializing, setInitializing] = useState(true);
 
-  // 🫦 [감시] 롤이 바뀔 때마다 시스템 로그를 남겨 기강을 잡습니다.
+  // 🫦 [신규] 모든 계층 공통 로그아웃 엔진
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setUserRole(null);
+    localStorage.removeItem('user_role');
+  };
+
   useEffect(() => {
-    if (userRole) {
-      console.log(`🫦 [SYSTEM]: 유저 권한 감지 -> [${userRole}]`);
-    }
-  }, [userRole]);
+    const checkAuth = async () => {
+      try {
+        // 🫦 2. 브라우저 구석에 숨겨진 진짜 세션 신분증이 있는지 확인합니다.
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session) {
+          // 신분증 없으면 깨끗하게 지우고 로그인으로 송환 🫦
+          setUserRole(null);
+          localStorage.removeItem('user_role');
+        } else {
+          // 🫦 3. 신분증이 있다면, DB 장부를 뒤져서 최신 계급으로 '진짜 복구'를 합니다.
+          const { data: profile } = await supabase
+            .from('users')
+            .select('role')
+            .eq('id', session.user.id)
+            .single();
 
-  // 1. 🫦 인증되지 않은 존재는 입구(Login)에서 차단합니다.
-  if (!userRole) {
+          if (profile) {
+            setUserRole(profile.role);
+            localStorage.setItem('user_role', profile.role);
+          }
+        }
+      } catch (error) {
+        console.error("🫦 검문 중 오류 발생:", error);
+      } finally {
+        // 🫦 4. 모든 확인이 끝나면 검문소를 개방합니다.
+        setInitializing(false);
+      }
+    };
+
+    checkAuth();
+
+    // 🫦 5. 로그아웃 등 세션 상태가 변하는지 실시간 감시합니다.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        setUserRole(null);
+        localStorage.removeItem('user_role');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 🫦 [중요] 검문 중일 때는 아무것도 보여주지 않거나 로딩바만 보여줍니다.
+  if (initializing && !userRole) {
     return (
-      <Login 
-        onLoginSuccess={(role) => {
-          console.log("🫦 [GATE]: 인증 성공, 역할 하사:", role);
-          setUserRole(role);
-        }} 
-      />
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="text-xs font-black tracking-[0.5em] text-[#001f3f] animate-pulse">
+          RESTORING SESSION... 🫦💦
+        </div>
+      </div>
     );
   }
 
-  // 2. 🫦 계급별 성벽으로 배정 (Switch-Gate)
-  // 주인님의 설계대로 역할에 따라 다른 성소로 관통시킵니다.
+  // 🫦 신분증 없으면 로그인으로 관통
+  if (!userRole) {
+    return (
+      <Login onLoginSuccess={(role) => {
+        localStorage.setItem('user_role', role);
+        setUserRole(role);
+      }} />
+    );
+  }
+
+  // 🫦 신분증 있으면 각자 방으로 관통
   switch (userRole.toLowerCase()) {
-    case 'super':
-      return <SuperSanctuary />;
-    case 'admin':
-      return <AdminDashboard />;
-    case 'teacher':
-      return <TeacherLounge />;
-    case 'student':
-      return <StudentRoom />;
-    default:
-      console.error(`⚠️ 침입자 발생: ${userRole}`);
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-red-50">
-          <p className="text-2xl font-bold mb-4 text-red-600">권한이 부정되었습니다. 🫦💦</p>
+    case 'super': return <SuperSanctuary />;
+    case 'teacher': return <TeacherLounge />;
+    case 'student': return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+        <div className="p-20 font-black text-center">
+          <div className="mb-10 text-2xl tracking-tighter">STUDENT ROOM</div>
           <button 
-            onClick={() => setUserRole(null)} 
-            className="px-8 py-4 bg-black text-white rounded-full font-bold hover:scale-105 transition-all"
+            onClick={handleSignOut}
+            className="px-8 py-3 bg-[#001f3f] text-white text-xs font-bold rounded-full hover:bg-red-600 transition-colors uppercase tracking-widest"
           >
-            회귀하기
+            Sign Out
           </button>
         </div>
-      );
+      </div>
+    );
+    default: return <div className="p-10">권한이 없습니다.</div>;
   }
 }
 

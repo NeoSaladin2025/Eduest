@@ -1,4 +1,11 @@
 {
+  "compilerOptions": {
+    /* 🫦 경로 별칭(Alias) 설정을 위한 기본 기강 확립 */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },
