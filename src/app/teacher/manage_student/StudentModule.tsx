@@ -1,12 +1,18 @@
+/**
+ * @file StudentModule.tsx
+ * @description 학생 관리 시스템의 최상위 컨테이너 컴포넌트
+ */
+
 import React from 'react';
+
 /** * @description 핵심 비즈니스 로직 및 타입 정의 임포트
- * 경로 오류(2307) 방지를 위해 상대 경로를 정밀하게 재설정하였습니다.
+ * 사용하지 않는 'StudentProfile' 타입을 제거하여 TS6133 빌드 에러를 해결했습니다.
  */
 import { useStudentMakerCore } from './account/useStudentMakerCore';
-import type { StudentProfile } from './account/useStudentMakerCore';
+// import type { StudentProfile } from './account/useStudentMakerCore'; // (삭제: 사용되지 않는 타입)
 
 /** * @description 하위 서비스 컴포넌트 임포트
- * 학생 계정 생성 및 리스트 관리 인터페이스입니다.
+ * 학생 계정 생성 및 리스트 관리 인터페이스를 담당하는 컴포넌트입니다.
  */
 import StudentMaker from './account/StudentMaker';
 
@@ -35,28 +41,29 @@ const SERVICE_NAVIGATION: NavigationItem[] = [
 /**
  * @component StudentModule
  * @description 
- * 학생 관리 시스템의 최상위 컨테이너 컴포넌트입니다.
- * 학부모 참관 및 관리자 운영 효율을 고려한 고해상도 비즈니스 레이아웃을 제공합니다.
+ * 학생 관리 시스템의 메인 레이아웃 컴포넌트입니다.
+ * 사이드바와 메인 컨텐츠 영역으로 구분되어 비즈니스 로직을 시각화합니다.
  */
 const StudentModule = () => {
-  // 현재 활성화된 서비스 아이디 관리 (기본값: 계정 관리)
+  // 1. 현재 활성화된 서비스 아이디 관리 (기본값: 계정 관리)
   const [activeService, setActiveService] = React.useState('ACCOUNT_MANAGEMENT');
   
-  // 로직 엔진으로부터 데이터 로딩 상태 주입
+  // 2. 비즈니스 로직 훅 호출
+  // 로딩 상태(loading)를 주입받아 하단 상태표시줄에 반영합니다.
   const { loading } = useStudentMakerCore();
   
-  // 현재 활성화된 서비스의 메타데이터를 추출합니다.
+  // 3. 현재 활성화된 서비스의 상세 정보 추출
   const currentServiceInfo = SERVICE_NAVIGATION.find((item) => item.id === activeService);
 
   return (
     <div className="flex w-full min-h-[calc(100vh-5rem)] bg-[#fafafa]">
       
       {/* @section 사이드바 LNB (Left Navigation Bar)
-          시스템 하위 도메인 간의 빠른 전환을 위한 수직 네비게이션 구역입니다.
+          시스템 하위 메뉴 이동 및 상태 표시를 담당하는 영역입니다.
       */}
       <aside className="fixed w-72 h-[calc(100vh-5rem)] bg-[#ffffff] border-r border-[#f3f4f6] p-8 flex flex-col justify-between shadow-sm z-10">
         <div className="w-full">
-          {/* 모듈 헤더: 현재 접속 중인 도메인 명시 */}
+          {/* 도메인 헤더 표시 */}
           <header className="mb-10 px-2">
             <p className="text-[10px] font-bold text-[#d1d5db] tracking-[0.2em] uppercase mb-1">
               Administration
@@ -66,7 +73,7 @@ const StudentModule = () => {
             </h2>
           </header>
 
-          {/* 서비스 전환 네비게이션 리스트 */}
+          {/* 서비스 전환 네비게이션 */}
           <nav className="flex flex-col gap-1.5 w-full">
             {SERVICE_NAVIGATION.map((item) => (
               <button
@@ -84,7 +91,7 @@ const StudentModule = () => {
           </nav>
         </div>
 
-        {/* 시스템 하단 세션 상태 표시줄 */}
+        {/* 시스템 하단 로딩 상태 표시바 */}
         <div className="px-2 py-6 border-t border-[#f3f4f6]">
           <span className="text-[10px] font-bold text-[#9ca3af] uppercase tracking-widest">
             {loading ? 'Processing' : 'Service Active'}
@@ -93,11 +100,11 @@ const StudentModule = () => {
       </aside>
 
       {/* @section 메인 컨텐츠 섹션
-          선택된 비즈니스 모듈(StudentMaker)이 렌더링되는 구역입니다.
+          선택된 서비스 모듈이 실제 화면에 렌더링되는 구역입니다.
       */}
       <section className="flex-1 ml-72 p-12 overflow-y-auto">
         <div className="max-w-6xl mx-auto">
-          {/* 섹션 타이틀 및 가이드 텍스트 로드 */}
+          {/* 서비스 타이틀 및 상세 설명 섹션 */}
           <header className="mb-12">
             <h3 className="text-4xl font-[900] tracking-tight text-[#111827]">
               {currentServiceInfo?.label}
@@ -107,9 +114,7 @@ const StudentModule = () => {
             </p>
           </header>
 
-          {/* @render 계정 관리 모듈 연동
-              학생 계정 생성, 학년 수정, 비밀번호 제어 기능을 수행하는 StudentMaker 컴포넌트 호출
-          */}
+          {/* 계정 관리(StudentMaker) 컴포넌트 조건부 렌더링 */}
           {activeService === 'ACCOUNT_MANAGEMENT' && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
               <StudentMaker />
