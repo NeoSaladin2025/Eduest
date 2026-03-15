@@ -1,1 +1,0 @@
-export default function RuleMultiplier() { return <div className="p-10 font-black text-[#001f3f]">04_규칙_배율_클리_장착완료_🫦</div>; }

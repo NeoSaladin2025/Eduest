@@ -1,1 +1,0 @@
-export default function PointControl() { return <div className="p-10 font-black text-[#001f3f]">02_점수_유린_클리_장착완료_🫦</div>; }

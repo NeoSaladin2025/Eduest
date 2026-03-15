@@ -1,1 +1,0 @@
-export default function EmblemMark() { return <div className="p-10 font-black text-[#001f3f]">05_엠블럼_낙인_클리_장착완료_🫦</div>; }
