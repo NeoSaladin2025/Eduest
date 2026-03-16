@@ -1,13 +1,12 @@
 'use client';
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Pencil, Zap, Trash2, ClipboardPaste, Move } from 'lucide-react';
+import { Pencil, Zap, Trash2, ClipboardPaste, Move, Highlighter } from 'lucide-react'; // Highlighter 아이콘 추가
 
 interface Props {
   pastedImage?: string | null;
 }
 
-// 🖼️ 이미지 객체 타입 정의
 interface FloatingImage {
   id: number;
   img: HTMLImageElement;
@@ -17,24 +16,69 @@ interface FloatingImage {
   h: number;
 }
 
+// ✍️ 판서 경로 타입 정의
+interface DrawPath {
+  points: { x: number; y: number }[];
+  color: string;
+  isHighlighter: boolean;
+}
+
 export default function Blackboard({ pastedImage }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const laserRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
-  const [mode, setMode] = useState<'pen' | 'laser' | 'select'>('pen'); // 'select' 모드 추가
+  const [mode, setMode] = useState<'pen' | 'laser' | 'select' | 'highlighter'>('pen'); 
   const [color, setColor] = useState('#ef4444'); 
   const [isDrawing, setIsDrawing] = useState(false);
   
-  // 💾 이미지 객체들 관리
   const [images, setImages] = useState<FloatingImage[]>([]);
+  const [paths, setPaths] = useState<DrawPath[]>([]); // 💾 판서 기록 저장소
   const [selectedImgId, setSelectedImgId] = useState<number | null>(null);
   const [isDraggingImg, setIsDraggingImg] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
 
   const laserPaths = useRef<{x: number, y: number, t: number}[]>([]);
 
-  // 1. 초기화 및 리사이즈
+  // 🎨 통합 리렌더링 시스템 (이미지 + 모든 판서 기록)
+  const redrawAll = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!ctx || !canvas) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // 1. 이미지들 먼저 그리기 (바닥 레이어)
+    images.forEach(fImg => {
+      ctx.drawImage(fImg.img, fImg.x, fImg.y, fImg.w, fImg.h);
+      if (selectedImgId === fImg.id) {
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(fImg.x - 2, fImg.y - 2, fImg.w + 4, fImg.h + 4);
+      }
+    });
+
+    // 2. 저장된 모든 판서 경로 다시 그리기 (위 레이어)
+    paths.forEach(path => {
+      ctx.beginPath();
+      ctx.strokeStyle = path.color;
+      ctx.lineWidth = path.isHighlighter ? 20 : 3; // 형광펜은 굵게!
+      ctx.globalAlpha = path.isHighlighter ? 0.35 : 1.0; // 형광펜 투명도 설정
+      
+      path.points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    });
+
+    ctx.globalAlpha = 1.0; // 그리기 끝나면 투명도 원복
+  }, [images, selectedImgId, paths]);
+
+  useEffect(() => { redrawAll(); }, [redrawAll]);
+
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
     const lCanvas = laserRef.current;
@@ -42,33 +86,6 @@ export default function Blackboard({ pastedImage }: Props) {
     if (!canvas || !lCanvas || !parent) return;
     canvas.width = lCanvas.width = parent.clientWidth;
     canvas.height = lCanvas.height = parent.clientHeight;
-    redrawAll(); // 리사이즈 시 다시 그리기
-  }, [images]); // 이미지 상태가 바뀔 때마다 리사이즈 로직 대응
-
-  // 🎨 모든 것을 다시 그리는 핵심 함수 (이미지 + 판서 동기화)
-  const redrawAll = useCallback(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!ctx || !canvas) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // 1. 이미지들 먼저 그리기
-    images.forEach(fImg => {
-      ctx.drawImage(fImg.img, fImg.x, fImg.y, fImg.w, fImg.h);
-      if (selectedImgId === fImg.id) {
-        // 선택된 이미지 강조 표시
-        ctx.strokeStyle = '#3b82f6';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(fImg.x - 2, fImg.y - 2, fImg.w + 4, fImg.h + 4);
-        // 모서리 리사이즈 핸들 (우측 하단)
-        ctx.fillStyle = '#3b82f6';
-        ctx.fillRect(fImg.x + fImg.w - 5, fImg.y + fImg.h - 5, 10, 10);
-      }
-    });
-  }, [images, selectedImgId]);
-
-  useEffect(() => {
     redrawAll();
   }, [redrawAll]);
 
@@ -76,14 +93,12 @@ export default function Blackboard({ pastedImage }: Props) {
     resize();
     window.addEventListener('resize', resize);
     
-    // 레이저 애니메이션 (기존과 동일)
     const lCanvas = laserRef.current;
     const lCtx = lCanvas?.getContext('2d');
     let animFrame: number;
     const animateLaser = () => {
       if (lCtx && lCanvas) {
         lCtx.clearRect(0, 0, lCanvas.width, lCanvas.height);
-        lCtx.globalCompositeOperation = 'lighter';
         const now = Date.now();
         laserPaths.current = laserPaths.current.filter(p => now - p.t < 800);
         laserPaths.current.forEach((p, i) => {
@@ -96,7 +111,6 @@ export default function Blackboard({ pastedImage }: Props) {
           lCtx.stroke();
         });
         lCtx.globalAlpha = 1;
-        lCtx.globalCompositeOperation = 'source-over';
       }
       animFrame = requestAnimationFrame(animateLaser);
     };
@@ -104,7 +118,6 @@ export default function Blackboard({ pastedImage }: Props) {
     return () => { window.removeEventListener('resize', resize); cancelAnimationFrame(animFrame); };
   }, [resize]);
 
-  // 🚀 이미지 붙여넣기 (객체로 등록)
   const handlePasteAction = useCallback(() => {
     if (!pastedImage) return alert("캡처본이 없어, 자기야! ✨");
     const img = new Image();
@@ -117,7 +130,7 @@ export default function Blackboard({ pastedImage }: Props) {
         h: img.height * 0.5
       };
       setImages(prev => [...prev, newImg]);
-      setMode('select'); // 붙여넣으면 바로 선택 모드로!
+      setMode('select');
     };
     img.src = pastedImage;
   }, [pastedImage]);
@@ -130,35 +143,34 @@ export default function Blackboard({ pastedImage }: Props) {
     return { x: clientX - rect.left, y: clientY - rect.top };
   };
 
-  // 👆 클릭 시작
   const startDrawing = (e: any) => {
     const { x, y } = getCoords(e);
     
     if (mode === 'select') {
-      // 이미지 클릭 체크 (역순으로 체크해서 위에 있는 거 먼저)
       const clickedImg = [...images].reverse().find(img => 
         x >= img.x && x <= img.x + img.w && y >= img.y && y <= img.y + img.h
       );
-
       if (clickedImg) {
         setSelectedImgId(clickedImg.id);
         setIsDraggingImg(true);
         dragOffset.current = { x: x - clickedImg.x, y: y - clickedImg.y };
         return;
-      } else {
-        setSelectedImgId(null);
       }
+      setSelectedImgId(null);
     }
 
     setIsDrawing(true);
-    if (mode === 'pen') {
-      const ctx = canvasRef.current?.getContext('2d');
-      ctx?.beginPath();
-      ctx?.moveTo(x, y);
+    if (mode === 'pen' || mode === 'highlighter') {
+      // 새 경로 시작
+      const newPath: DrawPath = {
+        points: [{ x, y }],
+        color: color,
+        isHighlighter: mode === 'highlighter'
+      };
+      setPaths(prev => [...prev, newPath]);
     }
   };
 
-  // 🖱️ 움직일 때
   const draw = (e: any) => {
     const { x, y } = getCoords(e);
 
@@ -174,12 +186,15 @@ export default function Blackboard({ pastedImage }: Props) {
     if (mode === 'laser') { if (isDrawing) laserPaths.current.push({ x, y, t: Date.now() }); return; }
     if (!isDrawing) return;
     
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx && mode === 'pen') {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
-      ctx.lineTo(x, y);
-      ctx.stroke();
+    if (mode === 'pen' || mode === 'highlighter') {
+      setPaths(prev => {
+        const lastPath = prev[prev.length - 1];
+        const updatedLastPath = {
+          ...lastPath,
+          points: [...lastPath.points, { x, y }]
+        };
+        return [...prev.slice(0, -1), updatedLastPath];
+      });
     }
   };
 
@@ -189,34 +204,34 @@ export default function Blackboard({ pastedImage }: Props) {
   };
 
   const clearCanvas = () => {
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx && canvasRef.current) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     setImages([]);
+    setPaths([]); // 판서도 싹 지우기
     laserPaths.current = [];
   };
 
   return (
     <div ref={containerRef} className="relative w-full h-full bg-[#1e293b] overflow-hidden">
       
-      {/* 🛠️ 지존급 툴바 */}
+      {/* 🛠️ 업그레이드 툴바 */}
       <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-3 p-3 bg-slate-900/90 backdrop-blur-xl rounded-[24px] border border-white/10 z-30 shadow-2xl pointer-events-auto">
-        <button onClick={handlePasteAction} className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all"><ClipboardPaste size={20} /></button>
+        <button onClick={handlePasteAction} title="이미지 붙여넣기" className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all"><ClipboardPaste size={20} /></button>
         
         <div className="w-[1px] h-6 bg-white/10 mx-1" />
 
         <div className="flex bg-white/5 p-1 rounded-xl gap-1">
-          <button onClick={() => setMode('pen')} className={`p-2 rounded-lg ${mode === 'pen' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}><Pencil size={20}/></button>
-          <button onClick={() => setMode('laser')} className={`p-2 rounded-lg ${mode === 'laser' ? 'bg-yellow-500 text-white' : 'text-slate-400'}`}><Zap size={20}/></button>
-          <button onClick={() => setMode('select')} className={`p-2 rounded-lg ${mode === 'select' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><Move size={20}/></button>
+          <button onClick={() => setMode('pen')} title="일반 펜" className={`p-2 rounded-lg ${mode === 'pen' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}><Pencil size={20}/></button>
+          <button onClick={() => setMode('highlighter')} title="형광펜" className={`p-2 rounded-lg ${mode === 'highlighter' ? 'bg-yellow-500/80 text-white' : 'text-slate-400'}`}><Highlighter size={20}/></button>
+          <button onClick={() => setMode('laser')} title="레이저 포인터" className={`p-2 rounded-lg ${mode === 'laser' ? 'bg-orange-500 text-white' : 'text-slate-400'}`}><Zap size={20}/></button>
+          <button onClick={() => setMode('select')} title="이미지 이동" className={`p-2 rounded-lg ${mode === 'select' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><Move size={20}/></button>
         </div>
 
         <div className="flex gap-2">
-          {['#ef4444', '#3b82f6', '#22c55e'].map(c => (
-            <button key={c} onClick={() => { setColor(c); setMode('pen'); }} className={`w-8 h-8 rounded-full border-2 ${color === c && mode === 'pen' ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: c }} />
+          {['#ef4444', '#3b82f6', '#22c55e', '#facc15'].map(c => (
+            <button key={c} onClick={() => { setColor(c); if(mode==='select' || mode==='laser') setMode('pen'); }} className={`w-8 h-8 rounded-full border-2 ${color === c && (mode === 'pen' || mode === 'highlighter') ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: c }} />
           ))}
         </div>
 
-        <button onClick={clearCanvas} className="p-2 text-slate-400 hover:text-rose-400"><Trash2 size={20}/></button>
+        <button onClick={clearCanvas} title="전체 지우기" className="p-2 text-slate-400 hover:text-rose-400"><Trash2 size={20}/></button>
       </div>
 
       <canvas ref={canvasRef} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseLeave={stopDrawing} className={`absolute inset-0 z-10 touch-none ${mode === 'select' ? 'cursor-move' : 'cursor-crosshair'}`} />
