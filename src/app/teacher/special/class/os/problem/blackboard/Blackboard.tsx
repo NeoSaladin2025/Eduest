@@ -24,7 +24,7 @@ export default function Blackboard({ pastedImage }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [mode, setMode] = useState<'pen' | 'laser' | 'select' | 'highlighter' | 'eraser'>('pen'); 
-  const [color, setColor] = useState('#ef4444'); 
+  const [color, setColor] = useState('#ef4444'); // 기본 빨강
   const [isDrawing, setIsDrawing] = useState(false);
   const [images, setImages] = useState<FloatingImage[]>([]);
   const [paths, setPaths] = useState<DrawPath[]>([]); 
@@ -32,6 +32,13 @@ export default function Blackboard({ pastedImage }: Props) {
   const [isDraggingImg, setIsDraggingImg] = useState(false);
   const dragOffset = useRef({ x: 0, y: 0 });
   const laserPaths = useRef<{x: number, y: number, t: number}[]>([]);
+
+  // 🎨 팔레트 설정
+  const palette = [
+    { name: 'Red', value: '#ef4444' },
+    { name: 'Blue', value: '#3b82f6' },
+    { name: 'Green', value: '#22c55e' }
+  ];
 
   const redrawAll = useCallback(() => {
     const canvas = canvasRef.current;
@@ -74,7 +81,6 @@ export default function Blackboard({ pastedImage }: Props) {
     const parent = containerRef.current;
     if (!canvas || !lCanvas || !parent) return;
 
-    // 🚀 [리사이즈 핸들 확보] 부모보다 상하좌우 8px(총 16px) 작게 설정
     const finalW = parent.clientWidth - 16; 
     const finalH = parent.clientHeight - 16;
 
@@ -108,7 +114,6 @@ export default function Blackboard({ pastedImage }: Props) {
 
   useEffect(() => { if (pastedImage) handlePaste(pastedImage); }, [pastedImage, handlePaste]);
 
-  // (레이저 애니메이션 생략 - 이전과 동일)
   useEffect(() => {
     const lCanvas = laserRef.current;
     const lCtx = lCanvas?.getContext('2d');
@@ -175,21 +180,43 @@ export default function Blackboard({ pastedImage }: Props) {
 
   return (
     <div ref={containerRef} className="relative w-full h-full bg-[#1e293b] overflow-hidden select-none">
-      {/* 🛠️ 툴바 - z-index 최상위 */}
+      {/* 🛠️ 툴바 */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-2 bg-slate-900/95 backdrop-blur-xl rounded-[20px] border border-white/10 z-[50] shadow-2xl pointer-events-auto shrink-0">
         <button onClick={() => pastedImage && handlePaste(pastedImage)} className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white transition-all"><ClipboardPaste size={18} /></button>
         <div className="w-[1px] h-4 bg-white/10 mx-1" />
+        
+        {/* 모드 선택 섹션 */}
         <div className="flex bg-white/5 p-1 rounded-lg gap-0.5">
           <button onClick={() => setMode('pen')} className={`p-2 rounded-md ${mode === 'pen' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}><Pencil size={18}/></button>
-          <button onClick={() => setMode('highlighter')} className={`p-2 rounded-md ${mode === 'highlighter' ? 'bg-yellow-500 text-white' : 'text-slate-400'}`}><Highlighter size={18}/></button>
+          <button onClick={() => setMode('highlighter')} className={`p-2 rounded-md ${mode === 'highlighter' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}><Highlighter size={18}/></button>
           <button onClick={() => setMode('eraser')} className={`p-2 rounded-md ${mode === 'eraser' ? 'bg-rose-500 text-white' : 'text-slate-400'}`}><Eraser size={18}/></button>
           <button onClick={() => setMode('laser')} className={`p-2 rounded-md ${mode === 'laser' ? 'bg-orange-500 text-white' : 'text-slate-400'}`}><Zap size={18}/></button>
           <button onClick={() => setMode('select')} className={`p-2 rounded-md ${mode === 'select' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}><Move size={18}/></button>
         </div>
+
+        <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+        {/* 🎨 색상 선택 섹션 (추가!) */}
+        <div className="flex items-center gap-2 px-1">
+          {palette.map((p) => (
+            <button
+              key={p.value}
+              onClick={() => {
+                setColor(p.value);
+                // 레이저나 선택 모드였다면 자동으로 마지막 펜 모드로 복구
+                if (mode === 'laser' || mode === 'select' || mode === 'eraser') setMode('pen');
+              }}
+              className={`w-6 h-6 rounded-full border-2 transition-transform active:scale-90 ${
+                color === p.value ? 'border-white scale-110 shadow-[0_0_8px_rgba(255,255,255,0.5)]' : 'border-transparent'
+              }`}
+              style={{ backgroundColor: p.value }}
+            />
+          ))}
+        </div>
+
         <button onClick={clearCanvas} className="p-2 text-slate-400 hover:text-rose-400"><Trash2 size={18}/></button>
       </div>
 
-      {/* 🚀 [중요] inset-2 (8px 여백)로 상하좌우 리사이즈 핸들 영역을 완전히 비워줌 */}
       <div className="absolute inset-2 z-10 overflow-hidden">
         <canvas 
           ref={canvasRef} 
