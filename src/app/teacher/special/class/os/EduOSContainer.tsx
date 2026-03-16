@@ -26,12 +26,9 @@ export default function EduOSContainer() {
   const [solutionData, setSolutionData] = useState<string | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
 
-  // 🚀 문제 로딩 엔진
   const { progress, isReady, problemMap, solutionMap, loadCartridgeData } = useProblemEngine();
 
-  // 🕹️ [반응형 감지] 폴드 및 모바일 체크
   const [isNarrow, setIsNarrow] = useState(false);
-
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < 1024);
     handleResize();
@@ -39,46 +36,31 @@ export default function EduOSContainer() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 🕹️ [LOAD] 팩 삽입 시 (여기가 수정 포인트! 🛠️)
+  // 🕹️ [LOAD] 팩 삽입 시
   const handlePackInsert = (pack: Material) => {
     setSelectedPack(pack);
     loadCartridgeData(pack); 
     
-    // 1. 창 열기
     if (!windows.problem.isOpen) toggleWindow('problem');
     
-    // 2. 창 위치를 카트리지 근처로 "강제 배달" 🚚
     setTimeout(() => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-
-      if (vw < 1024) {
-        // 📱 모바일/폴드: 상단에 꽉 차게 (엣지에서 안 보일 걱정 끝!)
-        updateWindowScale('problem', { 
-          x: 10, 
-          y: 20, 
-          width: vw - 20, 
-          height: vh - 150 
-        });
-      } else {
-        // 💻 데스크탑: 카트리지 창(보통 왼쪽)에서 살짝 오른쪽 위로 겹치게 배치
-        // 카트리지 위치가 고정적이라면 아래 값을 조절해서 딱 맞출 수 있어!
-        updateWindowScale('problem', { 
-          x: 120, 
-          y: 80, 
-          width: 550, 
-          height: 650 
-        });
-      }
+      // 🚀 문제 선택 창 위치를 카트리지 근처로!
+      updateWindowScale('problem', { 
+        x: isNarrow ? 10 : 120, 
+        y: isNarrow ? 20 : 80, 
+        width: isNarrow ? vw - 20 : 550, 
+        height: isNarrow ? vh - 150 : 650 
+      });
       focusWindow('problem');
     }, 100);
   };
 
-  // 📖 [번호 클릭 시] 반응형 대응 런처
+  // 📖 [번호 클릭 시] 런처 가동
   const handleLaunchProblem = useCallback((index: number) => {
     const pKey = String(index).padStart(4, '0');
     const pData = problemMap[pKey] || Object.values(problemMap)[index - 1];
-    
     if (!pData) return alert(`[${index}번] 리소스를 찾을 수 없어!`);
 
     setCurrentIdx(index);
@@ -97,9 +79,11 @@ export default function EduOSContainer() {
       if (vw < 1024) {
         const mobileW = vw - 20;
         const mobileH = vh - 140;
+        // 📱 모바일: 모든 창을 카트리지/문제 창 근처(좌측 상단)에서 시작하게 정렬
         updateWindowScale('monitor', { x: 10, y: 10, width: mobileW, height: mobileH });
-        updateWindowScale('solution', { x: 10, y: 10, width: mobileW, height: mobileH });
-        updateWindowScale('blackboard', { x: 10, y: 10, width: mobileW, height: mobileH });
+        updateWindowScale('solution', { x: 15, y: 15, width: mobileW, height: mobileH });
+        // 🚀 자기가 원한 대로 칠판(blackboard)도 밖으로 안 나가게 근처 배치!
+        updateWindowScale('blackboard', { x: 20, y: 20, width: mobileW, height: mobileH });
       } else {
         updateWindowScale('monitor', { x: 80, y: 60, width: 750, height: 850 });
         updateWindowScale('solution', { x: 180, y: 100, width: 750, height: 850 });
@@ -107,7 +91,6 @@ export default function EduOSContainer() {
       }
       focusWindow('blackboard');
     }, 150);
-
   }, [problemMap, solutionMap, windows, toggleWindow, updateWindowScale, focusWindow]);
 
   const handleCapture = (dataUrl: string) => {
@@ -117,8 +100,6 @@ export default function EduOSContainer() {
 
   return (
     <div className="fixed inset-0 w-screen h-screen bg-[#020617] overflow-hidden flex flex-col z-[9999]">
-      
-      {/* 🪟 윈도우 레이어 */}
       <div className="flex-1 relative p-2 md:p-6 overflow-hidden">
         {Object.values(windows).map((win) => (
           <Rnd
@@ -139,18 +120,31 @@ export default function EduOSContainer() {
             onMouseDown={() => focusWindow(win.id)}
             className="bg-white/95 backdrop-blur-xl rounded-[20px] md:rounded-[32px] shadow-2xl border border-white/20 overflow-hidden"
           >
-            {/* 타이틀바 */}
-            <div className={`handle ${isNarrow ? 'h-10 px-4' : 'h-14 px-6'} bg-slate-50/50 flex items-center justify-between border-b shrink-0 cursor-grab active:cursor-grabbing`}>
-              <span className="font-black text-slate-800 text-[10px] md:text-sm tracking-wide uppercase italic truncate">
+            {/* 타이틀바: 버튼 클릭을 위해 z-index와 pointer-events 보강 */}
+            <div className={`handle ${isNarrow ? 'h-12 px-4' : 'h-14 px-6'} bg-slate-50/50 flex items-center justify-between border-b shrink-0 cursor-grab active:cursor-grabbing relative`}>
+              <span className="font-black text-slate-800 text-[10px] md:text-sm tracking-wide uppercase italic truncate pr-2 pointer-events-none">
                 {win.title} {currentIdx && !['cartridge', 'problem'].includes(win.id) ? `- Q${currentIdx}` : ''}
               </span>
-              <div className="flex items-center gap-1">
-                <button onClick={() => minimizeWindow(win.id)} className="p-1.5 text-slate-400 hover:bg-slate-200 rounded-full transition-colors"><Minus size={isNarrow ? 14 : 18} /></button>
-                <button onClick={() => toggleWindow(win.id)} className="p-1.5 text-rose-400 hover:bg-rose-50 rounded-full transition-colors"><X size={isNarrow ? 14 : 18} /></button>
+              
+              {/* 버튼 영역: 드래그 핸들에 방해받지 않도록 z-index 높임 */}
+              <div className="flex items-center gap-2 relative z-[100] pointer-events-auto">
+                <button 
+                  onMouseDown={(e) => e.stopPropagation()} // 드래그 이벤트 전파 방지
+                  onClick={(e) => { e.stopPropagation(); minimizeWindow(win.id); }} 
+                  className="p-2 text-slate-400 hover:bg-slate-200 rounded-full transition-colors active:scale-90"
+                >
+                  <Minus size={isNarrow ? 18 : 18} />
+                </button>
+                <button 
+                  onMouseDown={(e) => e.stopPropagation()} // 드래그 이벤트 전파 방지
+                  onClick={(e) => { e.stopPropagation(); toggleWindow(win.id); }} 
+                  className="p-2 text-rose-400 hover:bg-rose-50 rounded-full transition-colors active:scale-90"
+                >
+                  <X size={isNarrow ? 18 : 18} />
+                </button>
               </div>
             </div>
 
-            {/* 창 내용물 */}
             <div className="flex-1 bg-white overflow-hidden relative">
               {win.id === 'cartridge' && <CartridgeWindow onPackInsert={handlePackInsert} currentPackId={selectedPack?.id} />}
               {win.id === 'problem' && <ProblemWindow selectedPack={selectedPack} onLaunch={handleLaunchProblem} progress={progress} isReady={isReady} />}
@@ -162,7 +156,6 @@ export default function EduOSContainer() {
         ))}
       </div>
 
-      {/* 📟 태스크바 */}
       <footer className={`${isNarrow ? 'h-16 px-4' : 'h-20 px-10'} bg-slate-950/80 backdrop-blur-2xl border-t border-white/5 flex items-center justify-between z-[99999]`}>
         <div className="flex items-center gap-3 md:gap-6">
           <button onClick={() => toggleWindow('cartridge')} className={`${isNarrow ? 'p-3 rounded-2xl' : 'p-4 rounded-3xl'} transition-all ${windows.cartridge.isOpen ? 'bg-rose-500 text-white shadow-lg' : 'bg-white/5 text-slate-500'}`}>
@@ -186,7 +179,6 @@ export default function EduOSContainer() {
             ))}
           </div>
         </div>
-        
         {!isNarrow && (
           <div className="flex items-center gap-8 text-slate-400 text-xs font-black italic uppercase tracking-tighter">
             EDU OS v3.0 | SYNC READY
