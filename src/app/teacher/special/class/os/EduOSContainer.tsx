@@ -19,7 +19,6 @@ import { Material } from './cartridge/useCartridge';
 export default function EduOSContainer() {
   const { windows, focusWindow, toggleWindow, minimizeWindow, updateWindowScale } = useOSLogic();
   
-  // 💾 상태 관리
   const [selectedPack, setSelectedPack] = useState<Material | null>(null);
   const [currentIdx, setCurrentIdx] = useState<number | null>(null);
   const [problemData, setProblemData] = useState<string | null>(null);
@@ -36,44 +35,42 @@ export default function EduOSContainer() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // 🕹️ [태스크바 토글 핸들러] - 클릭 시 껐다 켜기 + 좌상단 초기화
+  // 📐 반응형 스케일 계산기 (폴드 대응)
+  const getResponsiveScale = useCallback((id: WindowType) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const isMobile = vw < 1024;
+
+    if (isMobile) {
+      const mWidth = vw * 0.94;
+      const mHeight = vh * 0.75; 
+      const mX = (vw - mWidth) / 2;
+      const mY = id === 'cartridge' || id === 'problem' || id === 'blackboard' ? 20 : 40;
+      return { x: mX, y: mY, width: mWidth, height: mHeight };
+    } else {
+      const desktopMap: Record<string, any> = {
+        cartridge: { x: 40, y: 40, width: 700, height: 800 },
+        problem: { x: 80, y: 60, width: 600, height: 700 },
+        monitor: { x: 120, y: 80, width: 750, height: 850 },
+        solution: { x: 160, y: 100, width: 750, height: 850 },
+        blackboard: { x: 60, y: 50, width: 850, height: 900 } 
+      };
+      return desktopMap[id] || { x: 100, y: 100, width: 700, height: 800 };
+    }
+  }, []);
+
   const handleTaskbarToggle = (id: WindowType) => {
-    const win = windows[id];
-    
-    if (win.isOpen) {
-      // 1. 열려있으면 닫기
+    if (windows[id].isOpen) {
       toggleWindow(id);
     } else {
-      // 2. 닫혀있으면 열기 + 위치를 왼쪽 위로 강제 리셋 🚚
       toggleWindow(id);
       setTimeout(() => {
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        
-        // 창 종류별로 살짝 겹치게 좌상단에 배치
-        const offsetMap: Record<string, number> = {
-          cartridge: 20,
-          problem: 40,
-          monitor: 60,
-          solution: 80,
-          blackboard: 100
-        };
-
-        const offset = offsetMap[id] || 20;
-
-        updateWindowScale(id, { 
-          x: isNarrow ? 10 : offset, 
-          y: isNarrow ? 20 : offset, 
-          // 크기는 기존 자기가 선호하는 비율 유지
-          width: isNarrow ? vw - 20 : (id === 'blackboard' ? 850 : 750), 
-          height: isNarrow ? vh - 150 : (id === 'blackboard' ? 900 : 850) 
-        });
+        updateWindowScale(id, getResponsiveScale(id));
         focusWindow(id);
       }, 50);
     }
   };
 
-  // 🕹️ [LOAD] 팩 삽입 시
   const handlePackInsert = (pack: Material) => {
     setSelectedPack(pack);
     loadCartridgeData(pack); 
@@ -81,42 +78,31 @@ export default function EduOSContainer() {
     else focusWindow('problem');
   };
 
-  // 📖 [번호 클릭 시] 런처 가동
   const handleLaunchProblem = useCallback((index: number) => {
     const pKey = String(index).padStart(4, '0');
     const pData = problemMap[pKey] || Object.values(problemMap)[index - 1];
     if (!pData) return alert(`[${index}번] 리소스를 찾을 수 없어!`);
-
     setCurrentIdx(index);
     setProblemData(pData);
     setSolutionData(solutionMap[`sol_${pKey}`] || solutionMap[pKey] || null);
     setCapturedImage(null);
-
-    // 창들을 좌상단에 순차적으로 띄우기
     ['monitor', 'solution', 'blackboard'].forEach((id, i) => {
-      if (!windows[id as WindowType].isOpen) {
-        toggleWindow(id as WindowType);
-      }
+      if (!windows[id as WindowType].isOpen) toggleWindow(id as WindowType);
       setTimeout(() => {
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        const offset = 60 + (i * 40); // 60, 100, 140 순으로 겹침
-
-        updateWindowScale(id as WindowType, { 
-          x: isNarrow ? 10 : offset, 
-          y: isNarrow ? 20 : offset, 
-          width: isNarrow ? vw - 20 : (id === 'blackboard' ? 850 : 750), 
-          height: isNarrow ? vh - 150 : (id === 'blackboard' ? 900 : 850) 
+        const scale = getResponsiveScale(id as WindowType);
+        updateWindowScale(id as WindowType, {
+          ...scale,
+          x: scale.x + (i * (isNarrow ? 5 : 20)),
+          y: scale.y + (i * (isNarrow ? 5 : 20))
         });
         if (id === 'blackboard') focusWindow('blackboard');
       }, 100 + (i * 50));
     });
-
-  }, [problemMap, solutionMap, windows, toggleWindow, updateWindowScale, focusWindow, isNarrow]);
+  }, [problemMap, solutionMap, windows, toggleWindow, updateWindowScale, focusWindow, isNarrow, getResponsiveScale]);
 
   const handleCapture = (dataUrl: string) => {
     setCapturedImage(dataUrl);
-    if (!windows.blackboard.isOpen) toggleWindow('blackboard');
+    if (!windows.blackboard.isOpen) handleTaskbarToggle('blackboard');
     focusWindow('blackboard');
   };
 
@@ -142,25 +128,28 @@ export default function EduOSContainer() {
             onMouseDown={() => focusWindow(win.id)}
             className="bg-white/95 backdrop-blur-xl rounded-[20px] md:rounded-[32px] shadow-2xl border border-white/20 overflow-hidden"
           >
+            {/* 상단바 - 버튼 클릭성 보장 */}
             <div className={`handle ${isNarrow ? 'h-12 px-4' : 'h-14 px-6'} bg-slate-50/50 flex items-center justify-between border-b shrink-0 cursor-grab active:cursor-grabbing relative`}>
-              <span className="font-black text-slate-800 text-[10px] md:text-sm tracking-wide uppercase italic truncate pr-2 pointer-events-none">
+              <span className="font-black text-slate-800 text-[10px] md:text-sm tracking-wide uppercase italic truncate pr-2 pointer-events-none select-none">
                 {win.title} {currentIdx && !['cartridge', 'problem'].includes(win.id) ? `- Q${currentIdx}` : ''}
               </span>
               
-              <div className="flex items-center gap-2 relative z-[100] pointer-events-auto">
+              <div className="flex items-center gap-1 md:gap-2 relative z-[999]">
                 <button 
                   onMouseDown={(e) => e.stopPropagation()} 
+                  onTouchStart={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); minimizeWindow(win.id); }} 
-                  className="p-2 text-slate-400 hover:bg-slate-200 rounded-full transition-colors active:scale-90"
+                  className="p-2 text-slate-400 hover:bg-slate-200 rounded-full transition-colors"
                 >
-                  <Minus size={isNarrow ? 18 : 18} />
+                  <Minus size={isNarrow ? 18 : 20} />
                 </button>
                 <button 
                   onMouseDown={(e) => e.stopPropagation()} 
+                  onTouchStart={(e) => e.stopPropagation()}
                   onClick={(e) => { e.stopPropagation(); toggleWindow(win.id); }} 
-                  className="p-2 text-rose-400 hover:bg-rose-50 rounded-full transition-colors active:scale-90"
+                  className="p-2 text-rose-400 hover:bg-rose-50 rounded-full transition-colors"
                 >
-                  <X size={isNarrow ? 18 : 18} />
+                  <X size={isNarrow ? 18 : 20} />
                 </button>
               </div>
             </div>
@@ -176,12 +165,12 @@ export default function EduOSContainer() {
         ))}
       </div>
 
+      {/* 📟 태스크바 - 아이콘 흐릿하게 보이게 수정 */}
       <footer className={`${isNarrow ? 'h-16 px-4' : 'h-20 px-10'} bg-slate-950/80 backdrop-blur-2xl border-t border-white/5 flex items-center justify-between z-[99999]`}>
         <div className="flex items-center gap-3 md:gap-6">
-          {/* 카트리지 버튼 */}
           <button 
             onClick={() => handleTaskbarToggle('cartridge')} 
-            className={`${isNarrow ? 'p-3 rounded-2xl' : 'p-4 rounded-3xl'} transition-all ${windows.cartridge.isOpen ? 'bg-rose-500 text-white shadow-lg' : 'bg-white/5 text-slate-500'}`}
+            className={`${isNarrow ? 'p-3 rounded-2xl' : 'p-4 rounded-3xl'} transition-all ${windows.cartridge.isOpen ? 'bg-rose-500 text-white shadow-lg' : 'bg-white/10 text-slate-400 opacity-50 hover:opacity-80'}`}
           >
             <Box size={isNarrow ? 20 : 28} />
           </button>
@@ -193,7 +182,7 @@ export default function EduOSContainer() {
               <button 
                 key={id} 
                 onClick={() => handleTaskbarToggle(id)} 
-                className={`${isNarrow ? 'w-12 h-12 rounded-2xl' : 'w-16 h-16 rounded-3xl'} flex items-center justify-center transition-all border ${windows[id].isOpen ? 'bg-white/10 border-white/20 text-white shadow-xl' : 'opacity-20 grayscale'}`}
+                className={`${isNarrow ? 'w-12 h-12 rounded-2xl' : 'w-16 h-16 rounded-3xl'} flex items-center justify-center transition-all border ${windows[id].isOpen ? 'bg-white/10 border-white/20 text-white shadow-xl' : 'bg-white/5 border-white/5 text-slate-500 opacity-40 hover:opacity-70'}`}
               >
                 {id === 'monitor' && <Monitor size={isNarrow ? 20 : 28} />}
                 {id === 'solution' && <FileText size={isNarrow ? 20 : 28} />}
@@ -202,11 +191,7 @@ export default function EduOSContainer() {
             ))}
           </div>
         </div>
-        {!isNarrow && (
-          <div className="flex items-center gap-8 text-slate-400 text-xs font-black italic uppercase tracking-tighter">
-            EDU OS v3.0 | SYNC READY
-          </div>
-        )}
+        {!isNarrow && <div className="text-slate-400 text-xs font-black italic uppercase">EDU OS v3.0 | SYNC READY</div>}
       </footer>
     </div>
   );
