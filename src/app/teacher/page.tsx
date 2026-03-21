@@ -15,6 +15,8 @@ import {
 // 🔗 하위 폴더 컴포넌트들 연동
 import DashboardMain from './dashboard/main';
 import SpecialMain from './special/main';
+// ✅ 학생 관리 컴포넌트 추가
+import StudentManagerMain from './studentmanager/main'; 
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -92,33 +94,28 @@ export default function TeacherAdminPage() {
         </div>
       </nav>
 
-      {/* 2. 메인 콘텐츠 영역 (나머지 공간 전부 사용) */}
+      {/* 2. 메인 콘텐츠 영역 */}
       <main className="flex-1 flex flex-col overflow-hidden relative">
-        {/* - max-w 제거: 화면 끝까지 사용
-            - bg-white: 내부 카드 배경과 통일
-            - h-full: 자식 컴포넌트들이 부모 높이를 100% 쓸 수 있게 함
-        */}
         <div className="w-full h-full animate-in fade-in duration-500">
           
-          {/* ✅ 대시보드 (대시보드만 여백이 필요하다면 내부에서 p-8 사용) */}
+          {/* ✅ 대시보드 */}
           {activeMenu === 'dashboard' && (
-            <div className="p-8 max-w-[1600px] mx-auto">
+            <div className="p-8 max-w-[1600px] mx-auto overflow-y-auto h-full">
               <DashboardMain />
             </div>
           )}
 
-          {/* ✅ 스페셜 유틸리티 (여백 없이 꽉 채움!) */}
-          {activeMenu === 'special' && (
-            <div className="w-full h-full bg-slate-50">
-              <SpecialMain />
+          {/* ✅ 학생 관리 (연동 완료!) */}
+          {activeMenu === 'students' && (
+            <div className="w-full h-full bg-white overflow-y-auto">
+              <StudentManagerMain />
             </div>
           )}
 
-          {/* ✅ 학생 관리 (임시) */}
-          {activeMenu === 'students' && (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 italic">
-               <Users size={48} className="mb-4 opacity-20" />
-               <p>Student Management is coming soon...</p>
+          {/* ✅ 스페셜 유틸리티 */}
+          {activeMenu === 'special' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <SpecialMain />
             </div>
           )}
 
@@ -130,8 +127,6 @@ export default function TeacherAdminPage() {
           )}
         </div>
       </main>
-
-      {/* 푸터는 공간을 너무 많이 차지하니까 삭제하거나 아주 작게 처리 */}
     </div>
   );
 }

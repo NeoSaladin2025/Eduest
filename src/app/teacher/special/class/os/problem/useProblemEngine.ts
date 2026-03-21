@@ -11,6 +11,10 @@ export const useProblemEngine = () => {
   const [problemMap, setProblemMap] = useState<Record<string, string>>({});
   const [solutionMap, setSolutionMap] = useState<Record<string, string>>({});
 
+  // 🔥 [추가] 원본 구글 드라이브 파일 ID를 저장할 맵 (복습 리스트 저장용)
+  const [problemIdMap, setProblemIdMap] = useState<Record<string, string>>({});
+  const [solutionIdMap, setSolutionIdMap] = useState<Record<string, string>>({});
+
   const { fetchFileList, downloadFile, accessToken } = useGoogleDrive();
   const loadingRef = useRef<string | null>(null);
 
@@ -32,12 +36,16 @@ export const useProblemEngine = () => {
 
     setIsReady(false);
     setProgress(0);
+    
+    // 임시 보관용 객체들 (루프 안에서 직접 state를 바꾸면 성능이 저하되므로)
     const pMap: Record<string, string> = {};
     const sMap: Record<string, string> = {};
+    const pIdMap: Record<string, string> = {}; // 🔥 원본 ID 보관용
+    const sIdMap: Record<string, string> = {}; // 🔥 원본 ID 보관용
 
     try {
       // 🚀 Step 1: 폴더 스캔 시작
-      console.log(`📂 [엔진] '${pack.title}' 동기화 시작 (Blackboard 시스템 준비)`);
+      console.log(`📂 [엔진] '${pack.title}' 동기화 시작`);
       const [pFiles, sFiles] = await Promise.all([
         fetchFileList(pack.prob_folder_id, accessToken),
         fetchFileList(pack.sol_folder_id, accessToken)
@@ -54,15 +62,17 @@ export const useProblemEngine = () => {
 
       let loadedCount = 0;
 
-      // 🚀 Step 2: 문제지(이미지) 다운로드 -> Blackboard 배경 및 Viewer용
+      // 🚀 Step 2: 문제지(이미지) 다운로드 및 ID 매핑
       for (const file of pFiles) {
         try {
           const blob = await downloadFile(file.id, accessToken);
           const url = URL.createObjectURL(blob);
-          // 파일명에서 확장자 제거 후 소문자로 키 생성 (예: 0001.png -> 0001)
           const nameKey = file.name.split('.')[0].trim().toLowerCase();
-          pMap[nameKey] = url;
-          console.log(`🖼️ [Blackboard Resource] 문제지 등록: [${nameKey}]`);
+          
+          pMap[nameKey] = url;          // 뷰어용 임시 URL
+          pIdMap[nameKey] = file.id;    // 🔥 실제 구글 드라이브 ID 저장!
+          
+          console.log(`🖼️ 문제지 등록: [${nameKey}] -> ID: ${file.id}`);
         } catch (e) {
           console.error(`❌ 문제지 로드 실패: ${file.name}`, e);
         }
@@ -70,7 +80,7 @@ export const useProblemEngine = () => {
         setProgress(10 + Math.round((loadedCount / totalFiles) * 90));
       }
 
-      // 🚀 Step 3: 해설지(HTML) 다운로드 -> SolutionViewer용
+      // 🚀 Step 3: 해설지(HTML) 다운로드 및 ID 매핑
       for (const file of sFiles) {
         try {
           const response = await fetch(
@@ -83,8 +93,10 @@ export const useProblemEngine = () => {
           const htmlText = await response.text();
           const nameKey = file.name.split('.')[0].trim().toLowerCase();
           
-          sMap[nameKey] = htmlText; 
-          console.log(`📄 [Solution Resource] 해설지 등록: [${nameKey}]`);
+          sMap[nameKey] = htmlText;     // 뷰어용 HTML 텍스트
+          sIdMap[nameKey] = file.id;    // 🔥 실제 구글 드라이브 ID 저장!
+          
+          console.log(`📄 해설지 등록: [${nameKey}] -> ID: ${file.id}`);
         } catch (e) {
           console.error(`❌ 해설지 로드 실패: ${file.name}`, e);
         }
@@ -92,11 +104,15 @@ export const useProblemEngine = () => {
         setProgress(10 + Math.round((loadedCount / totalFiles) * 90));
       }
 
+      // 🚀 최종 상태 업데이트
       setProblemMap(pMap);
       setSolutionMap(sMap);
+      setProblemIdMap(pIdMap);
+      setSolutionIdMap(sIdMap);
+      
       setIsReady(true);
       setProgress(100);
-      console.log("✅ [엔진] 모든 리소스 동기화 완료. Blackboard 및 Viewer 로드 준비 끝.");
+      console.log("✅ [엔진] 모든 리소스 및 파일 ID 동기화 완료.");
 
     } catch (error) {
       console.error("❌ [엔진] 치명적 로딩 에러:", error);
@@ -105,5 +121,14 @@ export const useProblemEngine = () => {
     }
   }, [accessToken, fetchFileList, downloadFile]);
 
-  return { progress, isReady, problemMap, solutionMap, loadCartridgeData };
+  // 🔥 return에 ID 맵들을 포함하여 EduOSContainer에서 쓸 수 있게 합니다.
+  return { 
+    progress, 
+    isReady, 
+    problemMap, 
+    solutionMap, 
+    problemIdMap, 
+    solutionIdMap, 
+    loadCartridgeData 
+  };
 };
