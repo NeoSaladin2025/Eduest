@@ -2,22 +2,20 @@ import { useState } from 'react';
 import { useGoogleDrive } from '@/hooks/useGoogleDrive';
 
 /**
- * [메커니즘 설명]
- * 1. 유저가 파일을 선택하면 validateFiles로 번호 누락을 체크합니다.
- * 2. 업로드 시작 시, Canvas API를 이용해 각 이미지를 WebP 포맷으로 변환합니다.
- * 3. 변환된 저용량 파일을 구글 드라이브의 '01_Problems' 폴더로 업로드합니다.
- * 4. 실시간으로 진행 퍼센트(%)와 현재 처리 중인 파일 인덱스를 반환합니다.
+ * [메커니즘 설명 - 4자리 넘버링 & 정렬 보정판]
+ * 1. 유저가 선택한 파일들을 파일명 내 숫자를 기준으로 '사전 정렬'합니다. (1, 2, 10 순서 보장)
+ * 2. 업로드 직전, 숫자를 4자리 문자열(예: 0001)로 변환하여 구글 드라이브 정렬 꼬임을 방지합니다.
+ * 3. Canvas API를 이용해 WebP로 변환 후 저용량 업로드를 수행합니다.
  */
 
 export const useProbUpload = (targetFolderId: string, expectedCount: number) => {
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0); // 에너지바 %용
-  const [currentIdx, setCurrentIdx] = useState(0); // 진행 카운트용 [n/total]
+  const [uploadProgress, setUploadProgress] = useState(0); 
+  const [currentIdx, setCurrentIdx] = useState(0); 
   const { accessToken, login } = useGoogleDrive();
 
   /**
-   * 🖼️ 이미지 최적화 (WebP 변환) 메커니즘
-   * 화질은 유지하되 용량을 획기적으로 줄입니다.
+   * 🖼️ 이미지 최적화 (WebP 변환)
    */
   const convertToWebP = (file: File): Promise<Blob> => {
     return new Promise((resolve, reject) => {
@@ -34,7 +32,6 @@ export const useProbUpload = (targetFolderId: string, expectedCount: number) => 
           if (!ctx) return reject(new Error('Canvas 생성 실패'));
           
           ctx.drawImage(img, 0, 0);
-          // 퀄리티 0.8의 WebP로 변환하여 용량 다이어트
           canvas.toBlob((blob) => {
             if (blob) resolve(blob);
             else reject(new Error('WebP 변환 실패'));
@@ -46,7 +43,7 @@ export const useProbUpload = (targetFolderId: string, expectedCount: number) => 
   };
 
   /**
-   * 📂 파일 검증 로직 (자기의 소중한 원본 로직 유지)
+   * 📂 파일 검증 로직 (숫자 기반)
    */
   const validateFiles = (files: File[]) => {
     const fileNumbers = files
@@ -71,10 +68,17 @@ export const useProbUpload = (targetFolderId: string, expectedCount: number) => 
   };
 
   /**
-   * 🚀 메인 업로드 프로세스
+   * 🚀 메인 업로드 프로세스 (정렬 및 4자리 보정 추가)
    */
   const uploadImages = async (files: File[]) => {
-    const { isValid, missingNumbers, currentCount } = validateFiles(files);
+    // 🔥 1. 사전 정렬: 파일 이름의 숫자를 기준으로 오름차순 정렬
+    const sortedFiles = [...files].sort((a, b) => {
+      const numA = parseInt(a.name.match(/\d+/)?.[0] || "0", 10);
+      const numB = parseInt(b.name.match(/\d+/)?.[0] || "0", 10);
+      return numA - numB;
+    });
+
+    const { isValid, missingNumbers, currentCount } = validateFiles(sortedFiles);
 
     if (!isValid) {
       const msg = missingNumbers.length > 0 
@@ -91,18 +95,21 @@ export const useProbUpload = (targetFolderId: string, expectedCount: number) => 
     try {
       const token = accessToken || await login();
       
-      for (let i = 0; i < files.length; i++) {
-        // 1. 현재 진행 상황 업데이트
+      for (let i = 0; i < sortedFiles.length; i++) {
         setCurrentIdx(i + 1);
-        const file = files[i];
+        const file = sortedFiles[i];
 
-        // 2. 내부 최적화 (유저는 모르게 WebP로 변환)
+        // 🔥 2. 넘버링 보정: 숫자를 추출해 4자리(0001) 포맷으로 변경
+        const match = file.name.match(/\d+/);
+        const fileNum = match ? match[0] : "0";
+        const paddedFileName = fileNum.padStart(4, '0') + ".webp";
+
+        // 3. 최적화 (WebP 변환)
         const webpBlob = await convertToWebP(file);
-        const newFileName = file.name.replace(/\.[^/.]+$/, "") + ".webp";
 
-        // 3. 구글 드라이브용 멀티파트 페이로드 생성
+        // 4. 구글 드라이브 페이로드 생성
         const metadata = {
-          name: newFileName,
+          name: paddedFileName, // 보정된 이름 사용
           parents: [targetFolderId],
         };
 
@@ -110,26 +117,25 @@ export const useProbUpload = (targetFolderId: string, expectedCount: number) => 
         formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         formData.append('file', webpBlob);
 
-        // 4. 전송
+        // 5. 전송
         await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
         });
 
-        // 5. 에너지바 업데이트
-        setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+        // 6. 에너지바 업데이트
+        setUploadProgress(Math.round(((i + 1) / sortedFiles.length) * 100));
       }
 
-      alert('모든 문제가 완벽하게 업로드됐어! 역시 지존이야! 🥂');
+      alert('천 단위 문제도 거뜬해! 4자리 넘버링으로 완벽하게 저장됐어! 🥂');
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error("업로드 에러:", error);
-      alert("업로드 중에 문제가 생겼어.");
+      alert("업로드 중에 문제가 생겼어: " + error.message);
       return false;
     } finally {
       setIsUploading(false);
-      // 작업 완료 후 상태 초기화 (필요에 따라)
       setTimeout(() => setUploadProgress(0), 1000);
     }
   };
