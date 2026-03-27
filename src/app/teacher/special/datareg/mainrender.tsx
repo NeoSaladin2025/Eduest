@@ -1,46 +1,39 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   PlusCircle, RefreshCw, CheckCircle, 
   ListVideo, FolderOpen, AlertCircle, Database, 
-  Trash2, ImagePlus, FileCode 
+  Trash2, ImagePlus, FileCode, Sparkles
 } from 'lucide-react';
 
-// ✅ 로직 및 타입 임포트
+// ✅ 우리가 개조한 GAS 전용 로직 임포트
 import { useDataRegLogic, type Material } from './mainlogic';
-// ✅ 하위 폴더에 있는 예쁜 모달 컴포넌트들 임포트
+// ✅ 하위 폴더 모달 컴포넌트들
 import ProbUploadModal from './upload-problem/ProbUploadModal';
-import SolUploadModal from './upload-solution/SolUploadModal'; // 🔥 새로 만든 해설 모달 추가!
+import SolUploadModal from './upload-solution/SolUploadModal';
 
 export default function DataRegMain() {
   const {
     title, setTitle, count, setCount, materials,
-    isSaving, isLoading, accessToken, login, handleSave, handleDelete, loadMaterials
+    isSaving, isLoading, handleSave, handleDelete, loadMaterials
   } = useDataRegLogic();
 
-  /**
-   * 📂 모달 제어 상태
-   * isProbModalOpen: 문제 업로드 모달 제어
-   * isSolModalOpen: 해설 업로드 모달 제어
-   * selectedMaterial: 선택된 현재 자료 정보
-   */
+  // 📂 모달 제어 상태
   const [isProbModalOpen, setIsProbModalOpen] = useState(false);
   const [isSolModalOpen, setIsSolModalOpen] = useState(false);
   const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
 
-  /**
-   * 문제 등록 버튼 클릭 시 호출
-   */
+  // 🚀 [핵심] 초기 로드: 페이지 진입 시 자동으로 목록을 가져옵니다.
+  useEffect(() => {
+    loadMaterials();
+  }, [loadMaterials]);
+
   const handleProbClick = (m: Material) => {
     setSelectedMaterial(m);
     setIsProbModalOpen(true);
   };
 
-  /**
-   * 🔥 해설 등록 버튼 클릭 시 호출
-   * 이제 슬픈 alert 대신, 우리가 만든 스마트 모달을 열어줍니다!
-   */
   const handleSolClick = (m: Material) => {
     setSelectedMaterial(m);
     setIsSolModalOpen(true);
@@ -48,8 +41,7 @@ export default function DataRegMain() {
 
   return (
     <div className="flex h-full min-h-[600px] bg-white overflow-hidden rounded-[48px] shadow-sm border border-slate-100 relative">
-      <script src="https://accounts.google.com/gsi/client" async defer></script>
-
+      
       {/* 👈 왼쪽: 자료 입력 섹션 */}
       <div className="w-[400px] border-r border-slate-100 p-10 bg-slate-50/50">
         <div className="flex items-center gap-3 mb-10 text-indigo-600">
@@ -66,7 +58,7 @@ export default function DataRegMain() {
               value={title} 
               onChange={(e) => setTitle(e.target.value)} 
               placeholder="예: 월요일 1교시 기출" 
-              className="w-full px-6 py-4 bg-white border border-slate-200 rounded-2xl outline-none font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 transition-all" 
+              className="w-full px-6 py-4 bg-white border border-slate-200 rounded-2xl outline-none font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 transition-all text-slate-800" 
             />
           </div>
 
@@ -77,28 +69,23 @@ export default function DataRegMain() {
               value={count} 
               onChange={(e) => setCount(e.target.value)} 
               placeholder="숫자만 입력" 
-              className="w-full px-6 py-4 bg-white border border-slate-200 rounded-2xl outline-none font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 transition-all" 
+              className="w-full px-6 py-4 bg-white border border-slate-200 rounded-2xl outline-none font-bold shadow-sm focus:ring-2 focus:ring-indigo-500/20 transition-all text-slate-800" 
             />
           </div>
 
           <div className="pt-4">
-            {!accessToken ? (
-              <button 
-                onClick={() => login()} 
-                className="w-full py-5 bg-amber-500 text-white rounded-[24px] font-black shadow-lg shadow-amber-200 hover:bg-amber-600 active:scale-95 transition-all flex items-center justify-center gap-2"
-              >
-                <Database size={20} /> 구글 계정 연결하기
-              </button>
-            ) : (
-              <button 
-                onClick={handleSave} 
-                disabled={isSaving} 
-                className="w-full py-5 bg-indigo-600 text-white rounded-[24px] font-black shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:shadow-none"
-              >
-                {isSaving ? <RefreshCw className="animate-spin" /> : <CheckCircle size={20} />}
-                {isSaving ? '폴더 생성 중...' : '자료 만들기'}
-              </button>
-            )}
+            {/* 🔥 구글 로그인 버튼을 제거하고 바로 '자료 만들기'를 배치했습니다. */}
+            <button 
+              onClick={handleSave} 
+              disabled={isSaving} 
+              className="w-full py-5 bg-indigo-600 text-white rounded-[24px] font-black shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:shadow-none"
+            >
+              {isSaving ? <RefreshCw className="animate-spin" size={20} /> : <Sparkles size={20} />}
+              {isSaving ? 'GAS 엔진 가동 중...' : '자료 만들기'}
+            </button>
+            <p className="mt-4 text-[10px] text-center text-slate-400 font-bold italic">
+              * 구글 로그인 없이 즉시 등록 및 폴더가 생성됩니다.
+            </p>
           </div>
         </div>
       </div>
@@ -117,7 +104,7 @@ export default function DataRegMain() {
             className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-black text-slate-600 hover:bg-slate-50 active:scale-95 transition-all shadow-sm group"
           >
             <RefreshCw size={18} className={`${isLoading ? 'animate-spin' : ''} text-slate-400 group-hover:text-indigo-500`} />
-            목록 불러오기
+            목록 동기화
           </button>
         </div>
 
@@ -125,7 +112,7 @@ export default function DataRegMain() {
           {materials.length === 0 && !isLoading ? (
             <div className="flex flex-col items-center justify-center py-32 border-2 border-dashed border-slate-100 rounded-[40px] bg-slate-50/30">
               <AlertCircle size={48} className="text-slate-200 mb-4" />
-              <p className="text-slate-400 font-bold italic">목록 불러오기를 눌러 자료를 확인하세요</p>
+              <p className="text-slate-400 font-bold italic">등록된 자료가 없습니다.</p>
             </div>
           ) : (
             materials.map((m: Material) => (
@@ -153,7 +140,6 @@ export default function DataRegMain() {
                     <ImagePlus size={14} /> 문제등록
                   </button>
 
-                  {/* 🔥 [수정] 해설등록 버튼에 함수 연결! */}
                   <button 
                     onClick={() => handleSolClick(m)}
                     className="flex items-center gap-2 px-4 py-2.5 bg-slate-50 text-slate-600 rounded-xl text-xs font-black hover:bg-emerald-50 hover:text-emerald-600 transition-all active:scale-95"
@@ -174,16 +160,13 @@ export default function DataRegMain() {
         </div>
       </div>
 
-      {/* 🏁 [가장 중요] 모달들 배치 */}
-      
-      {/* 1. 문제 이미지 업로드 모달 */}
+      {/* 🏁 모달 섹션 */}
       <ProbUploadModal 
         isOpen={isProbModalOpen} 
         onClose={() => setIsProbModalOpen(false)} 
         material={selectedMaterial} 
       />
 
-      {/* 🔥 2. 해설 HTML 일괄 넘버링 등록 모달 (새로 추가!) */}
       <SolUploadModal 
         isOpen={isSolModalOpen} 
         onClose={() => setIsSolModalOpen(false)} 

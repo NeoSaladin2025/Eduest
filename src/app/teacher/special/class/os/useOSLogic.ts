@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 
-// ✅ 1. 타입 명단은 완벽해!
+// ✅ 1. 타입 명단
 export type WindowType = 'cartridge' | 'problem' | 'monitor' | 'solution' | 'blackboard';
 
 export interface WindowState {
@@ -18,38 +18,55 @@ export interface WindowState {
 }
 
 export const useOSLogic = () => {
+  // zIndex 관리
   const [maxZIndex, setMaxZIndex] = useState(10);
   
-  // ✅ 2. 초기 윈도우 객체들 설정
-  // 🚀 [수정] 초기 X 좌표를 1350 -> 20 정도로 확 당겨야 모바일에서 보여!
+  // ✅ 2. 초기 윈도우 설정 (EduOS 특유의 큼직한 창 사이즈 유지)
   const [windows, setWindows] = useState<Record<WindowType, WindowState>>({
-    cartridge: { id: 'cartridge', title: 'Cartridge Library', isOpen: true, isMinimized: false, zIndex: 1, x: 20, y: 20, width: 400, height: 500 },
-    problem: { id: 'problem', title: 'Problem Launcher', isOpen: false, isMinimized: false, zIndex: 2, x: 40, y: 40, width: 400, height: 500 },
-    monitor: { id: 'monitor', title: 'Problem Viewer', isOpen: false, isMinimized: false, zIndex: 3, x: 60, y: 60, width: 600, height: 700 },
-    solution: { id: 'solution', title: 'Solution Viewer', isOpen: false, isMinimized: false, zIndex: 4, x: 80, y: 80, width: 600, height: 700 },
-    // ⚠️ 범인 검거: 1350px은 모바일에서 가출 좌표임! 20px로 안전하게 소환.
-    blackboard: { id: 'blackboard', title: 'Blackboard', isOpen: false, isMinimized: false, zIndex: 5, x: 20, y: 20, width: 500, height: 700 },
+    cartridge: { id: 'cartridge', title: '📦 CARTRIDGE', isOpen: true, isMinimized: false, zIndex: 1, x: 100, y: 100, width: 700, height: 750 },
+    problem: { id: 'problem', title: '🚀 LAUNCHER', isOpen: false, isMinimized: false, zIndex: 2, x: 50, y: 50, width: 500, height: 600 },
+    monitor: { id: 'monitor', title: '📺 MONITOR', isOpen: false, isMinimized: false, zIndex: 3, x: 100, y: 100, width: 800, height: 850 },
+    solution: { id: 'solution', title: '📄 SOLUTION', isOpen: false, isMinimized: false, zIndex: 4, x: 150, y: 150, width: 800, height: 850 },
+    blackboard: { id: 'blackboard', title: '🎨 BLACKBOARD', isOpen: false, isMinimized: false, zIndex: 5, x: 200, y: 200, width: 900, height: 950 },
   });
 
+  // 🔄 창 토글 (열기/닫기)
   const toggleWindow = useCallback((id: WindowType) => {
-    setWindows(prev => ({
-      ...prev,
-      [id]: { ...prev[id], isOpen: !prev[id].isOpen, isMinimized: false }
-    }));
-  }, []);
+    setWindows(prev => {
+      const isOpening = !prev[id].isOpen;
+      const nextZ = isOpening ? maxZIndex + 1 : prev[id].zIndex;
+      
+      // ✅ 렌더링 도중 setState 방지를 위해 zIndex 업데이트 로직 최적화
+      if (isOpening) setMaxZIndex(nextZ);
 
-  const focusWindow = useCallback((id: WindowType) => {
-    // 🚀 [보강] 이미 최소화 상태면 최소화도 같이 풀어주는 게 국룰!
-    setMaxZIndex(prev => {
-      const newZ = prev + 1;
-      setWindows(prevWins => ({
-        ...prevWins,
-        [id]: { ...prevWins[id], zIndex: newZ, isMinimized: false }
-      }));
-      return newZ;
+      return {
+        ...prev,
+        [id]: { 
+          ...prev[id], 
+          isOpen: isOpening, 
+          isMinimized: false,
+          zIndex: nextZ 
+        }
+      };
     });
-  }, []);
+  }, [maxZIndex]);
 
+  // 🔝 창 포커스 (클릭 시 맨 위로)
+  const focusWindow = useCallback((id: WindowType) => {
+    setWindows(prev => {
+      if (prev[id].zIndex === maxZIndex && !prev[id].isMinimized) return prev;
+
+      const newZ = maxZIndex + 1;
+      setMaxZIndex(newZ);
+
+      return {
+        ...prev,
+        [id]: { ...prev[id], zIndex: newZ, isMinimized: false }
+      };
+    });
+  }, [maxZIndex]);
+
+  // ➖ 창 최소화
   const minimizeWindow = useCallback((id: WindowType) => {
     setWindows(prev => ({
       ...prev,
@@ -57,11 +74,25 @@ export const useOSLogic = () => {
     }));
   }, []);
 
+  // 📏 창 크기/위치 업데이트
   const updateWindowScale = useCallback((id: WindowType, scale: Partial<WindowState>) => {
-    setWindows(prev => ({
-      ...prev,
-      [id]: { ...prev[id], ...scale }
-    }));
+    setWindows(prev => {
+      const current = prev[id];
+      
+      // 🔥 [방어 로직] 실제로 값이 바뀌었을 때만 업데이트하여 무한 루프 차단
+      const hasChanged = 
+        (scale.x !== undefined && scale.x !== current.x) ||
+        (scale.y !== undefined && scale.y !== current.y) ||
+        (scale.width !== undefined && scale.width !== current.width) ||
+        (scale.height !== undefined && scale.height !== current.height);
+
+      if (!hasChanged) return prev;
+
+      return {
+        ...prev,
+        [id]: { ...current, ...scale }
+      };
+    });
   }, []);
 
   return { windows, toggleWindow, focusWindow, minimizeWindow, updateWindowScale };

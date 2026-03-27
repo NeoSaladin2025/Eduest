@@ -1,8 +1,11 @@
 'use client';
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Rnd } from 'react-rnd'; 
-import { Monitor, FileText, PenTool, Box, X, Minus, Users, Save, Loader2, ChevronRight } from 'lucide-react'; 
+import { 
+  Monitor, FileText, PenTool, Box, X, Minus, Users, Save, Loader2, 
+  LayoutGrid 
+} from 'lucide-react'; 
 import { useOSLogic, WindowType } from './useOSLogic';
 
 // 📦 하위 모듈들
@@ -23,14 +26,10 @@ import { Material } from './cartridge/useCartridge';
 
 /**
  * 🚀 [저장 버튼 컴포넌트] 
- * 카트리지 이름을 포함하여 서버로 전송하도록 업데이트되었습니다.
+ * GAS 웹 앱을 호출하여 구글 로그인 없이 즉시 저장합니다.
  */
 function SaveButton({ 
-  blackboardRef, 
-  currentIdx, 
-  selectedPack, 
-  problemIdMap,
-  solutionIdMap 
+  blackboardRef, currentIdx, selectedPack, problemIdMap, solutionIdMap 
 }: { 
   blackboardRef: React.RefObject<BlackboardHandle | null>,
   currentIdx: number | null,
@@ -42,12 +41,10 @@ function SaveButton({
   const [isSaving, setIsSaving] = useState(false);
 
   const handleSave = async () => {
-    // 1️⃣ 유효성 검사
     if (!selectedStudent) return alert('학생을 먼저 선택해주세요! 👩‍🎓');
     if (!blackboardRef.current) return alert('칠판 시스템이 준비되지 않았습니다.');
     if (!selectedPack) return alert('카트리지를 먼저 삽입해주세요! 📦');
 
-    // 2️⃣ 칠판 데이터 추출 (Base64)
     const canvasData = blackboardRef.current.getCanvasData(); 
     if (!canvasData || canvasData.length < 1000) {
       return alert('저장할 판서 내용이 없습니다! 🎨');
@@ -55,39 +52,35 @@ function SaveButton({
 
     setIsSaving(true);
     try {
-      // ✅ 문제 키 생성 (예: 1 -> "0001")
       const pKey = String(currentIdx).padStart(4, '0');
-      
-      // ✅ ID 맵에서 실제 구글 드라이브 파일 ID 추출
       const pFileId = problemIdMap[pKey] || "";
       const sFileId = solutionIdMap[pKey] || solutionIdMap[`sol_${pKey}`] || "";
+      
+      const GAS_URL = "https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec";
+      
+      // 🔥 [수정 포인트] 파일명에 [카트리지명]을 포함하여 저장 (리뷰 모드 분류용)
+      const fileName = `[${selectedPack.title}] ${currentIdx}번_${selectedStudent.name}.png`;
 
-      // ✅ [카트리지 정보] 선택된 팩의 타이틀을 카트리지명으로 사용
-      const cartridgeName = selectedPack.title; 
-
-      // ✅ 파일명 조합 (API 라우트에서 [카트리지명]을 붙여주므로 여기선 순수 이름만 전송)
-      const problemNumber = currentIdx ? `${currentIdx}번` : 'No_Number';
-      const pureFileName = `${problemNumber}_${selectedStudent.name}.png`;
-
-      // 3️⃣ 통합 저장 API 호출 (경로: /api/save-action)
-      const res = await fetch('/api/save-action', {
+      // 🛠️ [수정 포인트] 구버전 API 라우트 대신 GAS_URL로 직접 fetch 호출
+      const res = await fetch(GAS_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          studentId: selectedStudent.id,
-          imageData: canvasData,
-          fileName: pureFileName,
+          apiKey: "eduest_super_secret_key_1234", 
+          action: "upload_and_record",
+          studentFolderId: selectedStudent.folderId || (selectedStudent as any).drive_folder_id,
+          imageData: canvasData.split(',')[1], 
+          fileName: fileName,
           problemUrl: pFileId, 
           solutionUrl: sFileId,
-          cartridgeName: cartridgeName // 🔥 스텔스 로딩을 위한 핵심 데이터!
+          cartridgeName: selectedPack.title
         }),
       });
 
       const result = await res.json();
-      if (res.ok) {
-        alert(`✅ [${cartridgeName}] 카트리지에 저장이 완료되었습니다!\n${selectedStudent.name} 학생이 바로 확인할 수 있어요. 🚀`);
+      if (result.success) {
+        alert(`✅ [${selectedPack.title}] 저장이 완료되었습니다!\n${selectedStudent.name} 학생이 바로 확인할 수 있어요. 🚀`);
       } else {
-        throw new Error(result.error || '저장 중 서버 오류가 발생했습니다.');
+        throw new Error(result.error || 'GAS 저장 오류');
       }
     } catch (err: any) {
       console.error('Save Error:', err);
@@ -128,31 +121,55 @@ export default function EduOSContainer() {
     solutionMap, 
     problemIdMap, 
     solutionIdMap, 
-    loadCartridgeData 
+    loadCartridgeData,
+    loadSpecificProblem 
   } = useProblemEngine();
 
-  const [isNarrow, setIsNarrow] = useState(false);
+  const [useTiling, setUseTiling] = useState(false);
   useEffect(() => {
-    const handleResize = () => setIsNarrow(window.innerWidth < 1024);
+    const handleResize = () => setUseTiling(window.innerWidth <= 1920);
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  const activeWindows = useMemo(() => {
+    return (['problem', 'monitor', 'solution', 'blackboard'] as WindowType[])
+      .filter(id => windows[id].isOpen && !windows[id].isMinimized);
+  }, [windows]);
+
+  const activeCount = activeWindows.length;
+
   const getResponsiveScale = useCallback((id: WindowType) => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    if (vw < 1024) return { x: 10, y: 10, width: vw * 0.92, height: vh * 0.75 };
+
+    if (id === 'cartridge') {
+      return { x: (vw - 700) / 2, y: 80, width: 700, height: 750 };
+    }
+
+    if (useTiling) {
+      const idx = activeWindows.indexOf(id);
+      if (idx === -1) return null;
+      const tileWidth = vw / activeCount;
+      const contentHeight = vh - 80;
+
+      return {
+        x: idx * tileWidth,
+        y: 0, 
+        width: tileWidth,
+        height: contentHeight - 64 
+      };
+    }
     
     const desktopMap: Record<string, any> = {
-      cartridge: { x: 40, y: 40, width: 700, height: 800 },
       problem: { x: 80, y: 60, width: 600, height: 700 },
       monitor: { x: 120, y: 80, width: 750, height: 850 },
       solution: { x: 160, y: 100, width: 750, height: 850 },
       blackboard: { x: 60, y: 50, width: 850, height: 900 } 
     };
     return desktopMap[id] || { x: 100, y: 100, width: 700, height: 800 };
-  }, []);
+  }, [useTiling, activeWindows, activeCount]);
 
   const handleTaskbarToggle = (id: WindowType) => {
     if (windows[id].isOpen) {
@@ -160,7 +177,8 @@ export default function EduOSContainer() {
     } else {
       toggleWindow(id);
       setTimeout(() => {
-        updateWindowScale(id, getResponsiveScale(id));
+        const scale = getResponsiveScale(id);
+        if (scale) updateWindowScale(id, scale);
         focusWindow(id);
       }, 50);
     }
@@ -172,7 +190,8 @@ export default function EduOSContainer() {
     if (!windows.problem.isOpen) {
       toggleWindow('problem');
       setTimeout(() => {
-        updateWindowScale('problem', getResponsiveScale('problem'));
+        const scale = getResponsiveScale('problem');
+        if (scale) updateWindowScale('problem', scale);
         focusWindow('problem');
       }, 100);
     } else {
@@ -180,9 +199,12 @@ export default function EduOSContainer() {
     }
   };
 
-  const handleLaunchProblem = useCallback((index: number) => {
+  const handleLaunchProblem = useCallback(async (index: number) => {
+    await loadSpecificProblem(index);
+
     const pKey = String(index).padStart(4, '0');
-    const pData = problemMap[pKey] || Object.values(problemMap)[index - 1];
+    const pData = problemMap[pKey];
+    
     if (!pData) return alert(`리소스를 찾을 수 없어!`);
     
     setCurrentIdx(index);
@@ -190,25 +212,36 @@ export default function EduOSContainer() {
     setSolutionData(solutionMap[`sol_${pKey}`] || solutionMap[pKey] || null);
     setCapturedImage(null);
 
-    ['monitor', 'solution', 'blackboard'].forEach((id, i) => {
+    ['monitor', 'solution', 'blackboard'].forEach((id) => {
       if (!windows[id as WindowType].isOpen) toggleWindow(id as WindowType);
-      setTimeout(() => {
-        const scale = getResponsiveScale(id as WindowType);
-        updateWindowScale(id as WindowType, {
-          ...scale,
-          x: scale.x + (i * (isNarrow ? 10 : 20)),
-          y: scale.y + (i * (isNarrow ? 10 : 20))
-        });
-        if (id === 'blackboard') focusWindow('blackboard');
-      }, 100 + (i * 80));
     });
-  }, [problemMap, solutionMap, windows, toggleWindow, updateWindowScale, focusWindow, isNarrow, getResponsiveScale]);
+  }, [loadSpecificProblem, problemMap, solutionMap, windows, toggleWindow]);
 
   const handleCapture = (dataUrl: string) => {
     setCapturedImage(dataUrl);
     if (!windows.blackboard.isOpen) handleTaskbarToggle('blackboard');
     focusWindow('blackboard');
   };
+
+  // 🔥 [무한 루프 방어] 4분할 레이아웃 자동 계산 로직
+  useEffect(() => {
+    if (useTiling) {
+      activeWindows.forEach(id => {
+        const newScale = getResponsiveScale(id);
+        if (!newScale) return;
+
+        const currentWin = windows[id];
+        if (
+          currentWin.x !== newScale.x || 
+          currentWin.y !== newScale.y || 
+          currentWin.width !== newScale.width || 
+          currentWin.height !== newScale.height
+        ) {
+          updateWindowScale(id, newScale);
+        }
+      });
+    }
+  }, [activeCount, useTiling, activeWindows, getResponsiveScale, updateWindowScale, windows]);
 
   return (
     <StudentProvider>
@@ -225,7 +258,7 @@ export default function EduOSContainer() {
             <StudentSelector />
             <button 
               onClick={() => setIsStudentMgrOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-white/5 transition-all text-[11px] font-black uppercase tracking-widest ml-2"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-slate-400 hover:text-slate-100 transition-all text-[11px] font-black uppercase tracking-widest ml-2"
             >
               <Users size={16} />
               <span className="hidden md:inline">Manage</span>
@@ -243,43 +276,57 @@ export default function EduOSContainer() {
           </div>
         </header>
 
-        <div className="flex-1 relative p-2 md:p-6 overflow-hidden">
-          {Object.values(windows).map((win) => (
-            <Rnd
-              key={win.id}
-              style={{ display: win.isOpen && !win.isMinimized ? 'flex' : 'none', zIndex: win.zIndex, flexDirection: 'column' }}
-              size={{ width: win.width, height: win.height }}
-              position={{ x: win.x, y: win.y }}
-              onDragStop={(_e, d) => updateWindowScale(win.id, { x: d.x, y: d.y })}
-              onResizeStop={(_e, _dir, ref, _delta, pos) => {
-                updateWindowScale(win.id, { width: parseInt(ref.style.width), height: parseInt(ref.style.height), ...pos });
-              }}
-              dragHandleClassName="handle"
-              bounds="parent"
-              onMouseDown={() => focusWindow(win.id)}
-              className="bg-white/95 backdrop-blur-xl rounded-[20px] md:rounded-[32px] shadow-2xl border border-white/20 overflow-hidden"
-            >
-              <div className="h-14 bg-slate-50/50 flex items-center justify-between border-b shrink-0 relative">
-                <div className="handle flex-1 h-full flex items-center px-6">
-                  <span className="font-black text-slate-800 text-[11px] md:text-sm tracking-wide uppercase italic truncate pointer-events-none select-none">
-                    {win.title} {currentIdx && !['cartridge', 'problem'].includes(win.id) ? `- Q${currentIdx}` : ''}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1 pr-3 relative z-[9999]">
-                  <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); minimizeWindow(win.id); }} className="p-3 text-slate-400 hover:bg-slate-200 rounded-full transition-colors"><Minus size={18} /></button>
-                  <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleWindow(win.id); }} className="p-2 text-rose-400 hover:bg-rose-50 rounded-full transition-colors"><X size={20} /></button>
-                </div>
-              </div>
+        <div className="flex-1 relative p-0 overflow-hidden">
+          {Object.values(windows).map((win) => {
+            const layout = getResponsiveScale(win.id as WindowType);
+            const isTiled = useTiling && ['problem', 'monitor', 'solution', 'blackboard'].includes(win.id);
 
-              <div className="flex-1 bg-white overflow-hidden relative">
-                {win.id === 'cartridge' && <CartridgeWindow onPackInsert={handlePackInsert} currentPackId={selectedPack?.id} />}
-                {win.id === 'problem' && <ProblemWindow selectedPack={selectedPack} onLaunch={handleLaunchProblem} progress={progress} isReady={isReady} />}
-                {win.id === 'monitor' && <ProblemViewer sourceData={problemData} onCapture={handleCapture} />}
-                {win.id === 'solution' && <SolutionViewer sourceData={solutionData} />}
-                {win.id === 'blackboard' && <Blackboard ref={blackboardRef} pastedImage={capturedImage} />}
-              </div>
-            </Rnd>
-          ))}
+            return (
+              <Rnd
+                key={win.id}
+                style={{ 
+                  display: win.isOpen && !win.isMinimized ? 'flex' : 'none', 
+                  zIndex: win.zIndex, 
+                  flexDirection: 'column',
+                  transition: useTiling ? 'all 0.5s cubic-bezier(0.23, 1, 0.32, 1)' : 'none'
+                }}
+                size={layout ? { width: layout.width, height: layout.height } : { width: win.width, height: win.height }}
+                position={layout ? { x: layout.x, y: layout.y } : { x: win.x, y: win.y }}
+                disableDragging={isTiled}
+                enableResizing={!isTiled}
+                onDragStop={(_e, d) => updateWindowScale(win.id, { x: d.x, y: d.y })}
+                onResizeStop={(_e, _dir, ref, _delta, pos) => {
+                  updateWindowScale(win.id, { width: parseInt(ref.style.width), height: parseInt(ref.style.height), ...pos });
+                }}
+                dragHandleClassName="handle"
+                bounds="parent"
+                onMouseDown={() => focusWindow(win.id)}
+                className={`bg-white/95 backdrop-blur-xl shadow-2xl border border-white/20 overflow-hidden ${
+                  isTiled ? 'rounded-none border-x-slate-200' : 'rounded-[32px]'
+                }`}
+              >
+                <div className="h-14 bg-slate-50/50 flex items-center justify-between border-b shrink-0 relative">
+                  <div className="handle flex-1 h-full flex items-center px-6">
+                    <span className="font-black text-slate-800 text-[11px] md:text-sm tracking-wide uppercase italic truncate pointer-events-none select-none">
+                      {win.title} {currentIdx && !['cartridge', 'problem'].includes(win.id) ? `- Q${currentIdx}` : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 pr-3 relative z-[9999]">
+                    <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); minimizeWindow(win.id); }} className="p-3 text-slate-400 hover:bg-slate-200 rounded-full transition-colors"><Minus size={18} /></button>
+                    <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); toggleWindow(win.id); }} className="p-2 text-rose-400 hover:bg-rose-50 rounded-full transition-colors"><X size={20} /></button>
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-white overflow-hidden relative">
+                  {win.id === 'cartridge' && <CartridgeWindow onPackInsert={handlePackInsert} currentPackId={selectedPack?.id} />}
+                  {win.id === 'problem' && <ProblemWindow selectedPack={selectedPack} onLaunch={handleLaunchProblem} progress={progress} isReady={isReady} />}
+                  {win.id === 'monitor' && <ProblemViewer sourceData={problemData} onCapture={handleCapture} />}
+                  {win.id === 'solution' && <SolutionViewer sourceData={solutionData} />}
+                  {win.id === 'blackboard' && <Blackboard ref={blackboardRef} pastedImage={capturedImage} />}
+                </div>
+              </Rnd>
+            );
+          })}
         </div>
 
         <StudentManager 
@@ -287,16 +334,21 @@ export default function EduOSContainer() {
           onClose={() => setIsStudentMgrOpen(false)} 
         />
 
-        <footer className={`${isNarrow ? 'h-16 px-4' : 'h-20 px-10'} bg-slate-950/80 backdrop-blur-2xl border-t border-white/5 flex items-center justify-between z-[99999]`}>
+        <footer className="h-20 bg-slate-950/80 backdrop-blur-2xl border-t border-white/5 flex items-center justify-between px-6 z-[99999]">
           <div className="flex items-center gap-3 md:gap-6">
-            <button onClick={() => handleTaskbarToggle('cartridge')} className={`${isNarrow ? 'p-3 rounded-2xl' : 'p-4 rounded-3xl'} transition-all ${windows.cartridge.isOpen ? 'bg-rose-500 text-white shadow-lg' : 'bg-white/10 text-slate-400 opacity-50 hover:opacity-100'}`}><Box size={isNarrow ? 20 : 28} /></button>
+            <button onClick={() => handleTaskbarToggle('cartridge')} className={`p-4 rounded-3xl transition-all ${windows.cartridge.isOpen ? 'bg-rose-500 text-white shadow-lg' : 'bg-white/10 text-slate-400 opacity-50 hover:opacity-100'}`}><Box size={28} /></button>
             <div className="w-[1px] h-8 bg-white/10" />
             <div className="flex gap-2 md:gap-4">
-              {(['monitor', 'solution', 'blackboard']).map(id => (
-                <button key={id} onClick={() => handleTaskbarToggle(id as WindowType)} className={`${isNarrow ? 'w-12 h-12 rounded-2xl' : 'w-16 h-16 rounded-3xl'} flex items-center justify-center transition-all border ${windows[id as WindowType].isOpen ? 'bg-white/10 border-white/20 text-white shadow-xl' : 'bg-white/5 border-white/5 text-slate-500 opacity-40 hover:opacity-100'}`}>
-                  {id === 'monitor' && <Monitor size={isNarrow ? 20 : 28} />}
-                  {id === 'solution' && <FileText size={isNarrow ? 20 : 28} />}
-                  {id === 'blackboard' && <PenTool size={isNarrow ? 20 : 28} />}
+              {(['problem', 'monitor', 'solution', 'blackboard']).map(id => (
+                <button 
+                  key={id} 
+                  onClick={() => handleTaskbarToggle(id as WindowType)} 
+                  className={`w-16 h-16 rounded-3xl flex items-center justify-center transition-all border ${windows[id as WindowType].isOpen && !windows[id as WindowType].isMinimized ? 'bg-white/10 border-white/20 text-white shadow-xl scale-110' : 'bg-white/5 border-white/5 text-slate-500 opacity-40 hover:opacity-100'}`}
+                >
+                  {id === 'problem' && <LayoutGrid size={28} />}
+                  {id === 'monitor' && <Monitor size={28} />}
+                  {id === 'solution' && <FileText size={28} />}
+                  {id === 'blackboard' && <PenTool size={28} />}
                 </button>
               ))}
             </div>

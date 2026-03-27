@@ -1,9 +1,8 @@
-import { useState, useCallback } from 'react';
-import { useGoogleDrive } from '@/hooks/useGoogleDrive'; 
-// ✅ 자기가 만든 업로드 훅/모듈 임포트
-import { useProbUpload } from './upload-problem/useProbUpload'; 
-// (해설 업로드 모듈도 경로에 맞춰 추가해줘!)
+'use client';
 
+import { useState, useCallback } from 'react';
+
+// ✅ 자료 타입 정의 (기존 유지)
 export interface Material {
   id: string;
   title: string;
@@ -15,77 +14,77 @@ export interface Material {
   created_at: string;
 }
 
+// 🔥 [업데이트] 방금 배포한 최종 GAS URL 적용!
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec";
+const API_KEY = "eduest_super_secret_key_1234";
+
 export const useDataRegLogic = () => {
   const [title, setTitle] = useState('');
   const [count, setCount] = useState('');
   const [materials, setMaterials] = useState<Material[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  
-  const { login, createFolder, updateMetadata, fetchMetadata, deleteFile, accessToken } = useGoogleDrive();
 
   /**
-   * 📂 [수동 새로고침] 자료 목록 로드
+   * 📂 [GAS] 자료 목록 로드 (metadata.json 조회)
    */
   const loadMaterials = useCallback(async () => {
-    let token = accessToken;
-    if (!token) {
-      try {
-        token = await login(); 
-      } catch (e) {
-        return alert("구글 연결이 필요해, 자기야! ❤️");
-      }
-    }
-
     setIsLoading(true);
     try {
-      const data = await fetchMetadata(token);
-      setMaterials(Array.isArray(data) ? data : []);
+      // 🚀 헤더를 최소화하여 CORS 사전 검사(OPTIONS)를 우회합니다.
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          apiKey: API_KEY,
+          action: "fetch_metadata"
+        })
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        // 결과가 성공이면 자료 목록 세팅
+        setMaterials(result.materials || []);
+      } else {
+        console.error("데이터 로드 실패:", result.error);
+        alert(`장부 로드 실패: ${result.error}`);
+      }
     } catch (error) {
-      console.error("데이터 로드 실패:", error);
+      console.error("네트워크 에러:", error);
+      alert("GAS 서버와 통신할 수 없습니다. URL 및 배포 설정을 확인해주세요!");
     } finally {
       setIsLoading(false);
     }
-  }, [accessToken, login, fetchMetadata]);
+  }, []);
 
   /**
-   * 🚀 [자료 만들기] 초기 폴더 세팅 및 장부 등록
+   * 🚀 [GAS] 자료 만들기 (폴더 4개 생성 + metadata.json 업데이트)
    */
   const handleSave = async () => {
     if (!title || !count) return alert('빈칸 채워줘! ❤️');
 
     setIsSaving(true);
     try {
-      const token = accessToken || await login();
-      const specialFolderId = process.env.NEXT_PUBLIC_GOOGLE_FOLDER_ID!;
-
-      // 1. 구글 드라이브 폴더 계층 생성
-      const mainId = await createFolder(title, specialFolderId, token);
-      const [probId, solId, noteId] = await Promise.all([
-        createFolder('01_Problems', mainId, token),
-        createFolder('02_Solutions', mainId, token),
-        createFolder('03_MyNotes', mainId, token),
-      ]);
-
-      const newEntry: Material = {
-        id: Date.now().toString(),
-        title,
-        count: parseInt(count),
-        main_folder_id: mainId,
-        prob_folder_id: probId,
-        sol_folder_id: solId,
-        note_folder_id: noteId,
-        created_at: new Date().toISOString(),
-      };
-
-      // 2. 메타데이터 JSON 업데이트
-      const success = await updateMetadata(newEntry, token);
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          apiKey: API_KEY,
+          action: "create_material_set",
+          title: title,
+          count: count
+        })
+      });
       
-      if (success) {
-        setTitle(''); setCount('');
-        // 리스트 즉시 반영을 위해 상태 업데이트
-        setMaterials(prev => [newEntry, ...prev]);
-        alert('구글 드라이브 세팅 완료! ✨');
+      const result = await response.json();
+
+      if (result.success) {
+        setTitle(''); 
+        setCount('');
+        // 새로 생성된 항목을 리스트 최상단에 추가
+        setMaterials(prev => [result.material, ...prev]);
+        alert('구글 드라이브 세팅 완료! ✨ 이제 문제를 등록해보세요.');
+      } else {
+        throw new Error(result.error);
       }
     } catch (error: any) {
       alert(`등록 에러: ${error.message}`);
@@ -95,22 +94,30 @@ export const useDataRegLogic = () => {
   };
 
   /**
-   * 🗑️ [삭제] 자료 삭제
+   * 🗑️ [GAS] 자료 삭제 (폴더 휴지통 이동 + metadata.json에서 제거)
    */
   const handleDelete = async (material: Material) => {
     if (!confirm(`'${material.title}' 자료를 삭제할까?`)) return;
 
     setIsLoading(true);
     try {
-      const token = accessToken || await login();
-      if (deleteFile) await deleteFile(material.main_folder_id, token);
-
-      const updatedList = materials.filter(m => m.id !== material.id);
-      const success = await updateMetadata(updatedList, token);
+      const response = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          apiKey: API_KEY,
+          action: "delete_material",
+          mainFolderId: material.main_folder_id,
+          materialId: material.id
+        })
+      });
       
-      if (success) {
-        setMaterials(updatedList);
+      const result = await response.json();
+      
+      if (result.success) {
+        setMaterials(prev => prev.filter(m => m.id !== material.id));
         alert('삭제 완료! ✨');
+      } else {
+        throw new Error(result.error);
       }
     } catch (error) {
       alert('삭제 중 문제가 생겼어.');
@@ -119,12 +126,9 @@ export const useDataRegLogic = () => {
     }
   };
 
-  // ✅ [통합 포인트] 이 부분에 우리가 만든 업로드 훅을 나중에 컴포넌트에서 호출할 수 있게 브릿지를 놔줄 수도 있어!
-  // 하지만 컴포넌트(DataRegMain)에서 직접 useProbUpload를 쓰는 게 더 깔끔할 거야.
-
   return { 
     title, setTitle, count, setCount, materials, 
-    isSaving, isLoading, accessToken, login, 
+    isSaving, isLoading, 
     handleSave, handleDelete, loadMaterials 
   };
 };

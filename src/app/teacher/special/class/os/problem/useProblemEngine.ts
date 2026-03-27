@@ -1,127 +1,158 @@
 'use client';
 
 import { useState, useCallback, useRef } from 'react';
-import { useGoogleDrive } from '@/hooks/useGoogleDrive';
+
+// 🔥 [공통 설정] 우리가 만든 최종 GAS URL과 보안 키
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec";
+const API_KEY = "eduest_super_secret_key_1234";
 
 export const useProblemEngine = () => {
   const [progress, setProgress] = useState(0);
   const [isReady, setIsReady] = useState(false);
   
-  // 💾 메모리 맵 (문제지: Blob URL, 해설지: HTML String)
+  // 💾 메모리 맵 (문제지: Base64/Blob URL, 해설지: HTML String)
   const [problemMap, setProblemMap] = useState<Record<string, string>>({});
   const [solutionMap, setSolutionMap] = useState<Record<string, string>>({});
 
-  // 🔥 [추가] 원본 구글 드라이브 파일 ID를 저장할 맵 (복습 리스트 저장용)
+  // 💾 원본 구글 드라이브 파일 ID (저장/복습용)
   const [problemIdMap, setProblemIdMap] = useState<Record<string, string>>({});
   const [solutionIdMap, setSolutionIdMap] = useState<Record<string, string>>({});
 
-  const { fetchFileList, downloadFile, accessToken } = useGoogleDrive();
+  // ⚡ 실시간 추적용 Ref
+  const fileListRef = useRef<{ pFiles: any[], sFiles: any[] }>({ pFiles: [], sFiles: [] });
   const loadingRef = useRef<string | null>(null);
 
+  /**
+   * 🎯 [새치기 로딩] 클릭한 번호 리소스를 GAS를 통해 즉시 로드
+   */
+  const loadSpecificProblem = useCallback(async (index: number) => {
+    const pKey = String(index).padStart(4, '0');
+
+    // 이미 로딩되어 있다면 스킵
+    if (problemMap[pKey] && solutionMap[pKey]) return;
+
+    const targetPFile = fileListRef.current.pFiles.find((f: any) => f.name.includes(pKey));
+    const targetSFile = fileListRef.current.sFiles.find((f: any) => f.name.includes(pKey) || f.name.includes(`sol_${pKey}`));
+
+    // 1. 문제지(이미지) 즉시 로딩
+    if (targetPFile && !problemMap[pKey]) {
+      try {
+        const res = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            apiKey: API_KEY,
+            action: "get_file_data",
+            fileId: targetPFile.id,
+            type: "image"
+          })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setProblemMap(prev => ({ ...prev, [pKey]: result.data })); // Base64 데이터 직접 삽입
+          setProblemIdMap(prev => ({ ...prev, [pKey]: targetPFile.id }));
+        }
+      } catch (e) { console.error(`❌ 문제${pKey} 즉시 로드 실패`, e); }
+    }
+
+    // 2. 해설지(HTML) 즉시 로딩
+    if (targetSFile && !solutionMap[pKey]) {
+      try {
+        const res = await fetch(GAS_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            apiKey: API_KEY,
+            action: "get_file_data",
+            fileId: targetSFile.id,
+            type: "html"
+          })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setSolutionMap(prev => ({ ...prev, [pKey]: result.data }));
+          setSolutionIdMap(prev => ({ ...prev, [pKey]: targetSFile.id }));
+        }
+      } catch (e) { console.error(`❌ 해설${pKey} 즉시 로드 실패`, e); }
+    }
+  }, [problemMap, solutionMap]);
+
+  /**
+   * 🚀 카트리지 로드 (GAS를 통해 리스트 스캔 후 백그라운드 순차 로딩)
+   */
   const loadCartridgeData = useCallback(async (pack: any) => {
-    // 🛑 1. 데이터 검증
-    if (!pack || !pack.prob_folder_id || !pack.sol_folder_id) {
-      console.warn("⚠️ [엔진] 유효하지 않은 팩 정보입니다.", pack);
-      return;
-    }
-
-    // 🛑 2. 중복 호출 방지
-    if (loadingRef.current === pack.id) return;
+    if (!pack || loadingRef.current === pack.id) return;
     loadingRef.current = pack.id;
-
-    if (!accessToken) {
-      console.error("🔑 [엔진] 구글 액세스 토큰이 없습니다.");
-      return;
-    }
 
     setIsReady(false);
     setProgress(0);
-    
-    // 임시 보관용 객체들 (루프 안에서 직접 state를 바꾸면 성능이 저하되므로)
-    const pMap: Record<string, string> = {};
-    const sMap: Record<string, string> = {};
-    const pIdMap: Record<string, string> = {}; // 🔥 원본 ID 보관용
-    const sIdMap: Record<string, string> = {}; // 🔥 원본 ID 보관용
+    setProblemMap({});
+    setSolutionMap({});
+    setProblemIdMap({});
+    setSolutionIdMap({});
 
     try {
-      // 🚀 Step 1: 폴더 스캔 시작
-      console.log(`📂 [엔진] '${pack.title}' 동기화 시작`);
-      const [pFiles, sFiles] = await Promise.all([
-        fetchFileList(pack.prob_folder_id, accessToken),
-        fetchFileList(pack.sol_folder_id, accessToken)
+      console.log(`📂 [엔진] '${pack.title}' GAS 스텔스 로딩 시작`);
+
+      // Step 1: GAS를 통해 파일 리스트만 먼저 스캔
+      const [pRes, sRes] = await Promise.all([
+        fetch(GAS_URL, { method: "POST", body: JSON.stringify({ apiKey: API_KEY, action: "fetch_file_list", folderId: pack.prob_folder_id }) }),
+        fetch(GAS_URL, { method: "POST", body: JSON.stringify({ apiKey: API_KEY, action: "fetch_file_list", folderId: pack.sol_folder_id }) })
       ]);
+
+      const pData = await pRes.json();
+      const sData = await sRes.json();
+
+      if (!pData.success || !sData.success) throw new Error("리스트 로드 실패");
+
+      fileListRef.current = { pFiles: pData.files, sFiles: sData.files };
       
-      setProgress(10);
-
-      const totalFiles = pFiles.length + sFiles.length;
-      if (totalFiles === 0) {
-        setIsReady(true);
-        setProgress(100);
-        return;
-      }
-
-      let loadedCount = 0;
-
-      // 🚀 Step 2: 문제지(이미지) 다운로드 및 ID 매핑
-      for (const file of pFiles) {
-        try {
-          const blob = await downloadFile(file.id, accessToken);
-          const url = URL.createObjectURL(blob);
-          const nameKey = file.name.split('.')[0].trim().toLowerCase();
-          
-          pMap[nameKey] = url;          // 뷰어용 임시 URL
-          pIdMap[nameKey] = file.id;    // 🔥 실제 구글 드라이브 ID 저장!
-          
-          console.log(`🖼️ 문제지 등록: [${nameKey}] -> ID: ${file.id}`);
-        } catch (e) {
-          console.error(`❌ 문제지 로드 실패: ${file.name}`, e);
-        }
-        loadedCount++;
-        setProgress(10 + Math.round((loadedCount / totalFiles) * 90));
-      }
-
-      // 🚀 Step 3: 해설지(HTML) 다운로드 및 ID 매핑
-      for (const file of sFiles) {
-        try {
-          const response = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
-          
-          if (!response.ok) throw new Error('HTML 로드 실패');
-          
-          const htmlText = await response.text();
-          const nameKey = file.name.split('.')[0].trim().toLowerCase();
-          
-          sMap[nameKey] = htmlText;     // 뷰어용 HTML 텍스트
-          sIdMap[nameKey] = file.id;    // 🔥 실제 구글 드라이브 ID 저장!
-          
-          console.log(`📄 해설지 등록: [${nameKey}] -> ID: ${file.id}`);
-        } catch (e) {
-          console.error(`❌ 해설지 로드 실패: ${file.name}`, e);
-        }
-        loadedCount++;
-        setProgress(10 + Math.round((loadedCount / totalFiles) * 90));
-      }
-
-      // 🚀 최종 상태 업데이트
-      setProblemMap(pMap);
-      setSolutionMap(sMap);
-      setProblemIdMap(pIdMap);
-      setSolutionIdMap(sIdMap);
-      
+      // Step 2: 리스트 확보 즉시 UI 개방
       setIsReady(true);
-      setProgress(100);
-      console.log("✅ [엔진] 모든 리소스 및 파일 ID 동기화 완료.");
+      setProgress(5);
+
+      // Step 3: 백그라운드 스텔스 로딩 루프
+      const startStealthLoading = async () => {
+        const pFiles = fileListRef.current.pFiles;
+        const total = pFiles.length;
+        
+        for (let i = 0; i < total; i++) {
+          const pFile = pFiles[i];
+          const pKey = pFile.name.match(/\d+/)?.[0].padStart(4, '0') || String(i + 1).padStart(4, '0');
+
+          // 문제지 순차 로딩
+          if (!problemMap[pKey]) {
+            const res = await fetch(GAS_URL, { method: "POST", body: JSON.stringify({ apiKey: API_KEY, action: "get_file_data", fileId: pFile.id, type: "image" }) });
+            const result = await res.json();
+            if (result.success) {
+              setProblemMap(prev => ({ ...prev, [pKey]: result.data }));
+              setProblemIdMap(prev => ({ ...prev, [pKey]: pFile.id }));
+            }
+          }
+
+          // 해설지 순차 로딩
+          const sFile = fileListRef.current.sFiles.find((f: any) => f.name.includes(pKey));
+          if (sFile && !solutionMap[pKey]) {
+            const res = await fetch(GAS_URL, { method: "POST", body: JSON.stringify({ apiKey: API_KEY, action: "get_file_data", fileId: sFile.id, type: "html" }) });
+            const result = await res.json();
+            if (result.success) {
+              setSolutionMap(prev => ({ ...prev, [pKey]: result.data }));
+              setSolutionIdMap(prev => ({ ...prev, [pKey]: sFile.id }));
+            }
+          }
+
+          setProgress(Math.round(((i + 1) / total) * 100));
+        }
+        console.log("✅ [엔진] 전 문항 로딩 완료");
+      };
+
+      startStealthLoading();
 
     } catch (error) {
-      console.error("❌ [엔진] 치명적 로딩 에러:", error);
+      console.error("❌ [엔진] 로딩 에러:", error);
     } finally {
       loadingRef.current = null;
     }
-  }, [accessToken, fetchFileList, downloadFile]);
+  }, [problemMap, solutionMap]);
 
-  // 🔥 return에 ID 맵들을 포함하여 EduOSContainer에서 쓸 수 있게 합니다.
   return { 
     progress, 
     isReady, 
@@ -129,6 +160,7 @@ export const useProblemEngine = () => {
     solutionMap, 
     problemIdMap, 
     solutionIdMap, 
-    loadCartridgeData 
+    loadCartridgeData,
+    loadSpecificProblem 
   };
 };
