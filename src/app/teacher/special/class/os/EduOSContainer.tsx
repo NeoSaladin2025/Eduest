@@ -58,10 +58,8 @@ function SaveButton({
       
       const GAS_URL = "https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec";
       
-      // 🔥 [수정 포인트] 파일명에 [카트리지명]을 포함하여 저장 (리뷰 모드 분류용)
       const fileName = `[${selectedPack.title}] ${currentIdx}번_${selectedStudent.name}.png`;
 
-      // 🛠️ [수정 포인트] 구버전 API 라우트 대신 GAS_URL로 직접 fetch 호출
       const res = await fetch(GAS_URL, {
         method: 'POST',
         body: JSON.stringify({
@@ -125,10 +123,11 @@ export default function EduOSContainer() {
     loadSpecificProblem 
   } = useProblemEngine();
 
+  // 🔥 [빌드 에러 해결] 초기값에 window를 쓰지 않고 useEffect에서 설정합니다.
   const [useTiling, setUseTiling] = useState(false);
   useEffect(() => {
     const handleResize = () => setUseTiling(window.innerWidth <= 1920);
-    handleResize();
+    handleResize(); // 마운트 시점에 한 번 실행
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -141,6 +140,9 @@ export default function EduOSContainer() {
   const activeCount = activeWindows.length;
 
   const getResponsiveScale = useCallback((id: WindowType) => {
+    // 🔥 [빌드 에러 해결] 서버 사이드 렌더링 중에는 window 참조 방지
+    if (typeof window === 'undefined') return null;
+
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
@@ -223,7 +225,6 @@ export default function EduOSContainer() {
     focusWindow('blackboard');
   };
 
-  // 🔥 [무한 루프 방어] 4분할 레이아웃 자동 계산 로직
   useEffect(() => {
     if (useTiling) {
       activeWindows.forEach(id => {
