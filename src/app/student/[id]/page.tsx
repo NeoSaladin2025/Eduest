@@ -2,14 +2,16 @@
 
 import React, { useState, useEffect, use, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { GraduationCap, ArrowRight, Sparkles, BookOpenText, FileText, ChevronRight, Loader2, Database, Library, ArrowLeft, LayoutGrid } from 'lucide-react';
+import { 
+  GraduationCap, ArrowRight, Sparkles, BookOpenText, FileText, 
+  ChevronRight, Loader2, Database, Library, ArrowLeft, LayoutGrid 
+} from 'lucide-react';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// 🔥 자기야, 방금 준 따끈따끈한 '고속 로딩용' 새 URL로 업데이트 완료!
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzfsRGa1EuoDaHjiYKCslabSsE4j3sHRsv7b0T-23wDuZqTGw_VrDlIXXfEB-zwyUKh1A/exec';
 
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
@@ -20,7 +22,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   
   const [allRecords, setAllRecords] = useState<any[]>([]); 
   const [cartridges, setCartridges] = useState<string[]>([]);
-  const [examLibrary, setExamLibrary] = useState<any[]>([]); // 이제 여기에 파일 목록까지 다 들어감!
+  const [examLibrary, setExamLibrary] = useState<any[]>([]); 
   
   const [showReviewer, setShowReviewer] = useState(false);
   const [selectedList, setSelectedList] = useState<any[]>([]);
@@ -34,7 +36,13 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [isContentLoading, setIsContentLoading] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // 1. 초기 로드: 학생 정보 + 복습 목록 + 고속 라이브러리 세트
+  // 헬퍼: 파일명에서 숫자를 추출해 정렬용 숫자로 반환
+  const extractNumber = (name: string) => {
+    const match = name.match(/(\d+)번/) || name.match(/(\d+)/);
+    return match ? parseInt(match[1], 10) : 999;
+  };
+
+  // 1. 초기 로드
   useEffect(() => {
     const initPage = async () => {
       try {
@@ -43,7 +51,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         if (!studentData) return;
         setStudent(studentData);
 
-        // 🔥 복습 데이터와 라이브러리 데이터를 병렬로 호출해서 로딩 시간 단축!
         const [revRes, libRes] = await Promise.all([
           fetch(APPS_SCRIPT_URL, { 
             method: 'POST', 
@@ -58,7 +65,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         const revData = await revRes.json();
         const libData = await libRes.json();
 
-        // A. 복습 데이터 세팅
         const records = revData.records || [];
         setAllRecords(records);
         const categories = Array.from(new Set(records.map((r: any) => {
@@ -66,8 +72,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
             return match ? match[1] : "기본";
         })));
         setCartridges(categories as string[]);
-
-        // B. 자습 라이브러리 세팅 (파일 목록이 이미 포함되어 있음!)
         setExamLibrary(libData.library || []);
 
       } catch (err) { console.error(err); } finally { setLoading(false); }
@@ -75,17 +79,19 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     initPage();
   }, [resolvedParams.id]);
 
-  // 🚀 [고속 진입] 폴더 클릭 시 다시 fetch하지 않고 즉시 뷰어 실행
   const handleLibraryFolderClick = (folder: any) => {
     if (!folder.files || folder.files.length === 0) {
         alert("이 폴더에는 HTML 해설지가 없습니다! 📁");
         return;
     }
-    // 데이터 구조를 통일해서 뷰어에 전달
-    const files = folder.files.map((f: any) => ({ ...f, solutionUrl: f.id }));
+    // 🚀 번호순 정렬 적용
+    const files = folder.files
+      .map((f: any) => ({ ...f, solutionUrl: f.id }))
+      .sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
+
     setSelectedList(files);
     setShowReviewer(true);
-    setSelectedTab('solution'); // 라이브러리는 해설 위주이므로 바로 solution 탭
+    setSelectedTab('solution');
     setSelectedRecord(files[0]);
     startStealthPrefetch(files); 
   };
@@ -148,7 +154,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   );
 
   return (
-    <div className="min-h-screen bg-[#020617] p-6 md:p-12 font-sans text-slate-200">
+    <div className="min-h-screen bg-[#020617] p-4 md:p-12 font-sans text-slate-200">
       <div className="max-w-[1400px] mx-auto">
         
         {!showReviewer && (
@@ -167,7 +173,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         {!showReviewer && (
           <div className="animate-in fade-in zoom-in duration-1000">
             <div className="text-center mb-16 space-y-4">
-              <h1 className="text-7xl font-black italic tracking-tighter uppercase leading-none">
+              <h1 className="text-5xl md:text-7xl font-black italic tracking-tighter uppercase leading-none">
                 {student?.name} <span className="text-slate-800 not-italic">/</span> <span className="text-indigo-500">{student?.grade}</span>
               </h1>
               <p className="text-slate-500 font-bold tracking-widest uppercase text-[10px] opacity-60">Personalized Learning Dashboard</p>
@@ -177,7 +183,10 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               {mode === 'review' ? (
                 cartridges.map(cat => (
                   <div key={cat} onClick={() => {
-                    const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`));
+                    // 🚀 번호순 정렬 적용
+                    const filtered = allRecords
+                      .filter(r => r.name.includes(`[${cat}]`))
+                      .sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
                     setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); startStealthPrefetch(filtered);
                   }} className="bg-white/5 p-12 rounded-[56px] border border-white/10 hover:bg-indigo-600 transition-all cursor-pointer shadow-3xl group relative overflow-hidden">
                     <Database size={40} className="text-indigo-500 group-hover:text-white mb-8 transition-colors"/>
@@ -201,36 +210,78 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         )}
 
         {showReviewer && (
-          <div className="grid grid-cols-1 lg:grid-cols-[400px,1fr] gap-12 animate-in slide-in-from-bottom-10 duration-1000">
-            <div className="space-y-8">
-              <button onClick={() => {setShowReviewer(false); setContentData(null);}} className="group flex items-center gap-4 text-xs font-black text-slate-500 hover:text-white transition-all uppercase tracking-[0.2em]">
-                <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-white/10"><ArrowLeft size={18}/></div> Back to Hub
+          <div className="flex flex-col gap-6 animate-in slide-in-from-bottom-10 duration-1000">
+            <div className="flex items-center gap-4 bg-white/5 p-4 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
+              <button 
+                onClick={() => {setShowReviewer(false); setContentData(null);}} 
+                className="shrink-0 w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-500/20 transition-all"
+              >
+                <ArrowLeft size={24}/>
               </button>
-              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-6 scrollbar-thin">
-                {selectedList.map((record) => (
-                  <div key={record.id} onClick={() => { setSelectedRecord(record); if(mode==='review') setSelectedTab('problem'); }} className={`p-8 rounded-[40px] cursor-pointer transition-all border ${selectedRecord?.id === record.id ? 'bg-indigo-600 border-indigo-400 shadow-2xl scale-[1.02]' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
-                    <div className="font-bold text-white tracking-tight leading-tight">{record.name}</div>
-                  </div>
-                ))}
+              <div className="w-[1px] h-10 bg-white/10 mx-2" />
+              <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x">
+                {selectedList.map((record, idx) => {
+                  // 파일명에서 추출한 실제 문제 번호 표시 (없으면 인덱스+1)
+                  const displayNum = record.name.match(/(\d+)번/) ? record.name.match(/(\d+)번/)[1] : idx + 1;
+                  return (
+                    <button 
+                      key={record.id} 
+                      onClick={() => { setSelectedRecord(record); if(mode==='review') setSelectedTab('problem'); }} 
+                      className={`
+                        shrink-0 w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center font-black text-lg transition-all snap-center
+                        ${selectedRecord?.id === record.id 
+                          ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' 
+                          : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}
+                      `}
+                    >
+                      {displayNum}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="bg-white/5 border border-white/10 rounded-[64px] overflow-hidden flex flex-col min-h-[850px] relative shadow-3xl backdrop-blur-3xl">
+            <div className="bg-white/5 border border-white/10 rounded-[48px] md:rounded-[64px] overflow-hidden flex flex-col min-h-[700px] lg:min-h-[850px] relative shadow-3xl backdrop-blur-3xl">
               {mode === 'review' && (
                 <div className="flex bg-black/40 border-b border-white/10">
                   {(['problem', 'board', 'solution'] as const).map(tab => (
-                    <button key={tab} onClick={() => setSelectedTab(tab)} className={`flex-1 py-8 text-[11px] font-black uppercase tracking-[0.3em] relative transition-all ${selectedTab === tab ? 'text-white bg-white/5' : 'text-slate-500 hover:text-white'}`}>
-                      {tab} {selectedTab === tab && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-16 h-1.5 bg-indigo-500 rounded-full shadow-[0_0_25px_rgba(99,102,241,1)]" />}
+                    <button 
+                      key={tab} 
+                      onClick={() => setSelectedTab(tab)} 
+                      className={`flex-1 py-6 text-[10px] font-black uppercase tracking-[0.2em] relative transition-all ${selectedTab === tab ? 'text-white bg-white/5' : 'text-slate-500 hover:text-white'}`}
+                    >
+                      {tab}
+                      {selectedTab === tab && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-1 bg-indigo-500 rounded-full shadow-[0_0_15px_rgba(99,102,241,1)]" />}
                     </button>
                   ))}
                 </div>
               )}
-              <div className="p-12 flex-1 flex items-center justify-center bg-gradient-to-br from-transparent to-indigo-950/20 overflow-auto relative">
-                {isContentLoading && <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-xl z-50"><Loader2 className="animate-spin text-indigo-500" size={50} /></div>}
+              
+              <div className="flex-1 flex items-center justify-center p-4 md:p-8 bg-gradient-to-br from-transparent to-indigo-950/20 overflow-auto relative min-h-[600px]">
+                {isContentLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-xl z-50">
+                    <Loader2 className="animate-spin text-indigo-500" size={50} />
+                  </div>
+                )}
+                
                 {contentData ? (
-                  selectedTab === 'solution' ? <iframe srcDoc={contentData} className="w-full h-full border-0 rounded-[48px] bg-white shadow-3xl animate-in fade-in duration-1000" /> 
-                  : <img src={contentData} alt="content" className="max-w-full max-h-[70vh] object-contain rounded-3xl shadow-3xl animate-in zoom-in-95 duration-700" />
-                ) : !isContentLoading && <div className="text-slate-800 font-black text-8xl italic opacity-10 select-none tracking-tighter">EDUEST OS</div>}
+                  selectedTab === 'solution' ? (
+                    <iframe 
+                      srcDoc={contentData} 
+                      className="w-full h-full min-h-[700px] border-0 rounded-[32px] bg-white shadow-3xl animate-in fade-in duration-1000" 
+                    /> 
+                  ) : (
+                    <img 
+                      src={contentData} 
+                      alt="content" 
+                      className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-3xl animate-in zoom-in-95 duration-700" 
+                    />
+                  )
+                ) : !isContentLoading && (
+                  <div className="text-slate-800 font-black text-6xl md:text-8xl italic opacity-10 select-none tracking-tighter">
+                    EDUEST OS
+                  </div>
+                )}
               </div>
             </div>
           </div>
