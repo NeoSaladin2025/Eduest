@@ -1,13 +1,17 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, Loader2, Copy, Check } from 'lucide-react';
+import { 
+  Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
+  Loader2, Copy, Check, Lock, Unlock 
+} from 'lucide-react';
 
 interface Student {
   id: string;
   name: string;
   grade: string;
   drive_folder_id?: string;
+  is_unlocked: boolean; // 🔥 Supabase 락 상태
 }
 
 export default function StudentManagerMain() {
@@ -18,18 +22,17 @@ export default function StudentManagerMain() {
   const [fetching, setFetching] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // 🔥 복사 피드백을 위한 상태 (어떤 학생이 복사되었는지 ID 저장)
+  // 복사 피드백을 위한 상태
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // 🔗 [마법의 주소 복사 함수]
-  // 로컬 환경이면 localhost를, 배포 환경이면 실제 도메인을 자동으로 감지합니다.
   const handleCopyLink = (studentId: string) => {
-    const origin = window.location.origin; // 로컬/온라인 자동 감지
+    const origin = window.location.origin;
     const studentUrl = `${origin}/student/${studentId}`;
     
     navigator.clipboard.writeText(studentUrl).then(() => {
       setCopiedId(studentId);
-      setTimeout(() => setCopiedId(null), 2000); // 2초 후 아이콘 복구
+      setTimeout(() => setCopiedId(null), 2000);
     });
   };
 
@@ -53,6 +56,33 @@ export default function StudentManagerMain() {
   useEffect(() => {
     fetchStudents();
   }, []);
+
+  // 🔐 [핵심] 학생 해설지 잠금 토글 함수 (API 연동)
+  const toggleStudentLock = async (student: Student) => {
+    const nextStatus = !student.is_unlocked;
+    
+    // 💡 낙관적 업데이트: 서버 응답 전 화면을 먼저 바꿔서 빠릿한 느낌을 줌
+    setStudents(prev => prev.map(s => 
+      s.id === student.id ? { ...s, is_unlocked: nextStatus } : s
+    ));
+
+    try {
+      // 아까 만든 /api/drive/students 라우트의 PATCH 메서드 호출
+      const res = await fetch('/api/drive/students', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          studentId: student.id, 
+          isUnlocked: nextStatus 
+        }),
+      });
+
+      if (!res.ok) throw new Error();
+    } catch (err) {
+      alert('잠금 상태 변경에 실패했습니다. 다시 시도해주세요.');
+      fetchStudents(); // 실패 시 원래 데이터로 롤백
+    }
+  };
 
   // 2️⃣ 학생 등록
   const handleAddStudent = async (e: React.FormEvent) => {
@@ -78,13 +108,12 @@ export default function StudentManagerMain() {
       }
     } catch (err) {
       console.error('학생 등록 중 오류:', err);
-      alert('학생 등록 중 오류가 발생했습니다.');
     } finally {
       setLoading(false);
     }
   };
 
-  // 3️⃣ 🔥 학생 삭제
+  // 3️⃣ 학생 삭제
   const handleDeleteStudent = async (student: Student) => {
     const confirmDelete = window.confirm(
       `⚠️ [주의] ${student.name} 학생을 삭제하시겠습니까?\n\n이 작업은 구글 드라이브의 복습 폴더도 휴지통으로 이동됩니다.`
@@ -103,19 +132,11 @@ export default function StudentManagerMain() {
       });
 
       if (res.ok) {
-        const result = await res.json();
-        if (result.success) {
-          alert(`✅ ${student.name} 학생 정보가 삭제되었습니다.`);
-          fetchStudents();
-        } else {
-          alert(`삭제 실패: ${result.error || '알 수 없는 오류'}`);
-        }
-      } else {
-        alert(`서버 에러 (${res.status}): 삭제 요청 실패`);
+        alert(`✅ ${student.name} 학생 정보가 삭제되었습니다.`);
+        fetchStudents();
       }
     } catch (err) {
       console.error('삭제 중 통신 오류:', err);
-      alert('네트워크 오류가 발생했습니다.');
     }
   };
 
@@ -130,10 +151,10 @@ export default function StudentManagerMain() {
       {/* 헤더 섹션 */}
       <div className="flex justify-between items-end mb-10">
         <div>
-          <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-2">학생 관리</h1>
-          <p className="text-slate-500 font-medium font-sans">Eduest 전용 학생 데이터베이스 및 학습 폴더 관리</p>
+          <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-2 italic uppercase leading-none">EduOS Student Center</h1>
+          <p className="text-slate-500 font-medium font-sans uppercase text-[10px] tracking-widest opacity-60">Database Management & Access Control</p>
         </div>
-        <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-bold">
+        <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-bold shadow-sm">
           <Users size={16} />
           총 {students.length}명
         </div>
@@ -143,7 +164,7 @@ export default function StudentManagerMain() {
         
         {/* 왼쪽: 학생 등록 폼 */}
         <div className="lg:col-span-1">
-          <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm sticky top-8">
+          <div className="bg-white border border-slate-200 rounded-[32px] p-6 shadow-sm sticky top-8">
             <div className="flex items-center gap-2 mb-6">
               <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-lg flex items-center justify-center">
                 <UserPlus size={18} />
@@ -153,7 +174,7 @@ export default function StudentManagerMain() {
 
             <form onSubmit={handleAddStudent} className="space-y-4">
               <div>
-                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Name</label>
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1 leading-none">Name</label>
                 <input 
                   required
                   value={name}
@@ -163,7 +184,7 @@ export default function StudentManagerMain() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Grade</label>
+                <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1 leading-none">Grade</label>
                 <input 
                   required
                   value={grade}
@@ -190,7 +211,7 @@ export default function StudentManagerMain() {
             <input 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-white border border-slate-200 rounded-2xl py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold"
+              className="w-full bg-white border border-slate-200 rounded-[24px] py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold shadow-sm"
               placeholder="학생 이름 또는 학년 검색..."
             />
           </div>
@@ -203,39 +224,56 @@ export default function StudentManagerMain() {
           ) : filteredStudents.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {filteredStudents.map((student) => (
-                <div key={student.id} className="group bg-white border border-slate-100 rounded-3xl p-6 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all duration-500">
+                <div key={student.id} className="group bg-white border border-slate-100 rounded-[32px] p-6 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all duration-500 relative">
+                  
                   <div className="flex justify-between items-start mb-4">
-                    <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm">
+                    <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm relative overflow-hidden">
                       <GraduationCap size={28} />
+                      {/* 잠금 상태 표시 배경 오버레이 (잠겼을 때만 노출) */}
+                      {!student.is_unlocked && (
+                        <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white">
+                          <Lock size={18} />
+                        </div>
+                      )}
                     </div>
                     
                     <div className="flex gap-2 items-center">
-                      {/* 🔗 🔥 [추가] 링크 복사 버튼 */}
+                      {/* 🔥 실시간 락/언락 토글 버튼 */}
+                      <button 
+                        onClick={() => toggleStudentLock(student)}
+                        className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border shadow-sm ${
+                          student.is_unlocked 
+                          ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' 
+                          : 'bg-rose-50 text-rose-600 border-rose-100 hover:bg-rose-100'
+                        }`}
+                        title={student.is_unlocked ? "해설지 활성화 됨" : "해설지 잠김"}
+                      >
+                        {student.is_unlocked ? <Unlock size={14} /> : <Lock size={14} />}
+                        {student.is_unlocked ? 'OPEN' : 'LOCKED'}
+                      </button>
+
                       <button 
                         onClick={() => handleCopyLink(student.id)}
-                        className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border ${
+                        className={`p-2.5 rounded-xl transition-all border shadow-sm ${
                           copiedId === student.id 
                           ? 'bg-emerald-500 text-white border-emerald-400' 
-                          : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-200 hover:text-indigo-600 hover:bg-indigo-50'
+                          : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-200 hover:text-indigo-600'
                         }`}
-                        title="복습 링크 복사"
                       >
                         {copiedId === student.id ? <Check size={14} /> : <Copy size={14} />}
-                        {copiedId === student.id ? 'COPIED!' : 'GET LINK'}
                       </button>
 
                       <button 
                         onClick={() => handleDeleteStudent(student)}
-                        className="p-2 text-slate-200 hover:text-rose-500 transition-all transform hover:scale-125"
-                        title="학생 삭제"
+                        className="p-2 text-slate-200 hover:text-rose-500 transition-all transform hover:scale-110"
                       >
                         <Trash2 size={20} />
                       </button>
                     </div>
                   </div>
-                  <div>
-                    <div className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1">{student.grade}</div>
-                    <h3 className="text-xl font-black text-slate-800 mb-5 tracking-tighter">{student.name}</h3>
+                  <div className="mb-5">
+                    <div className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1 leading-none">{student.grade}</div>
+                    <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight">{student.name}</h3>
                   </div>
                   
                   <button 
