@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
   Loader2, Copy, Check, Lock, Unlock 
@@ -21,6 +21,10 @@ export default function StudentManagerMain() {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // 🔥 [학년 필터 상태]
+  const [selectedGradeFilter, setSelectedGradeFilter] = useState('전체');
+  const gradeButtons = ['전체', '중1', '중2', '중3', '고1', '고2', '고3'];
 
   // 복사 피드백을 위한 상태
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -61,13 +65,11 @@ export default function StudentManagerMain() {
   const toggleStudentLock = async (student: Student) => {
     const nextStatus = !student.is_unlocked;
     
-    // 💡 낙관적 업데이트: 서버 응답 전 화면을 먼저 바꿔서 빠릿한 느낌을 줌
     setStudents(prev => prev.map(s => 
       s.id === student.id ? { ...s, is_unlocked: nextStatus } : s
     ));
 
     try {
-      // 아까 만든 /api/drive/students 라우트의 PATCH 메서드 호출
       const res = await fetch('/api/drive/students', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -80,7 +82,7 @@ export default function StudentManagerMain() {
       if (!res.ok) throw new Error();
     } catch (err) {
       alert('잠금 상태 변경에 실패했습니다. 다시 시도해주세요.');
-      fetchStudents(); // 실패 시 원래 데이터로 롤백
+      fetchStudents();
     }
   };
 
@@ -140,10 +142,20 @@ export default function StudentManagerMain() {
     }
   };
 
-  const filteredStudents = students.filter(s => 
-    s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    s.grade.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // 🔥 [핵심 추가] 필터링 적용 및 가나다순(이름순) 정렬
+  const filteredAndSortedStudents = useMemo(() => {
+    return students
+      .filter(s => {
+        // 검색어 필터 (이름 또는 학년)
+        const matchesSearch = s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                             s.grade.toLowerCase().includes(searchTerm.toLowerCase());
+        // 학년 버튼 필터
+        const matchesGrade = selectedGradeFilter === '전체' || s.grade.includes(selectedGradeFilter);
+        
+        return matchesSearch && matchesGrade;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko')); // 🇰🇷 가나다순 정렬
+  }, [students, searchTerm, selectedGradeFilter]);
 
   return (
     <div className="p-8 max-w-[1200px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -205,15 +217,35 @@ export default function StudentManagerMain() {
         </div>
 
         {/* 오른쪽: 학생 목록 */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="relative mb-6">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-white border border-slate-200 rounded-[24px] py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold shadow-sm"
-              placeholder="학생 이름 또는 학년 검색..."
-            />
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* 🔍 검색창 + 🔥 학년 필터 버튼 그룹 */}
+          <div className="space-y-5">
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-[24px] py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold shadow-sm"
+                placeholder="이름 또는 학년 검색..."
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {gradeButtons.map((g) => (
+                <button
+                  key={g}
+                  onClick={() => setSelectedGradeFilter(g)}
+                  className={`px-5 py-2.5 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all border ${
+                    selectedGradeFilter === g 
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-md scale-105' 
+                    : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-200 hover:text-indigo-600'
+                  }`}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
           </div>
 
           {fetching ? (
@@ -221,15 +253,14 @@ export default function StudentManagerMain() {
               <Loader2 className="animate-spin mb-4" size={40} />
               <p className="font-black italic uppercase tracking-widest text-xs">Syncing with Supabase...</p>
             </div>
-          ) : filteredStudents.length > 0 ? (
+          ) : filteredAndSortedStudents.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filteredStudents.map((student) => (
+              {filteredAndSortedStudents.map((student) => (
                 <div key={student.id} className="group bg-white border border-slate-100 rounded-[32px] p-6 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all duration-500 relative">
                   
                   <div className="flex justify-between items-start mb-4">
                     <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm relative overflow-hidden">
-                      <GraduationCap size={28} />
-                      {/* 잠금 상태 표시 배경 오버레이 (잠겼을 때만 노출) */}
+                      < GraduationCap size={28} />
                       {!student.is_unlocked && (
                         <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white">
                           <Lock size={18} />
@@ -238,7 +269,6 @@ export default function StudentManagerMain() {
                     </div>
                     
                     <div className="flex gap-2 items-center">
-                      {/* 🔥 실시간 락/언락 토글 버튼 */}
                       <button 
                         onClick={() => toggleStudentLock(student)}
                         className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border shadow-sm ${
@@ -246,7 +276,6 @@ export default function StudentManagerMain() {
                           ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' 
                           : 'bg-rose-50 text-rose-600 border-rose-100 hover:bg-rose-100'
                         }`}
-                        title={student.is_unlocked ? "해설지 활성화 됨" : "해설지 잠김"}
                       >
                         {student.is_unlocked ? <Unlock size={14} /> : <Lock size={14} />}
                         {student.is_unlocked ? 'OPEN' : 'LOCKED'}
