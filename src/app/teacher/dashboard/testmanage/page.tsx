@@ -3,8 +3,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
-  Users, Timer, AlertCircle, CheckCircle2, PauseCircle, PlayCircle, Search, ShieldCheck, RotateCcw, Filter, Clock, Check
+  Users, Timer, AlertCircle, CheckCircle2, PauseCircle, PlayCircle, Search, ShieldCheck, RotateCcw, Filter, Clock, Check, ArrowLeft
 } from 'lucide-react';
+import { useRouter } from 'next/navigation'; // useRouter 추가
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,6 +15,7 @@ const supabase = createClient(
 type TabType = 'incident' | 'testing' | 'waiting';
 
 export default function TestManagePage() {
+  const router = useRouter(); // router 초기화
   const [students, setStudents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -133,13 +135,23 @@ export default function TestManagePage() {
         
         {/* ✈️ 헤더 섹션 */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8">
-          <div className="flex items-center gap-5">
-            <div className="w-16 h-16 bg-slate-900 rounded-[24px] flex items-center justify-center text-white shadow-2xl rotate-3">
-              <ShieldCheck size={36} />
-            </div>
-            <div>
-              <h1 className="text-4xl font-black tracking-tighter text-slate-900 italic uppercase leading-none">Proctoring <span className="text-indigo-600">OS</span></h1>
-              <p className="text-slate-400 font-bold text-xs uppercase tracking-[0.3em] mt-2">Precision Sync v3.5</p>
+          <div className="flex items-center gap-8">
+            {/* 🔥 대시보드 돌아가기 버튼 추가 */}
+            <button 
+              onClick={() => router.push('../')} // 실제 대시보드 경로에 맞게 수정 가능
+              className="flex items-center gap-2 px-5 py-3 bg-white border-2 border-slate-200 rounded-2xl font-black text-xs uppercase tracking-widest text-slate-500 hover:text-indigo-600 hover:border-indigo-500 hover:shadow-lg transition-all active:scale-95"
+            >
+              <ArrowLeft size={16} /> Dashboard
+            </button>
+
+            <div className="flex items-center gap-5">
+              <div className="w-16 h-16 bg-slate-900 rounded-[24px] flex items-center justify-center text-white shadow-2xl rotate-3">
+                <ShieldCheck size={36} />
+              </div>
+              <div>
+                <h1 className="text-4xl font-black tracking-tighter text-slate-900 italic uppercase leading-none">Proctoring <span className="text-indigo-600">OS</span></h1>
+                <p className="text-slate-400 font-bold text-xs uppercase tracking-[0.3em] mt-2">Precision Sync v3.5</p>
+              </div>
             </div>
           </div>
 

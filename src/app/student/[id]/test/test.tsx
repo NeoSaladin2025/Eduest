@@ -22,7 +22,7 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
   const [isLocked, setIsLocked] = useState(false); 
   const [isFinished, setIsFinished] = useState(false); 
   const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [isEditing, setIsEditing] = useState(false); // 🔥 시간 수정 모드 상태
+  const [isEditing, setIsEditing] = useState(false); // 시간 수정 모드
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const setTestRunning = useCallback((running: boolean) => {
@@ -119,7 +119,7 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
 
   // ▶️ [시작 / 이어하기]
   const handleStart = async () => {
-    if (isLocked || isFinished) return;
+    if (isLocked || isFinished || isEditing) return;
     const now = new Date().toISOString();
     let currentSec = timeLeft > 0 ? timeLeft : minutes * 60;
     if (timeLeft === 0) setTimeLeft(currentSec);
@@ -151,6 +151,12 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
+  // 🔥 시간 수정 확정 로직 (최소 1분 보정)
+  const finalizeMinutes = () => {
+    if (minutes < 1) setMinutes(1);
+    setIsEditing(false);
   };
 
   if (isInitialLoading) return (
@@ -194,20 +200,23 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
         <div className="relative bg-white/5 border border-white/10 backdrop-blur-3xl rounded-[64px] p-16 shadow-3xl text-center min-w-[340px] md:min-w-[450px]">
           <ShieldAlert size={48} className={`mx-auto mb-8 transition-all duration-500 ${isRunning ? 'text-indigo-400 animate-pulse' : 'text-slate-700'}`} />
           
-          {/* 🔥 시간 표시 및 수정 영역 */}
           <div className="relative flex flex-col items-center">
             {!isRunning && timeLeft === 0 && !isFinished ? (
-              // ✍️ 수정 모드일 때와 아닐 때 구분
               <div className="flex flex-col items-center gap-4">
                 {isEditing ? (
                   <div className="flex items-center gap-4 animate-in zoom-in duration-300">
                     <input 
                       type="number" 
                       autoFocus
-                      value={minutes}
-                      onChange={(e) => setMinutes(Math.max(1, Number(e.target.value)))}
-                      onBlur={() => setIsEditing(false)}
-                      onKeyDown={(e) => e.key === 'Enter' && setIsEditing(false)}
+                      // 🔥 minutes가 0이거나 빈값이면 화면엔 빈칸으로 표시
+                      value={minutes === 0 ? "" : minutes} 
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        // 🔥 지우는 도중에는 0으로 세팅 (제약 없이 다 지워지게)
+                        setMinutes(val === "" ? 0 : Number(val));
+                      }}
+                      onBlur={finalizeMinutes}
+                      onKeyDown={(e) => e.key === 'Enter' && finalizeMinutes()}
                       className="bg-white/10 border-b-4 border-indigo-500 text-7xl md:text-8xl font-black text-white text-center w-40 py-2 focus:outline-none transition-all tabular-nums"
                     />
                     <span className="text-3xl font-black text-slate-500 italic mt-6">MIN</span>
