@@ -11,7 +11,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyskzwoJJWjVpwr4vffB7CaOUGBzM0A6fxfLtYf_c_UU1kNDVm-ybb4mW5w6wfKHMcXXg/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwkwjuyV5qS0jhuKVJG1jqqNCDURmsWCXveAiSB5mJKksMZ9Td5ijzx4c4JJEvDsRwVTA/exec';
 
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
@@ -22,7 +22,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [allRecords, setAllRecords] = useState<any[]>([]); 
   const [cartridges, setCartridges] = useState<string[]>([]);
   
-  // 📂 계층 탐색 상태
   const [examLibrary, setExamLibrary] = useState<any[]>([]); 
   const [currentPath, setCurrentPath] = useState<any[]>([]); 
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]); 
@@ -44,50 +43,78 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     return match ? parseInt(match[1], 10) : 999;
   };
 
+  const buildTree = (items: any[]) => {
+    const map: any = {};
+    const roots: any[] = [];
+    items.forEach(item => {
+      map[item.drive_id] = { ...item, id: item.drive_id, subFolders: [], files: [] };
+    });
+    items.forEach(item => {
+      const node = map[item.drive_id];
+      if (item.parent_id && map[item.parent_id]) {
+        if (item.type === 'folder') map[item.parent_id].subFolders.push(node);
+        else map[item.parent_id].files.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+    return roots;
+  };
+
   useEffect(() => {
     const initPage = async () => {
       try {
         setLoading(true);
-        // 1. 학생 데이터 가져오기 (is_unlocked 포함)
+        // 1. 학생 데이터 로드
         const { data: studentData } = await supabase.from('students').select('*').eq('id', resolvedParams.id).single();
         if (!studentData) return;
         setStudent(studentData);
 
-        const [revRes, libRes] = await Promise.all([
-          fetch(APPS_SCRIPT_URL, { 
-            method: 'POST', 
-            body: JSON.stringify({ action: 'get_student_records', studentFolderId: studentData.drive_folder_id, apiKey: "eduest_super_secret_key_1234" }) 
-          }),
-          fetch(APPS_SCRIPT_URL, { 
-            method: 'POST', 
-            body: JSON.stringify({ action: 'get_exam_library', apiKey: "eduest_super_secret_key_1234" }) 
-          })
-        ]);
+        // 2. Supabase에서 라이브러리 지도 로드 (광속)
+        const { data: dbLibrary } = await supabase
+          .from('exam_library')
+          .select('*')
+          .eq('grade', studentData.grade);
 
-        const revData = await revRes.json();
-        const libData = await libRes.json();
-
-        if (revData.success) {
-          const records = revData.records || [];
-          setAllRecords(records);
-          setCartridges(Array.from(new Set(records.map((r: any) => (r.name.match(/\[(.*?)\]/) || [null, "기본"])[1]))));
-        }
-
-        if (libData.success) {
-          const fullLibrary = libData.library || [];
-          setExamLibrary(fullLibrary);
-
-          const gradeFolder = fullLibrary.find((f: any) => f.name.includes(studentData.grade));
+        if (dbLibrary && dbLibrary.length > 0) {
+          const formattedLib = buildTree(dbLibrary);
+          setExamLibrary(formattedLib);
           
+          const gradeFolder = formattedLib.find(f => f.name.includes(studentData.grade));
           if (gradeFolder) {
             setDisplayLibrary(gradeFolder.subFolders || []);
-            setCurrentPath([gradeFolder]); 
+            setCurrentPath([gradeFolder]);
           } else {
-            setDisplayLibrary(fullLibrary);
+            setDisplayLibrary(formattedLib);
           }
+          
+          // 🔥 [핵심 수정] 지도가 준비되면 여기서 바로 로딩 바를 치워버림!
+          // 복습 기록(GAS)이 올 때까지 기다리지 않고 화면을 띄웁니다.
+          setLoading(false);
+        } else {
+          // 지도 데이터가 없어도 일단 로딩은 풀어야 함
+          setLoading(false);
         }
 
-      } catch (err) { console.error(err); } finally { setLoading(false); }
+        // 3. 복습 기록은 백그라운드에서 조용히 가져오기
+        fetch(APPS_SCRIPT_URL, { 
+          method: 'POST', 
+          body: JSON.stringify({ action: 'get_student_records', studentFolderId: studentData.drive_folder_id, apiKey: "eduest_super_secret_key_1234" }) 
+        })
+        .then(res => res.json())
+        .then(revData => {
+          if (revData.success) {
+            const records = revData.records || [];
+            setAllRecords(records);
+            setCartridges(Array.from(new Set(records.map((r: any) => (r.name.match(/\[(.*?)\]/) || [null, "기본"])[1]))));
+          }
+        })
+        .catch(err => console.error("Records Load Error:", err));
+
+      } catch (err) { 
+        console.error(err); 
+        setLoading(false); 
+      }
     };
     initPage();
   }, [resolvedParams.id]);
@@ -101,7 +128,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
     if (folder.files && folder.files.length > 0) {
       const files = folder.files
-        .map((f: any) => ({ ...f, solutionUrl: f.id }))
+        .map((f: any) => ({ ...f, id: f.drive_id || f.id, solutionUrl: f.drive_id || f.id }))
         .sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
 
       setSelectedList(files);
@@ -131,23 +158,28 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
   const startStealthPrefetch = async (items: any[]) => {
     for (const item of items) {
-      const tasks = mode === 'library' 
-        ? [{id: item.id, type:'html', tab:'solution'}] 
-        : [{id: item.problemUrl, type:'image', tab:'problem'}, {id: item.id, type:'image', tab:'board'}, {id: item.solutionUrl, type:'html', tab:'solution'}];
-      
-      for (const task of tasks) {
-        const cacheKey = `${item.id}_${task.tab}`;
-        if (!task.id || dataCache.current[cacheKey] || prefetchQueue.current.has(cacheKey)) continue;
-        prefetchQueue.current.add(cacheKey);
-        try {
-          const res = await fetch(APPS_SCRIPT_URL, { method: 'POST', body: JSON.stringify({ action: 'get_file_data', fileId: task.id, type: task.type, apiKey: "eduest_super_secret_key_1234" }) });
-          const resJson = await res.json();
-          if (resJson.success) {
-            let d = resJson.data;
-            if (task.type === 'html') d = d.replace(/[₩¥]/g, '\\');
-            dataCache.current[cacheKey] = d;
-          }
-        } catch (e) {}
+      const cacheKey = `${item.id}_solution`;
+      if (dataCache.current[cacheKey] || prefetchQueue.current.has(cacheKey)) continue;
+
+      prefetchQueue.current.add(cacheKey);
+      try {
+        const res = await fetch(APPS_SCRIPT_URL, { 
+          method: 'POST', 
+          body: JSON.stringify({ 
+            action: 'get_file_data', 
+            fileId: item.id, 
+            type: 'html', 
+            apiKey: "eduest_super_secret_key_1234" 
+          }) 
+        });
+        const resJson = await res.json();
+        if (resJson.success) {
+          let d = resJson.data;
+          d = d.replace(/[₩¥]/g, '\\');
+          dataCache.current[cacheKey] = d;
+        }
+      } catch (e) {
+        console.error("Prefetch error:", e);
       }
     }
   };
@@ -163,7 +195,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         return;
       }
       setIsContentLoading(true);
-      const fileId = selectedTab === 'problem' ? selectedRecord.problemUrl : selectedTab === 'board' ? selectedRecord.id : selectedRecord.solutionUrl;
+      const fileId = selectedTab === 'solution' ? selectedRecord.solutionUrl : (selectedTab === 'problem' ? selectedRecord.problemUrl : selectedRecord.id);
       const type = selectedTab === 'solution' ? 'html' : 'image';
       try {
         const res = await fetch(APPS_SCRIPT_URL, { method: 'POST', body: JSON.stringify({ action: 'get_file_data', fileId, type, apiKey: "eduest_super_secret_key_1234" }) });
@@ -191,7 +223,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         {!showReviewer && (
           <div className="flex justify-center mb-16 animate-in slide-in-from-top-10 duration-700">
             <div className="bg-white/5 p-1.5 rounded-[32px] border border-white/10 backdrop-blur-3xl flex shadow-3xl">
-              <button onClick={() => {setMode('review'); setCurrentPath([]); setDisplayLibrary(examLibrary.find(f => f.name.includes(student?.grade))?.subFolders || examLibrary);}} className={`flex items-center gap-3 px-8 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'review' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+              <button onClick={() => {setMode('review'); setCurrentPath([]);}} className={`flex items-center gap-3 px-8 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'review' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
                 <Database size={18}/> Review
               </button>
               <button onClick={() => setMode('library')} className={`flex items-center gap-3 px-8 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'library' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
@@ -210,7 +242,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               {mode === 'library' && currentPath.length > 1 && (
                 <div className="flex items-center justify-center gap-2 mt-4 text-[10px] font-bold uppercase tracking-widest text-slate-500 overflow-x-auto whitespace-nowrap px-4 scrollbar-hide">
                   {currentPath.map((p, i) => (
-                    <React.Fragment key={p.id}>
+                    <React.Fragment key={p.drive_id || p.id}>
                       {i > 0 && <ChevronRight size={12} className="text-slate-800" />}
                       <span className={i === currentPath.length - 1 ? "text-indigo-400" : ""}>{p.name}</span>
                     </React.Fragment>
@@ -221,19 +253,24 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
               {mode === 'review' ? (
-                cartridges.map(cat => (
-                  <div key={cat} onClick={() => {
-                    const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
-                    setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered);
-                  }} className="bg-white/5 p-12 rounded-[56px] border border-white/10 hover:bg-indigo-600 transition-all cursor-pointer shadow-3xl group relative overflow-hidden">
-                    <Database size={40} className="text-indigo-500 group-hover:text-white mb-8 transition-colors"/>
-                    <div className="text-4xl font-black mb-3 group-hover:translate-x-2 transition-transform">{cat}</div>
-                    <div className="text-xs font-bold text-slate-500 group-hover:text-indigo-100 uppercase tracking-widest">{allRecords.filter(r => r.name.includes(`[${cat}]`)).length} units</div>
-                    <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>
+                cartridges.length > 0 ? (
+                  cartridges.map(cat => (
+                    <div key={cat} onClick={() => {
+                      const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
+                      setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered);
+                    }} className="bg-white/5 p-12 rounded-[56px] border border-white/10 hover:bg-indigo-600 transition-all cursor-pointer shadow-3xl group relative overflow-hidden">
+                      <Database size={40} className="text-indigo-500 group-hover:text-white mb-8 transition-colors"/>
+                      <div className="text-4xl font-black mb-3 group-hover:translate-x-2 transition-transform">{cat}</div>
+                      <div className="text-xs font-bold text-slate-500 group-hover:text-indigo-100 uppercase tracking-widest">{allRecords.filter(r => r.name.includes(`[${cat}]`)).length} units</div>
+                      <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>
+                    </div>
+                  ))
+                ) : (
+                  <div className="col-span-full py-10 text-center text-slate-500 font-bold uppercase tracking-widest opacity-50">
+                    Loading records...
                   </div>
-                ))
+                )
               ) : (
-                /* 🔐 라이브러리 잠금 체크 */
                 !student?.is_unlocked ? (
                   <div className="col-span-full py-20 flex flex-col items-center justify-center space-y-6 bg-white/5 border border-dashed border-white/10 rounded-[64px] animate-in slide-in-from-bottom-5 duration-700">
                     <div className="w-20 h-20 bg-rose-500/20 rounded-full flex items-center justify-center text-rose-500 shadow-2xl shadow-rose-500/20">
@@ -255,7 +292,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                       </div>
                     )}
                     {displayLibrary.map(folder => (
-                      <div key={folder.id} onClick={() => handleLibraryFolderClick(folder)} className={`bg-white/5 p-12 rounded-[56px] border border-white/10 transition-all cursor-pointer shadow-3xl group relative overflow-hidden ${folder.subFolders?.length > 0 ? 'hover:bg-amber-600' : 'hover:bg-emerald-600'}`}>
+                      <div key={folder.drive_id || folder.id} onClick={() => handleLibraryFolderClick(folder)} className={`bg-white/5 p-12 rounded-[56px] border border-white/10 transition-all cursor-pointer shadow-3xl group relative overflow-hidden ${folder.subFolders?.length > 0 ? 'hover:bg-amber-600' : 'hover:bg-emerald-600'}`}>
                         <Library size={40} className={`mb-8 transition-colors ${folder.subFolders?.length > 0 ? 'text-amber-500 group-hover:text-white' : 'text-emerald-500 group-hover:text-white'}`}/>
                         <div className="text-3xl font-black mb-3 group-hover:translate-x-2 transition-transform leading-tight">{folder.name}</div>
                         <div className="text-[10px] font-bold text-slate-500 group-hover:text-white opacity-60 uppercase tracking-widest">
