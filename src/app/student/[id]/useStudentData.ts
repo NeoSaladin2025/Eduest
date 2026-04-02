@@ -31,15 +31,23 @@ export function useStudentData(studentId: string) {
   const buildTree = (items: any[]) => {
     const map: any = {};
     const roots: any[] = [];
+    
+    // 1단계: 모든 아이템을 맵에 등록 (id는 drive_id 기준)
     items.forEach(item => {
       map[item.drive_id] = { ...item, id: item.drive_id, subFolders: [], files: [] };
     });
+
+    // 2단계: 부모-자식 관계 연결
     items.forEach(item => {
       const node = map[item.drive_id];
       if (item.parent_id && map[item.parent_id]) {
+        // 부모가 맵에 존재하면 부모의 하위 목록으로 추가
         if (item.type === 'folder') map[item.parent_id].subFolders.push(node);
         else map[item.parent_id].files.push(node);
-      } else { roots.push(node); }
+      } else { 
+        // 부모가 없거나 맵에 없으면 최상위(Root)로 취급
+        roots.push(node); 
+      }
     });
     return roots;
   };
@@ -51,18 +59,25 @@ export function useStudentData(studentId: string) {
     const initPage = async () => {
       try {
         setLoading(true);
+        
         // 1. 학생 기본 정보 로드
-        const { data: studentData } = await supabase.from('students').select('*').eq('id', studentId).single();
+        const { data: studentData } = await supabase
+          .from('students')
+          .select('*')
+          .eq('id', studentId)
+          .single();
+          
         if (!studentData) return;
         setStudent(studentData);
 
-        // 2. 라이브러리 트리 로드
+        // 2. 라이브러리 트리 로드 
+        // 🔥 중요: 특정 학년으로 필터링하지 않고 전체를 가져와야 상위 폴더(grade가 없는 경우)가 누락되지 않음
         const { data: dbLibrary } = await supabase
           .from('exam_library')
-          .select('*')
-          .eq('grade', studentData.grade);
+          .select('*'); 
 
         if (dbLibrary && dbLibrary.length > 0) {
+          // 전체 데이터를 buildTree에 넣어 완벽한 계층 구조 생성
           setExamLibrary(buildTree(dbLibrary));
         }
 
@@ -138,7 +153,6 @@ export function useStudentData(studentId: string) {
     }
   };
 
-  // UI에서 사용할 수 있게 포장해서 내보내기
   return {
     student,
     allRecords,

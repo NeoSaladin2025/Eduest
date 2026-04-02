@@ -5,7 +5,6 @@ import {
   Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap 
 } from 'lucide-react';
 import TestModule from './test/test';
-// 🔥 방금 만든 커스텀 훅 임포트!
 import { useStudentData } from './useStudentData';
 
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwkwjuyV5qS0jhuKVJG1jqqNCDURmsWCXveAiSB5mJKksMZ9Td5ijzx4c4JJEvDsRwVTA/exec';
@@ -13,7 +12,6 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwkwjuyV5qS0jhu
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   
-  // 🧠 비즈니스 로직은 훅에게 맡기고 결과만 받기
   const { 
     student, 
     allRecords, 
@@ -25,9 +23,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
-  // --- UI 전용 상태들 ---
   const [mode, setMode] = useState<'test' | 'review' | 'library'>('review');
-  const [isTesting, setIsTesting] = useState(false); // 시험 중 여부 가드
+  const [isTesting, setIsTesting] = useState(false);
   const [currentPath, setCurrentPath] = useState<any[]>([]);
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]);
   const [showReviewer, setShowReviewer] = useState(false);
@@ -37,20 +34,25 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [contentData, setContentData] = useState<string | null>(null);
   const [isContentLoading, setIsContentLoading] = useState(false);
 
-  // 라이브러리 초기 진입 설정 (데이터 로드 완료 후 실행)
+  // 🔥 [업데이트] 라이브러리 초기 진입 및 학년별 지능형 필터링
   useEffect(() => {
     if (examLibrary.length > 0 && student) {
+      // 🔍 1순위: 이름에 내 학년(고1, 고2, 고3 등)이 포함된 최상위 폴더 찾기
       const gradeFolder = examLibrary.find(f => f.name.includes(student.grade));
+      
       if (gradeFolder) {
+        // 찾았다면 해당 학년 폴더의 하위 내용부터 보여줌
         setDisplayLibrary(gradeFolder.subFolders || []);
         setCurrentPath([gradeFolder]);
       } else {
-        setDisplayLibrary(examLibrary);
+        // 🔍 2순위: 이름 매칭 실패 시, grade 컬럼이 학생과 일치하는 항목들만 모아서 보여줌 (안전장치)
+        const fallbackList = examLibrary.filter(f => f.grade === student.grade);
+        setDisplayLibrary(fallbackList);
+        setCurrentPath([]);
       }
     }
   }, [examLibrary, student]);
 
-  // --- UI 핸들러 로직 ---
   const changeMode = (newMode: typeof mode) => {
     if (isTesting) {
       alert("🔥 시험이 진행 중입니다! 종료 또는 일시 정지 후에 이동할 수 있습니다.");
@@ -85,17 +87,23 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       const newPath = [...prev];
       newPath.pop();
       if (newPath.length === 0) {
+        // 처음으로 돌아갈 때 다시 학년별 필터링 적용
         const gradeFolder = examLibrary.find((f: any) => f.name.includes(student?.grade));
-        setDisplayLibrary(gradeFolder ? gradeFolder.subFolders : examLibrary);
-        return gradeFolder ? [gradeFolder] : [];
+        if (gradeFolder) {
+          setDisplayLibrary(gradeFolder.subFolders || []);
+          return [gradeFolder];
+        } else {
+          setDisplayLibrary(examLibrary.filter((f: any) => f.grade === student?.grade));
+          return [];
+        }
       } else {
-        setDisplayLibrary(newPath[newPath.length - 1].subFolders || []);
+        const lastFolder = newPath[newPath.length - 1];
+        setDisplayLibrary(lastFolder.subFolders || []);
         return newPath;
       }
     });
   };
 
-  // 콘텐츠 로드 로직 (이미지/HTML)
   useEffect(() => {
     if (!selectedRecord) return;
     const loadContent = async () => {
@@ -115,7 +123,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         });
         const result = await res.json();
         let d = result.data;
-        if (type === 'html') d = d.replace(/[₩¥]/g, '\\');
+        if (type === 'html' && d) d = d.replace(/[₩¥]/g, '\\');
         dataCache.current[key] = d;
         setContentData(d);
       } catch (e) {
@@ -127,7 +135,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     loadContent();
   }, [selectedRecord, selectedTab, dataCache]);
 
-  // 로딩 화면
   if (loading && !showReviewer) return (
     <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center gap-6">
       <Loader2 className="animate-spin text-indigo-500" size={60} />
@@ -139,7 +146,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     <div className="min-h-screen bg-[#020617] p-4 md:p-12 font-sans text-slate-200 overflow-x-hidden">
       <div className="max-w-[1400px] mx-auto">
         
-        {/* 💊 상단 3단 탭 메뉴 */}
         {!showReviewer && (
           <div className="flex justify-center mb-16 animate-in slide-in-from-top-10 duration-700">
             <div className="bg-white/5 p-1.5 rounded-[32px] border border-white/10 backdrop-blur-3xl flex shadow-3xl">
@@ -156,7 +162,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           </div>
         )}
 
-        {/* 🎬 메인 콘텐츠 영역 */}
         {!showReviewer && (
           <div className="animate-in fade-in zoom-in duration-1000">
             <div className="text-center mb-16 space-y-4">
@@ -203,7 +208,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   </div>
                 ) : (
                   <>
-                    {currentPath.length > 1 && (
+                    {currentPath.length > 0 && (
                       <div onClick={handleFolderBack} className="bg-white/5 p-12 rounded-[56px] border border-dashed border-white/10 hover:border-white/30 transition-all cursor-pointer flex flex-col items-center justify-center group">
                         <ArrowLeft size={40} className="text-slate-600 group-hover:text-white mb-4 transition-transform group-hover:-translate-x-2"/>
                         <div className="text-xl font-black text-slate-600 group-hover:text-white uppercase">GO BACK</div>
@@ -226,7 +231,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           </div>
         )}
 
-        {/* 📖 리뷰어 화면 */}
         {showReviewer && (
           <div className="flex flex-col gap-6 animate-in slide-in-from-bottom-10 duration-1000 pb-10">
             <div className="flex items-center gap-4 bg-white/5 p-4 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
