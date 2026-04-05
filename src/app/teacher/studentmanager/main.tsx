@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
-  Loader2, Copy, Check, Lock, Unlock 
+  Loader2, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square
 } from 'lucide-react';
 
 interface Student {
@@ -11,7 +11,8 @@ interface Student {
   name: string;
   grade: string;
   drive_folder_id?: string;
-  is_unlocked: boolean; // 🔥 Supabase 락 상태
+  is_unlocked: boolean;
+  unlocked_folders?: string[]; // 🔥 추가된 필드
 }
 
 export default function StudentManagerMain() {
@@ -22,14 +23,17 @@ export default function StudentManagerMain() {
   const [fetching, setFetching] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // 🔥 [학년 필터 상태]
   const [selectedGradeFilter, setSelectedGradeFilter] = useState('전체');
   const gradeButtons = ['전체', '중1', '중2', '중3', '고1', '고2', '고3'];
 
-  // 복사 피드백을 위한 상태
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // 🔗 [마법의 주소 복사 함수]
+  // 🔥 [추가] 개별 폴더 락 관리를 위한 상태
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+  const [libraryItems, setLibraryItems] = useState<any[]>([]);
+  const [modalLoading, setModalLoading] = useState(false);
+
   const handleCopyLink = (studentId: string) => {
     const origin = window.location.origin;
     const studentUrl = `${origin}/student/${studentId}`;
@@ -40,7 +44,6 @@ export default function StudentManagerMain() {
     });
   };
 
-  // 1️⃣ 학생 목록 불러오기
   const fetchStudents = async () => {
     try {
       setFetching(true);
@@ -61,7 +64,6 @@ export default function StudentManagerMain() {
     fetchStudents();
   }, []);
 
-  // 🔐 [핵심] 학생 해설지 잠금 토글 함수 (API 연동)
   const toggleStudentLock = async (student: Student) => {
     const nextStatus = !student.is_unlocked;
     
@@ -86,7 +88,59 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 2️⃣ 학생 등록
+  // 🔥 [수정] 특정 학생의 개별 폴더 권한 저장
+  const saveFolderPermissions = async (folderIds: string[]) => {
+    if (!selectedStudent) return;
+    setModalLoading(true);
+
+    try {
+      const res = await fetch('/api/drive/library', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          studentId: selectedStudent.id, 
+          unlockedFolders: folderIds 
+        }),
+      });
+
+      if (res.ok) {
+        setStudents(prev => prev.map(s => 
+          s.id === selectedStudent.id ? { ...s, unlocked_folders: folderIds } : s
+        ));
+        setIsModalOpen(false);
+      }
+    } catch (err) {
+      alert('권한 저장에 실패했습니다.');
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  // 🔥 [수정] 모달 열기 및 해당 학년 라이브러리 로드 (필터링 로직 강화)
+  const openLockModal = async (student: Student) => {
+    setSelectedStudent(student);
+    setIsModalOpen(true);
+    setModalLoading(true);
+    try {
+      const res = await fetch(`/api/drive/library?grade=${student.grade}`);
+      const data = await res.json();
+      
+      const filtered = (data.items || [])
+        .filter((item: any) => 
+          item.type === 'folder' && 
+          item.name.includes('차') && 
+          item.name !== student.grade
+        )
+        .sort((a: any, b: any) => a.name.localeCompare(b.name, 'ko'));
+        
+      setLibraryItems(filtered);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
   const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !grade) return;
@@ -115,7 +169,6 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 3️⃣ 학생 삭제
   const handleDeleteStudent = async (student: Student) => {
     const confirmDelete = window.confirm(
       `⚠️ [주의] ${student.name} 학생을 삭제하시겠습니까?\n\n이 작업은 구글 드라이브의 복습 폴더도 휴지통으로 이동됩니다.`
@@ -142,24 +195,95 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 🔥 [핵심 추가] 필터링 적용 및 가나다순(이름순) 정렬
   const filteredAndSortedStudents = useMemo(() => {
     return students
       .filter(s => {
-        // 검색어 필터 (이름 또는 학년)
         const matchesSearch = s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
                              s.grade.toLowerCase().includes(searchTerm.toLowerCase());
-        // 학년 버튼 필터
         const matchesGrade = selectedGradeFilter === '전체' || s.grade.includes(selectedGradeFilter);
-        
         return matchesSearch && matchesGrade;
       })
-      .sort((a, b) => a.name.localeCompare(b.name, 'ko')); // 🇰🇷 가나다순 정렬
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   }, [students, searchTerm, selectedGradeFilter]);
 
   return (
     <div className="p-8 max-w-[1200px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
       
+      {/* 🔥 [추가] 개별 폴더 잠금 관리 모달 (가로폭 최적화 & 2열 배치 수정본) */}
+      {isModalOpen && selectedStudent && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)} />
+          <div className="relative bg-white w-full max-w-xl rounded-[40px] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-black text-slate-800 tracking-tighter italic uppercase">
+                  {selectedStudent.name} <span className="text-indigo-500 font-bold">회차 관리</span>
+                </h2>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Exam Sessions Access</p>
+              </div>
+              <button onClick={() => setIsModalOpen(false)} className="w-8 h-8 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+            
+            {/* 📜 컴팩트한 그리드 & 내부 스크롤 영역 */}
+            <div className="p-6 max-h-[450px] overflow-y-auto bg-white">
+              {modalLoading ? (
+                <div className="py-20 flex justify-center"><Loader2 className="animate-spin text-indigo-500" /></div>
+              ) : libraryItems.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3">
+                  {libraryItems.map(item => {
+                    const isChecked = selectedStudent.unlocked_folders?.includes(item.drive_id);
+                    return (
+                      <div 
+                        key={item.id} 
+                        onClick={() => {
+                          const current = selectedStudent.unlocked_folders || [];
+                          const next = isChecked ? current.filter(id => id !== item.drive_id) : [...current, item.drive_id];
+                          setSelectedStudent({ ...selectedStudent, unlocked_folders: next });
+                        }}
+                        className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all cursor-pointer ${isChecked ? 'border-indigo-600 bg-indigo-50/50 shadow-sm' : 'border-slate-50 bg-slate-50/30 hover:border-slate-200'}`}
+                      >
+                        {isChecked ? (
+                          <CheckSquare size={18} className="text-indigo-600 shrink-0" />
+                        ) : (
+                          <Square size={18} className="text-slate-300 shrink-0" />
+                        )}
+                        <span className={`font-black text-xs truncate ${isChecked ? 'text-indigo-700' : 'text-slate-500'}`}>
+                          {item.name}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-center py-20 text-slate-400 font-bold italic text-xs">해당 회차 시험지가 없습니다.</p>
+              )}
+            </div>
+
+            <div className="p-6 bg-slate-50/50 border-t border-slate-100 flex gap-3">
+              <button 
+                onClick={() => {
+                  const allIds = libraryItems.map(i => i.drive_id);
+                  const isAll = libraryItems.every(i => selectedStudent.unlocked_folders?.includes(i.drive_id));
+                  setSelectedStudent({ ...selectedStudent, unlocked_folders: isAll ? [] : allIds });
+                }}
+                className="flex-1 py-3 bg-white border border-slate-200 text-slate-500 font-black rounded-xl text-[11px] uppercase hover:bg-slate-100 transition-all"
+              >
+                전체 선택
+              </button>
+              <button 
+                onClick={() => saveFolderPermissions(selectedStudent.unlocked_folders || [])}
+                disabled={modalLoading}
+                className="flex-[2] bg-slate-900 text-white font-black py-3 rounded-xl shadow-xl hover:bg-indigo-600 transition-all flex items-center justify-center gap-2 text-[11px] uppercase tracking-wider"
+              >
+                {modalLoading ? <Loader2 className="animate-spin" size={16} /> : 'Save Permissions'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 헤더 섹션 */}
       <div className="flex justify-between items-end mb-10">
         <div>
@@ -219,7 +343,6 @@ export default function StudentManagerMain() {
         {/* 오른쪽: 학생 목록 */}
         <div className="lg:col-span-2 space-y-6">
           
-          {/* 🔍 검색창 + 🔥 학년 필터 버튼 그룹 */}
           <div className="space-y-5">
             <div className="relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -269,6 +392,14 @@ export default function StudentManagerMain() {
                     </div>
                     
                     <div className="flex gap-2 items-center">
+                      <button 
+                        onClick={() => openLockModal(student)}
+                        className="p-2.5 rounded-xl bg-white text-slate-400 border border-slate-100 hover:border-indigo-300 hover:text-indigo-600 shadow-sm transition-all"
+                        title="회차별 권한 설정"
+                      >
+                        <Settings2 size={18} />
+                      </button>
+
                       <button 
                         onClick={() => toggleStudentLock(student)}
                         className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border shadow-sm ${

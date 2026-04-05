@@ -34,18 +34,15 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [contentData, setContentData] = useState<string | null>(null);
   const [isContentLoading, setIsContentLoading] = useState(false);
 
-  // 🔥 [업데이트] 라이브러리 초기 진입 및 학년별 지능형 필터링
+  // 라이브러리 초기 진입 및 학년별 필터링
   useEffect(() => {
     if (examLibrary.length > 0 && student) {
-      // 🔍 1순위: 이름에 내 학년(고1, 고2, 고3 등)이 포함된 최상위 폴더 찾기
       const gradeFolder = examLibrary.find(f => f.name.includes(student.grade));
       
       if (gradeFolder) {
-        // 찾았다면 해당 학년 폴더의 하위 내용부터 보여줌
         setDisplayLibrary(gradeFolder.subFolders || []);
         setCurrentPath([gradeFolder]);
       } else {
-        // 🔍 2순위: 이름 매칭 실패 시, grade 컬럼이 학생과 일치하는 항목들만 모아서 보여줌 (안전장치)
         const fallbackList = examLibrary.filter(f => f.grade === student.grade);
         setDisplayLibrary(fallbackList);
         setCurrentPath([]);
@@ -62,7 +59,18 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     setCurrentPath([]);
   };
 
+  // 🔥 [수정] 개별 폴더 클릭 핸들러 (회차 폴더인 경우에만 락 체크)
   const handleLibraryFolderClick = (folder: any) => {
+    // 🔍 로직: 이름에 '차'가 들어간 경우(시험지 회차)에만 선생님이 준 개별 권한을 확인해
+    const isExamSession = folder.name.includes('차');
+    const isUnlocked = student?.unlocked_folders?.includes(folder.drive_id);
+
+    // 만약 회차 폴더인데 내 권한 리스트에 없다면? 철통 방어!
+    if (isExamSession && !isUnlocked) {
+      alert("🔒 해당 회차는 아직 시험 전이거나 잠겨있어 해설을 볼 수 없습니다.");
+      return;
+    }
+
     if (folder.subFolders && folder.subFolders.length > 0) {
       setCurrentPath(prev => [...prev, folder]);
       setDisplayLibrary(folder.subFolders);
@@ -87,7 +95,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       const newPath = [...prev];
       newPath.pop();
       if (newPath.length === 0) {
-        // 처음으로 돌아갈 때 다시 학년별 필터링 적용
         const gradeFolder = examLibrary.find((f: any) => f.name.includes(student?.grade));
         if (gradeFolder) {
           setDisplayLibrary(gradeFolder.subFolders || []);
@@ -214,16 +221,33 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                         <div className="text-xl font-black text-slate-600 group-hover:text-white uppercase">GO BACK</div>
                       </div>
                     )}
-                    {displayLibrary.map(folder => (
-                      <div key={folder.drive_id || folder.id} onClick={() => handleLibraryFolderClick(folder)} className={`bg-white/5 p-12 rounded-[56px] border border-white/10 transition-all cursor-pointer shadow-3xl group relative overflow-hidden ${folder.subFolders?.length > 0 ? 'hover:bg-amber-600' : 'hover:bg-emerald-600'}`}>
-                        <Library size={40} className={`mb-8 transition-colors ${folder.subFolders?.length > 0 ? 'text-amber-500 group-hover:text-white' : 'text-emerald-500 group-hover:text-white'}`}/>
-                        <div className="text-3xl font-black mb-3 group-hover:translate-x-2 transition-transform leading-tight">{folder.name}</div>
-                        <div className="text-[10px] font-bold text-slate-500 group-hover:text-white opacity-60 uppercase tracking-widest">
-                          {folder.subFolders?.length > 0 ? `${folder.subFolders.length} folders` : `${folder.files?.length || 0} solutions`}
+                    {displayLibrary.map(folder => {
+                      // 🔥 [수정] 회차 폴더(이름에 '차' 포함)인 경우에만 락 비주얼을 적용해
+                      const isExamSession = folder.name.includes('차');
+                      const isUnlocked = student?.unlocked_folders?.includes(folder.drive_id);
+                      const isLocked = isExamSession && !isUnlocked;
+
+                      return (
+                        <div 
+                          key={folder.drive_id || folder.id} 
+                          onClick={() => handleLibraryFolderClick(folder)} 
+                          className={`bg-white/5 p-12 rounded-[56px] border border-white/10 transition-all cursor-pointer shadow-3xl group relative overflow-hidden ${isLocked ? 'opacity-40 grayscale' : folder.subFolders?.length > 0 ? 'hover:bg-amber-600' : 'hover:bg-emerald-600'}`}
+                        >
+                          {isLocked ? (
+                            <Lock size={40} className="text-rose-500 mb-8" />
+                          ) : (
+                            <Library size={40} className={`mb-8 transition-colors ${folder.subFolders?.length > 0 ? 'text-amber-500 group-hover:text-white' : 'text-emerald-500 group-hover:text-white'}`}/>
+                          )}
+                          <div className="text-3xl font-black mb-3 group-hover:translate-x-2 transition-transform leading-tight">
+                            {folder.name}
+                          </div>
+                          <div className="text-[10px] font-bold text-slate-500 group-hover:text-white opacity-60 uppercase tracking-widest">
+                            {isLocked ? 'LOCKED SESSION' : folder.subFolders?.length > 0 ? `${folder.subFolders.length} folders` : `${folder.files?.length || 0} solutions`}
+                          </div>
+                          {!isLocked && <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>}
                         </div>
-                        <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </>
                 )}
               </div>

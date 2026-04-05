@@ -32,20 +32,18 @@ export function useStudentData(studentId: string) {
     const map: any = {};
     const roots: any[] = [];
     
-    // 1단계: 모든 아이템을 맵에 등록 (id는 drive_id 기준)
+    // 1단계: 맵 구성
     items.forEach(item => {
       map[item.drive_id] = { ...item, id: item.drive_id, subFolders: [], files: [] };
     });
 
-    // 2단계: 부모-자식 관계 연결
+    // 2단계: 트리 구조 연결
     items.forEach(item => {
       const node = map[item.drive_id];
       if (item.parent_id && map[item.parent_id]) {
-        // 부모가 맵에 존재하면 부모의 하위 목록으로 추가
         if (item.type === 'folder') map[item.parent_id].subFolders.push(node);
         else map[item.parent_id].files.push(node);
       } else { 
-        // 부모가 없거나 맵에 없으면 최상위(Root)로 취급
         roots.push(node); 
       }
     });
@@ -60,7 +58,7 @@ export function useStudentData(studentId: string) {
       try {
         setLoading(true);
         
-        // 1. 학생 기본 정보 로드
+        // 1. 학생 기본 정보 로드 (unlocked_folders 배열 포함)
         const { data: studentData } = await supabase
           .from('students')
           .select('*')
@@ -70,18 +68,16 @@ export function useStudentData(studentId: string) {
         if (!studentData) return;
         setStudent(studentData);
 
-        // 2. 라이브러리 트리 로드 
-        // 🔥 중요: 특정 학년으로 필터링하지 않고 전체를 가져와야 상위 폴더(grade가 없는 경우)가 누락되지 않음
+        // 2. 라이브러리 트리 로드 (전체 구조를 가져와야 부모-자식 연결이 유지됨)
         const { data: dbLibrary } = await supabase
           .from('exam_library')
           .select('*'); 
 
         if (dbLibrary && dbLibrary.length > 0) {
-          // 전체 데이터를 buildTree에 넣어 완벽한 계층 구조 생성
           setExamLibrary(buildTree(dbLibrary));
         }
 
-        // 3. 복습 기록 로드 (Google Apps Script)
+        // 3. 복습 기록 로드 (Google Apps Script 연동)
         fetch(APPS_SCRIPT_URL, { 
           method: 'POST', 
           body: JSON.stringify({ 
@@ -107,13 +103,19 @@ export function useStudentData(studentId: string) {
 
     initPage();
 
-    // 📡 실시간 감시병 (락/언락 등 실시간 상태 동기화)
+    // 📡 실시간 감시병 (선생님의 권한 수정을 실시간 반영)
     const channel = supabase
       .channel(`status_monitor_${studentId}`)
       .on('postgres_changes', 
-        { event: 'UPDATE', schema: 'public', table: 'students', filter: `id=eq.${studentId}` }, 
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'students', 
+          filter: `id=eq.${studentId}` 
+        }, 
         (payload) => {
-          console.log("실시간 동기화 완료! ⚡", payload.new);
+          // 🔥 실시간 업데이트: unlocked_folders 배열 포함 전체 상태 갱신
+          console.log("실시간 데이터 동기화 완료 ⚡", payload.new);
           setStudent(payload.new);
         }
       )
@@ -128,6 +130,8 @@ export function useStudentData(studentId: string) {
   const startStealthPrefetch = async (items: any[]) => {
     for (const item of items) {
       const cacheKey = `${item.id}_solution`;
+      
+      // 이미 캐시되었거나 대기열에 있다면 패스
       if (dataCache.current[cacheKey] || prefetchQueue.current.has(cacheKey)) continue;
 
       prefetchQueue.current.add(cacheKey);
@@ -144,8 +148,10 @@ export function useStudentData(studentId: string) {
         const resJson = await res.json();
         if (resJson.success) {
           let d = resJson.data;
-          d = d.replace(/[₩¥]/g, '\\');
-          dataCache.current[cacheKey] = d;
+          if (d) {
+            d = d.replace(/[₩¥]/g, '\\');
+            dataCache.current[cacheKey] = d;
+          }
         }
       } catch (e) {
         console.error("Prefetching failed:", e);
