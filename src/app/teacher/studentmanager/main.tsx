@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
-  Loader2, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square
+  Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square
 } from 'lucide-react';
 
 interface Student {
@@ -12,7 +12,7 @@ interface Student {
   grade: string;
   drive_folder_id?: string;
   is_unlocked: boolean;
-  unlocked_folders?: string[]; // 🔥 추가된 필드
+  unlocked_folders?: string[];
 }
 
 export default function StudentManagerMain() {
@@ -28,7 +28,6 @@ export default function StudentManagerMain() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // 🔥 [추가] 개별 폴더 락 관리를 위한 상태
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
@@ -88,7 +87,6 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 🔥 [수정] 특정 학생의 개별 폴더 권한 저장
   const saveFolderPermissions = async (folderIds: string[]) => {
     if (!selectedStudent) return;
     setModalLoading(true);
@@ -116,7 +114,6 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 🔥 [수정] 모달 열기 및 해당 학년 라이브러리 로드 (필터링 로직 강화)
   const openLockModal = async (student: Student) => {
     setSelectedStudent(student);
     setIsModalOpen(true);
@@ -128,8 +125,7 @@ export default function StudentManagerMain() {
       const filtered = (data.items || [])
         .filter((item: any) => 
           item.type === 'folder' && 
-          item.name.includes('차') && 
-          item.name !== student.grade
+          item.name.trim() !== student.grade.trim()
         )
         .sort((a: any, b: any) => a.name.localeCompare(b.name, 'ko'));
         
@@ -181,7 +177,7 @@ export default function StudentManagerMain() {
         method: 'DELETE', 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          studentId: student.id,           
+          studentId: student.id,           
           folderId: student.drive_folder_id 
         }),
       });
@@ -209,29 +205,41 @@ export default function StudentManagerMain() {
   return (
     <div className="p-8 max-w-[1200px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
       
-      {/* 🔥 [추가] 개별 폴더 잠금 관리 모달 (가로폭 최적화 & 2열 배치 수정본) */}
+      {/* 🔐 [완전 강제 교정본] 회차 관리 설정창 */}
       {isModalOpen && selectedStudent && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)} />
-          <div className="relative bg-white w-full max-w-xl rounded-[40px] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => setIsModalOpen(false)} />
+          
+          {/* 🔥 1. 모달 전체 높이 제한 강제 (maxHeight: 80vh) */}
+          <div 
+            className="relative bg-white w-full max-w-2xl rounded-[32px] shadow-2xl flex flex-col animate-in zoom-in duration-200"
+            style={{ maxHeight: '80vh' }} 
+          >
+            
+            {/* 상단 헤더 (높이 고정) */}
+            <div className="shrink-0 p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-[32px]">
               <div>
-                <h2 className="text-xl font-black text-slate-800 tracking-tighter italic uppercase">
-                  {selectedStudent.name} <span className="text-indigo-500 font-bold">회차 관리</span>
+                <h2 className="text-2xl font-black text-slate-800 tracking-tighter italic uppercase leading-none">
+                  {selectedStudent.name} <span className="text-indigo-600 font-bold ml-1 text-xl">회차 관리</span>
                 </h2>
-                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Exam Sessions Access</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Exam Sessions Selection</p>
               </div>
-              <button onClick={() => setIsModalOpen(false)} className="w-8 h-8 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors">
-                <X size={18} />
+              <button onClick={() => setIsModalOpen(false)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors">
+                <X size={20} />
               </button>
             </div>
             
-            {/* 📜 컴팩트한 그리드 & 내부 스크롤 영역 */}
-            <div className="p-6 max-h-[450px] overflow-y-auto bg-white">
+            {/* 🔥 2. 스크롤 강제 활성화 영역 (overflowY: auto) */}
+            <div 
+              className="flex-1 p-6 bg-white"
+              style={{ overflowY: 'auto' }}
+            >
               {modalLoading ? (
-                <div className="py-20 flex justify-center"><Loader2 className="animate-spin text-indigo-500" /></div>
+                <div className="h-full flex items-center justify-center py-20"><Loader2 size={40} className="animate-spin text-indigo-500" /></div>
               ) : libraryItems.length > 0 ? (
-                <div className="grid grid-cols-2 gap-3">
+                
+                /* 🔥 3. 2열 그리드 강제 (인라인 스타일) */
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
                   {libraryItems.map(item => {
                     const isChecked = selectedStudent.unlocked_folders?.includes(item.drive_id);
                     return (
@@ -242,44 +250,50 @@ export default function StudentManagerMain() {
                           const next = isChecked ? current.filter(id => id !== item.drive_id) : [...current, item.drive_id];
                           setSelectedStudent({ ...selectedStudent, unlocked_folders: next });
                         }}
-                        className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all cursor-pointer ${isChecked ? 'border-indigo-600 bg-indigo-50/50 shadow-sm' : 'border-slate-50 bg-slate-50/30 hover:border-slate-200'}`}
+                        className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all cursor-pointer select-none ${isChecked ? 'border-indigo-600 bg-indigo-50 shadow-sm' : 'border-slate-100 bg-slate-50 hover:border-slate-300'}`}
+                        style={{ overflow: 'hidden' }} /* 내용 넘침 방지 */
                       >
-                        {isChecked ? (
-                          <CheckSquare size={18} className="text-indigo-600 shrink-0" />
-                        ) : (
-                          <Square size={18} className="text-slate-300 shrink-0" />
-                        )}
-                        <span className={`font-black text-xs truncate ${isChecked ? 'text-indigo-700' : 'text-slate-500'}`}>
+                        {isChecked ? <CheckSquare size={22} className="text-indigo-600 shrink-0" /> : <Square size={22} className="text-slate-300 shrink-0" />}
+                        {/* 텍스트가 너무 길면 줄임표 처리되도록 설정 */}
+                        <span 
+                          className={`font-black text-sm sm:text-base ${isChecked ? 'text-indigo-700' : 'text-slate-600'}`}
+                          style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                        >
                           {item.name}
                         </span>
                       </div>
                     );
                   })}
                 </div>
+                
               ) : (
-                <p className="text-center py-20 text-slate-400 font-bold italic text-xs">해당 회차 시험지가 없습니다.</p>
+                <div className="h-full flex items-center justify-center py-20">
+                  <p className="text-center text-slate-400 font-bold italic text-lg">데이터가 없습니다.</p>
+                </div>
               )}
             </div>
 
-            <div className="p-6 bg-slate-50/50 border-t border-slate-100 flex gap-3">
+            {/* 하단 버튼 (높이 고정) */}
+            <div className="shrink-0 p-6 bg-slate-50 border-t border-slate-100 flex gap-3 rounded-b-[32px]">
               <button 
                 onClick={() => {
                   const allIds = libraryItems.map(i => i.drive_id);
-                  const isAll = libraryItems.every(i => selectedStudent.unlocked_folders?.includes(i.drive_id));
+                  const isAll = libraryItems.length > 0 && allIds.every(i => selectedStudent.unlocked_folders?.includes(i));
                   setSelectedStudent({ ...selectedStudent, unlocked_folders: isAll ? [] : allIds });
                 }}
-                className="flex-1 py-3 bg-white border border-slate-200 text-slate-500 font-black rounded-xl text-[11px] uppercase hover:bg-slate-100 transition-all"
+                className="w-28 sm:w-32 py-4 bg-white border-2 border-slate-200 text-slate-500 font-black rounded-xl text-xs uppercase hover:bg-slate-100 transition-all shadow-sm"
               >
                 전체 선택
               </button>
               <button 
                 onClick={() => saveFolderPermissions(selectedStudent.unlocked_folders || [])}
                 disabled={modalLoading}
-                className="flex-[2] bg-slate-900 text-white font-black py-3 rounded-xl shadow-xl hover:bg-indigo-600 transition-all flex items-center justify-center gap-2 text-[11px] uppercase tracking-wider"
+                className="flex-1 bg-slate-900 text-white font-black py-4 rounded-xl shadow-xl hover:bg-indigo-600 transition-all flex items-center justify-center gap-2 text-sm sm:text-base uppercase tracking-wider"
               >
-                {modalLoading ? <Loader2 className="animate-spin" size={16} /> : 'Save Permissions'}
+                {modalLoading ? <Loader2 size={18} className="animate-spin" /> : 'Save Permissions'}
               </button>
             </div>
+            
           </div>
         </div>
       )}
@@ -315,7 +329,7 @@ export default function StudentManagerMain() {
                   required
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all outline-none font-bold"
+                  className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all outline-none font-bold text-xs"
                   placeholder="이름"
                 />
               </div>
@@ -325,16 +339,16 @@ export default function StudentManagerMain() {
                   required
                   value={grade}
                   onChange={(e) => setGrade(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all outline-none font-bold"
+                  className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 transition-all outline-none font-bold text-xs"
                   placeholder="예: 중1, 고2-A"
                 />
               </div>
               <button 
                 type="submit"
                 disabled={loading}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl shadow-lg shadow-indigo-100 transition-all flex items-center justify-center gap-2 disabled:bg-slate-300 uppercase tracking-tighter"
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-2xl shadow-lg shadow-indigo-100 transition-all flex items-center justify-center gap-2 disabled:bg-slate-300 uppercase tracking-tighter text-[10px]"
               >
-                {loading ? <Loader2 className="animate-spin" size={20} /> : 'Create Student'}
+                {loading ? <Loader2 size={20} className="animate-spin" /> : 'Create Student'}
               </button>
             </form>
           </div>
@@ -349,7 +363,7 @@ export default function StudentManagerMain() {
               <input 
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-white border border-slate-200 rounded-[24px] py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold shadow-sm"
+                className="w-full bg-white border border-slate-200 rounded-[24px] py-4 pl-12 pr-4 text-slate-700 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-bold shadow-sm text-sm"
                 placeholder="이름 또는 학년 검색..."
               />
             </div>
@@ -373,7 +387,7 @@ export default function StudentManagerMain() {
 
           {fetching ? (
             <div className="flex flex-col items-center justify-center py-24 text-slate-300">
-              <Loader2 className="animate-spin mb-4" size={40} />
+              <Loader2 size={40} className="animate-spin mb-4" />
               <p className="font-black italic uppercase tracking-widest text-xs">Syncing with Supabase...</p>
             </div>
           ) : filteredAndSortedStudents.length > 0 ? (
@@ -385,7 +399,7 @@ export default function StudentManagerMain() {
                     <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm relative overflow-hidden">
                       < GraduationCap size={28} />
                       {!student.is_unlocked && (
-                        <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white">
+                        <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white group-hover:rotate-0 transition-transform">
                           <Lock size={18} />
                         </div>
                       )}
@@ -438,7 +452,7 @@ export default function StudentManagerMain() {
                   
                   <button 
                     onClick={() => window.open(`/student/${student.id}`, '_blank')}
-                    className="w-full bg-slate-50 group-hover:bg-indigo-600 text-slate-500 group-hover:text-white font-black py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm"
+                    className="w-full bg-slate-50 group-hover:bg-indigo-600 text-slate-500 group-hover:text-white font-black py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm text-xs"
                   >
                     VIEW REPLAY <ExternalLink size={14} />
                   </button>
@@ -455,4 +469,9 @@ export default function StudentManagerMain() {
       </div>
     </div>
   );
+}
+
+// Props 타입을 정의하고 LoaderIcon을 사용하도록 수정
+function Loader2({ size, className }: { size: number, className?: string }) {
+  return <LoaderIcon size={size} className={className} />;
 }

@@ -8,7 +8,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwkwjuyV5qS0jhuKVJG1jqqNCDURmsWCXveAiSB5mJKksMZ9Td5ijzx4c4JJEvDsRwVTA/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyiMq-5QOCRjaqwYNyttL09WByzTcfxlwoac6mSdg-EHtXpieEd4Zsi-owUIUAu1KbH0w/exec';
 
 export function useStudentData(studentId: string) {
   // --- 상태 관리 ---
