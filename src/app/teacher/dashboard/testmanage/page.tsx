@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Users, Timer, AlertCircle, CheckCircle2, PauseCircle, PlayCircle, Search, ShieldCheck, RotateCcw, Filter, Clock, Check, ArrowLeft
@@ -14,6 +14,14 @@ const supabase = createClient(
 
 type TabType = 'incident' | 'testing' | 'waiting';
 
+type AlertNotification = {
+  id: string;
+  studentName: string;
+  grade: string;
+  status: 'AWAY' | 'PAUSED' | 'FINISHED';
+  remainingSec: number;
+};
+
 export default function TestManagePage() {
   const router = useRouter(); // router 초기화
   const [students, setStudents] = useState<any[]>([]);
@@ -22,6 +30,136 @@ export default function TestManagePage() {
   const [activeTab, setActiveTab] = useState<TabType>('testing'); 
   const [selectedGrade, setSelectedGrade] = useState<string>('ALL');
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [notifications, setNotifications] = useState<AlertNotification[]>([]);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>('default');
+  const prevStudentsRef = useRef<any[]>([]);
+  const isInitializedRef = useRef(false);
+
+  // stale closure 방지: 매 렌더마다 최신 함수 참조 유지
+  const addNotificationRef = useRef<(student: any) => void>(() => {});
+
+  const playAlertSound = useCallback((status: 'AWAY' | 'PAUSED' | 'FINISHED') => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+      const ctx = new AudioContextClass();
+
+      if (status === 'AWAY') {
+        // 빰빰빰! - 3연속 긴급 경보
+        [0, 0.28, 0.56].forEach((delay) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(1050, ctx.currentTime + delay);
+          osc.frequency.exponentialRampToValueAtTime(650, ctx.currentTime + delay + 0.2);
+          gain.gain.setValueAtTime(0.6, ctx.currentTime + delay);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.22);
+          osc.start(ctx.currentTime + delay);
+          osc.stop(ctx.currentTime + delay + 0.22);
+        });
+      } else if (status === 'PAUSED') {
+        // 빰- 하강 경고음
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(600, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.5, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.55);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.55);
+      } else if (status === 'FINISHED') {
+        // 딩동 - 완료 멜로디
+        [523, 659, 784, 1047].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.13);
+          gain.gain.setValueAtTime(0.35, ctx.currentTime + i * 0.13);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.13 + 0.2);
+          osc.start(ctx.currentTime + i * 0.13);
+          osc.stop(ctx.currentTime + i * 0.13 + 0.2);
+        });
+      }
+    } catch {}
+  }, []);
+
+  const addNotification = useCallback((student: any) => {
+    const status = student.test_status as 'AWAY' | 'PAUSED' | 'FINISHED';
+
+    // 소리
+    playAlertSound(status);
+
+    // 진동 (Android 모바일)
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      if (status === 'AWAY')    navigator.vibrate([300, 100, 300, 100, 300]);
+      else if (status === 'PAUSED')   navigator.vibrate([200, 150, 200]);
+      else if (status === 'FINISHED') navigator.vibrate([100, 80, 100, 80, 500]);
+    }
+
+    // 윈도우 OS 알림
+    const osLabels: Record<string, string> = {
+      AWAY: '🚨 자리 이탈',
+      PAUSED: '⏸️ 일시 정지',
+      FINISHED: '✅ 시험 완료',
+    };
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      const rem = student.test_remaining_sec || 0;
+      const remStr = rem > 0 ? ` · 남은 시간 ${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}` : '';
+      try {
+        new Notification(`${student.name}  ${osLabels[status] ?? status}`, {
+          body: `${student.grade}${remStr}`,
+          icon: '/favicon.ico',
+          tag: `alert-${student.id}`,
+          renotify: true,
+        });
+      } catch {}
+    }
+
+    // 화면 내 토스트
+    const notif: AlertNotification = {
+      id: `${student.id}-${Date.now()}`,
+      studentName: student.name,
+      grade: student.grade,
+      status,
+      remainingSec: student.test_remaining_sec || 0,
+    };
+    setNotifications((prev) => [notif, ...prev].slice(0, 5));
+    setTimeout(() => {
+      setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    }, 7000);
+  }, [playAlertSound]);
+
+  // ref를 항상 최신 함수로 유지
+  addNotificationRef.current = addNotification;
+
+  // 윈도우 알림 권한 초기화 및 요청
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setNotifPermission('unsupported');
+      return;
+    }
+    setNotifPermission(Notification.permission);
+    if (Notification.permission === 'default') {
+      Notification.requestPermission().then((p) => setNotifPermission(p));
+    }
+  }, []);
+
+  const requestNotifPermission = async () => {
+    if (!('Notification' in window)) return;
+    const perm = await Notification.requestPermission();
+    setNotifPermission(perm);
+    if (perm === 'granted') {
+      // 즉시 테스트 알림 발송
+      new Notification('✅ 알림 연결 성공', { body: '이제 윈도우 알림이 전송됩니다.' });
+    }
+  };
 
   useEffect(() => {
     // 1초마다 현재 시간 업데이트 (실시간 싱크 계산용)
@@ -30,7 +168,9 @@ export default function TestManagePage() {
     const fetchStudents = async () => {
       const { data } = await supabase.from('students').select('*').order('name');
       setStudents(data || []);
+      prevStudentsRef.current = data || [];
       setLoading(false);
+      isInitializedRef.current = true;
     };
 
     fetchStudents();
@@ -39,7 +179,21 @@ export default function TestManagePage() {
     const channel = supabase
       .channel('proctoring_room')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload) => {
-        setStudents((current) => current.map((s) => s.id === payload.new.id ? payload.new : s));
+        if (isInitializedRef.current) {
+          const newStatus = payload.new.test_status;
+          if (['AWAY', 'PAUSED', 'FINISHED'].includes(newStatus)) {
+            const prev = prevStudentsRef.current.find((s) => String(s.id) === String(payload.new.id));
+            // 이전 상태와 다를 때만 알림 (prev 없으면 무조건 알림)
+            if (!prev || prev.test_status !== newStatus) {
+              addNotificationRef.current(payload.new);
+            }
+          }
+        }
+        setStudents((current) => {
+          const updated = current.map((s) => String(s.id) === String(payload.new.id) ? payload.new : s);
+          prevStudentsRef.current = updated;
+          return updated;
+        });
       })
       .subscribe();
 
@@ -155,15 +309,42 @@ export default function TestManagePage() {
             </div>
           </div>
 
-          <div className="relative group min-w-[350px]">
-            <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={20} />
-            <input 
-              type="text"
-              placeholder="Search Student..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-14 pr-8 py-5 bg-white border-2 border-slate-100 rounded-[28px] focus:outline-none focus:border-indigo-500 transition-all shadow-xl shadow-slate-200/50 font-bold text-lg"
-            />
+          <div className="flex items-center gap-4">
+            {/* 윈도우 알림 권한 상태 배지 */}
+            {notifPermission === 'granted' && (
+              <button
+                onClick={() => addNotification({ id: 'test', name: '테스트학생', grade: '1학년', test_status: 'AWAY', test_remaining_sec: 300 })}
+                className="flex items-center gap-2 px-4 py-3 bg-emerald-50 border-2 border-emerald-200 rounded-2xl font-black text-xs text-emerald-600 hover:bg-emerald-100 transition-all active:scale-95 whitespace-nowrap"
+                title="클릭하면 테스트 알림 발송"
+              >
+                🔔 <span>알림 ON</span>
+              </button>
+            )}
+            {notifPermission === 'denied' && (
+              <div className="flex items-center gap-2 px-4 py-3 bg-rose-50 border-2 border-rose-300 rounded-2xl text-xs whitespace-nowrap">
+                <span className="font-black text-rose-600">🚫 알림 차단됨</span>
+                <span className="text-rose-400 font-bold">— 주소창 🔒 클릭 → 알림 → 허용</span>
+              </div>
+            )}
+            {notifPermission === 'default' && (
+              <button
+                onClick={requestNotifPermission}
+                className="flex items-center gap-2 px-4 py-3 bg-amber-50 border-2 border-amber-300 rounded-2xl font-black text-xs text-amber-600 hover:bg-amber-100 transition-all active:scale-95 whitespace-nowrap"
+              >
+                🔔 알림 허용하기
+              </button>
+            )}
+
+            <div className="relative group min-w-[350px]">
+              <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={20} />
+              <input 
+                type="text"
+                placeholder="Search Student..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-14 pr-8 py-5 bg-white border-2 border-slate-100 rounded-[28px] focus:outline-none focus:border-indigo-500 transition-all shadow-xl shadow-slate-200/50 font-bold text-lg"
+              />
+            </div>
           </div>
         </div>
 
@@ -283,7 +464,47 @@ export default function TestManagePage() {
         @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .animate-spin-slow { animation: spin-slow 12s linear infinite; }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
+        @keyframes notif-in {
+          from { opacity: 0; transform: translateX(110%) scale(0.9); }
+          to   { opacity: 1; transform: translateX(0)   scale(1);   }
+        }
+        @keyframes notif-out {
+          from { opacity: 1; max-height: 120px; margin-bottom: 12px; }
+          to   { opacity: 0; max-height: 0;     margin-bottom: 0;    }
+        }
+        .notif-enter { animation: notif-in 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards; }
       `}</style>
+
+      {/* 🔔 오른쪽 하단 알림 */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col-reverse gap-3 pointer-events-none" style={{ maxWidth: 340 }}>
+        {notifications.map((notif) => {
+          const isAway = notif.status === 'AWAY';
+          const isPaused = notif.status === 'PAUSED';
+          const bg = isAway ? 'bg-rose-600' : isPaused ? 'bg-amber-500' : 'bg-emerald-500';
+          const badge = isAway ? '자리 이탈' : isPaused ? '일시 정지' : '시험 완료';
+          const icon = isAway ? '🚨' : isPaused ? '⏸️' : '✅';
+          const remaining = notif.remainingSec > 0
+            ? `${Math.floor(notif.remainingSec / 60)}:${String(notif.remainingSec % 60).padStart(2, '0')} 남음`
+            : '';
+          return (
+            <div
+              key={notif.id}
+              className={`notif-enter pointer-events-auto w-full rounded-3xl shadow-2xl overflow-hidden flex items-stretch`}
+              style={{ boxShadow: isAway ? '0 8px 40px rgba(225,29,72,0.45)' : isPaused ? '0 8px 40px rgba(245,158,11,0.4)' : '0 8px 40px rgba(16,185,129,0.4)' }}
+            >
+              <div className={`${bg} flex items-center justify-center px-5 text-2xl`}>{icon}</div>
+              <div className="bg-white flex-1 px-5 py-4">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${isAway ? 'text-rose-500' : isPaused ? 'text-amber-500' : 'text-emerald-500'}`}>{badge}</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{notif.grade}</span>
+                </div>
+                <p className="text-lg font-black text-slate-900 tracking-tighter leading-none">{notif.studentName}</p>
+                {remaining && <p className="text-[11px] font-bold text-slate-400 mt-1">{remaining}</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

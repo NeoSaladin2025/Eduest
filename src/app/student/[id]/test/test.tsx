@@ -24,6 +24,12 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false); // 시간 수정 모드
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  // stale closure 방지: 구독 콜백에서 항상 최신 상태 참조
+  const isRunningRef = useRef(false);
+  const isFinishedRef = useRef(false);
+  isRunningRef.current = isRunning;
+  isFinishedRef.current = isFinished;
 
   const setTestRunning = useCallback((running: boolean) => {
     setIsRunning(running);
@@ -71,15 +77,16 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
     restoreSession();
   }, [studentId, setTestRunning, resetLocalState]);
 
-  // 📡 [실시간 구독]
+  // 📡 [실시간 구독] - ref로 최신 상태 참조하여 stale closure 방지, 구독은 1회만
   useEffect(() => {
     if (!studentId) return;
     const channel = supabase.channel(`test_sync_${studentId}`).on('postgres_changes', 
       { event: 'UPDATE', schema: 'public', table: 'students', filter: `id=eq.${studentId}` }, 
       (payload) => {
         const newStatus = payload.new.test_status;
-        if (newStatus === 'IDLE') resetLocalState();
-        else if (newStatus === 'TESTING' && !isRunning && !isFinished) {
+        if (newStatus === 'IDLE') {
+          resetLocalState();
+        } else if (newStatus === 'TESTING' && !isRunningRef.current && !isFinishedRef.current) {
           if (payload.new.test_remaining_sec !== undefined) setTimeLeft(payload.new.test_remaining_sec);
           setIsLocked(false);
           setTestRunning(true);
@@ -87,7 +94,7 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
       }
     ).subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [studentId, resetLocalState, isRunning, isFinished, setTestRunning]);
+  }, [studentId, resetLocalState, setTestRunning]);
 
   // 🚨 [이탈 감지]
   useEffect(() => {
@@ -104,6 +111,65 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [isRunning, studentId, setTestRunning, timeLeft]);
+
+  // 🔄 [복귀 승인 폴링] 잠금 상태일 때 3초마다 DB 확인 → 구독 실패 백업
+  useEffect(() => {
+    if (!isLocked) return;
+    const poll = setInterval(async () => {
+      const { data } = await supabase
+        .from('students')
+        .select('test_status, test_remaining_sec')
+        .eq('id', studentId)
+        .single();
+      if (!data) return;
+      if (data.test_status === 'TESTING') {
+        if (data.test_remaining_sec != null) setTimeLeft(data.test_remaining_sec);
+        setIsLocked(false);
+        setTestRunning(true);
+      } else if (data.test_status === 'IDLE') {
+        resetLocalState();
+      }
+    }, 3000);
+    return () => clearInterval(poll);
+  }, [isLocked, studentId, setTestRunning, resetLocalState]);
+
+  // 💡 [화면 꺼짐 방지] 타이머 실행 중에만 Wake Lock 획득
+  useEffect(() => {
+    const acquire = async () => {
+      if (isRunning && !isLocked && !isFinished && 'wakeLock' in navigator) {
+        try {
+          wakeLockRef.current = await navigator.wakeLock.request('screen');
+        } catch {}
+      } else {
+        if (wakeLockRef.current) {
+          await wakeLockRef.current.release().catch(() => {});
+          wakeLockRef.current = null;
+        }
+      }
+    };
+    acquire();
+    return () => {
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release().catch(() => {});
+        wakeLockRef.current = null;
+      }
+    };
+  }, [isRunning, isLocked, isFinished]);
+
+  // Wake Lock은 visibility가 hidden이 되면 자동 해제됨 → 다시 visible 될 때 재획득
+  useEffect(() => {
+    const reacquire = async () => {
+      if (document.visibilityState === 'visible' && isRunning && !isLocked && !isFinished) {
+        if ('wakeLock' in navigator && !wakeLockRef.current) {
+          try {
+            wakeLockRef.current = await navigator.wakeLock.request('screen');
+          } catch {}
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', reacquire);
+    return () => document.removeEventListener('visibilitychange', reacquire);
+  }, [isRunning, isLocked, isFinished]);
 
   // ⏳ [타이머 엔진]
   useEffect(() => {
