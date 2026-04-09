@@ -117,7 +117,6 @@ export default function TestManagePage() {
           body: `${student.grade}${remStr}`,
           icon: '/favicon.ico',
           tag: `alert-${student.id}`,
-          renotify: true,
         });
       } catch {}
     }
