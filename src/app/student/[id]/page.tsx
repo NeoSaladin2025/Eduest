@@ -34,6 +34,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [contentData, setContentData] = useState<string | null>(null);
   const [isContentLoading, setIsContentLoading] = useState(false);
 
+  // 비번 잠금
+  const [pwdVerified, setPwdVerified] = useState(false);
+  const [pwdInput, setPwdInput] = useState('');
+  const [pwdError, setPwdError] = useState(false);
+
   // 라이브러리 초기 진입 및 학년별 필터링
   useEffect(() => {
     if (examLibrary.length > 0 && student) {
@@ -141,6 +146,44 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
     loadContent();
   }, [selectedRecord, selectedTab, dataCache]);
+
+  const handlePwdSubmit = () => {
+    if (pwdInput.trim() === student?.password) {
+      setPwdVerified(true);
+      setPwdError(false);
+    } else {
+      setPwdError(true);
+      setPwdInput('');
+    }
+  };
+
+  if (!loading && student?.password && !pwdVerified) return (
+    <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-10">
+          <div className="text-5xl font-black italic tracking-tighter text-white mb-2">EDU<span className="text-indigo-500">EST</span></div>
+          <p className="text-slate-500 text-sm font-bold">비번을 입력해줘</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 rounded-[32px] p-8">
+          <p className="text-center text-slate-300 font-black text-sm mb-6 uppercase tracking-widest">{student.name}</p>
+          <input
+            type="password"
+            maxLength={4}
+            value={pwdInput}
+            onChange={e => { setPwdInput(e.target.value.replace(/\D/g, '').slice(0, 4)); setPwdError(false); }}
+            onKeyDown={e => e.key === 'Enter' && handlePwdSubmit()}
+            placeholder="· · · ·"
+            className={`w-full bg-white/5 border rounded-2xl py-5 px-6 text-center text-4xl font-black tracking-[0.5em] text-white focus:outline-none transition-all ${pwdError ? 'border-rose-500 animate-pulse' : 'border-white/10 focus:border-indigo-500'}`}
+            autoFocus
+          />
+          {pwdError && <p className="text-rose-400 text-xs font-bold text-center mt-3">틀렸어. 다시 입력해줘.</p>}
+          <button onClick={handlePwdSubmit} disabled={pwdInput.length !== 4} className="w-full mt-6 bg-indigo-600 hover:bg-indigo-500 disabled:bg-white/10 text-white font-black py-4 rounded-2xl transition-all">
+            입장
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   if (loading && !showReviewer) return (
     <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center gap-6">

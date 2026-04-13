@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
-  Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square
+  Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound
 } from 'lucide-react';
 
 interface Student {
@@ -13,6 +13,7 @@ interface Student {
   drive_folder_id?: string;
   is_unlocked: boolean;
   unlocked_folders?: string[];
+  password?: string;
 }
 
 export default function StudentManagerMain() {
@@ -32,6 +33,11 @@ export default function StudentManagerMain() {
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
   const [modalLoading, setModalLoading] = useState(false);
+
+  // 비번 모달 상태
+  const [pwdStudent, setPwdStudent] = useState<Student | null>(null);
+  const [newPwd, setNewPwd] = useState('');
+  const [pwdSaving, setPwdSaving] = useState(false);
 
   const handleCopyLink = (studentId: string) => {
     const origin = window.location.origin;
@@ -62,6 +68,64 @@ export default function StudentManagerMain() {
   useEffect(() => {
     fetchStudents();
   }, []);
+
+  // 비번 없는 학생에게 고유 4자리 자동 배정 (fetchStudents와 분리)
+  useEffect(() => {
+    if (fetching || students.length === 0) return;
+    const noPasswd = students.filter(s => !s.password);
+    if (noPasswd.length === 0) return;
+
+    const usedSet = new Set(students.filter(s => s.password).map(s => s.password!));
+    const genPwd = (): string => {
+      let p: string;
+      do { p = String(Math.floor(1000 + Math.random() * 9000)); } while (usedSet.has(p));
+      usedSet.add(p);
+      return p;
+    };
+
+    Promise.all(noPasswd.map(async (s) => {
+      const pwd = genPwd();
+      await fetch('/api/drive/students/password', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: s.id, password: pwd }),
+      });
+      return { id: s.id, password: pwd };
+    })).then(results => {
+      setStudents(prev => prev.map(s => {
+        const found = results.find(r => r.id === s.id);
+        return found ? { ...s, password: found.password } : s;
+      }));
+    }).catch(err => console.error('비번 자동배정 실패:', err));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetching]);
+
+  // 비번 변경 저장
+  const handleSavePwd = async () => {
+    if (!pwdStudent) return;
+    const trimmed = newPwd.trim();
+    if (!/^\d{4}$/.test(trimmed)) return alert('4자리 숫자만 입력해줘!');
+    if (students.some(s => s.id !== pwdStudent.id && s.password === trimmed))
+      return alert('이미 다른 학생이 쓰고 있는 번호야. 다른 번호로 바꿔줘!');
+
+    setPwdSaving(true);
+    try {
+      const res = await fetch('/api/drive/students/password', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: pwdStudent.id, password: trimmed }),
+      });
+      if (res.ok) {
+        setStudents(prev => prev.map(s => s.id === pwdStudent.id ? { ...s, password: trimmed } : s));
+        setPwdStudent(null);
+        setNewPwd('');
+      } else {
+        alert('저장 실패. 다시 시도해줘!');
+      }
+    } finally {
+      setPwdSaving(false);
+    }
+  };
 
   const toggleStudentLock = async (student: Student) => {
     const nextStatus = !student.is_unlocked;
@@ -177,7 +241,7 @@ export default function StudentManagerMain() {
         method: 'DELETE', 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          studentId: student.id,           
+          studentId: student.id,           
           folderId: student.drive_folder_id 
         }),
       });
@@ -251,10 +315,9 @@ export default function StudentManagerMain() {
                           setSelectedStudent({ ...selectedStudent, unlocked_folders: next });
                         }}
                         className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all cursor-pointer select-none ${isChecked ? 'border-indigo-600 bg-indigo-50 shadow-sm' : 'border-slate-100 bg-slate-50 hover:border-slate-300'}`}
-                        style={{ overflow: 'hidden' }} /* 내용 넘침 방지 */
+                        style={{ overflow: 'hidden' }}
                       >
                         {isChecked ? <CheckSquare size={22} className="text-indigo-600 shrink-0" /> : <Square size={22} className="text-slate-300 shrink-0" />}
-                        {/* 텍스트가 너무 길면 줄임표 처리되도록 설정 */}
                         <span 
                           className={`font-black text-sm sm:text-base ${isChecked ? 'text-indigo-700' : 'text-slate-600'}`}
                           style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
@@ -294,6 +357,48 @@ export default function StudentManagerMain() {
               </button>
             </div>
             
+          </div>
+        </div>
+      )}
+
+      {/* 비번 변경 모달 */}
+      {pwdStudent && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => { setPwdStudent(null); setNewPwd(''); }} />
+          <div className="relative bg-white rounded-[32px] p-8 w-full max-w-sm shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-lg font-black text-slate-800 tracking-tight">비번 변경</h3>
+                <p className="text-xs text-slate-400 font-bold mt-0.5">{pwdStudent.name} · {pwdStudent.grade}</p>
+              </div>
+              <button onClick={() => { setPwdStudent(null); setNewPwd(''); }} className="text-slate-300 hover:text-slate-600 transition-colors">
+                <X size={22} />
+              </button>
+            </div>
+            <div className="mb-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">새 비번 (4자리 숫자)</label>
+              <input
+                type="text"
+                maxLength={4}
+                value={newPwd}
+                onChange={e => setNewPwd(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="0000"
+                className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-4 px-5 text-center text-3xl font-black text-slate-800 tracking-[0.3em] focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
+                autoFocus
+                onKeyDown={e => e.key === 'Enter' && handleSavePwd()}
+              />
+            </div>
+            <p className="text-[10px] text-slate-400 mb-6 text-center">현재: <span className="font-black text-amber-600">{pwdStudent.password ?? '없음'}</span></p>
+            <div className="flex gap-3">
+              <button onClick={() => { setPwdStudent(null); setNewPwd(''); }} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-2xl font-bold hover:bg-slate-200 transition-all">취소</button>
+              <button
+                onClick={handleSavePwd}
+                disabled={pwdSaving || newPwd.length !== 4}
+                className="flex-1 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black transition-all disabled:bg-slate-300 flex items-center justify-center gap-2"
+              >
+                {pwdSaving ? <Loader2 size={18} className="animate-spin" /> : '저장'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -445,9 +550,18 @@ export default function StudentManagerMain() {
                       </button>
                     </div>
                   </div>
-                  <div className="mb-5">
+                  <div className="mb-4">
                     <div className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1 leading-none">{student.grade}</div>
-                    <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight">{student.name}</h3>
+                    <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight mb-3">{student.name}</h3>
+                    {/* 비번 배지 */}
+                    <button
+                      onClick={() => { setPwdStudent(student); setNewPwd(student.password || ''); }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
+                      title="비번 변경"
+                    >
+                      <KeyRound size={13} />
+                      {student.password ?? '배정 중...'}
+                    </button>
                   </div>
                   
                   <button 
