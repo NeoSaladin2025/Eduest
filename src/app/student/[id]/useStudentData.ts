@@ -69,11 +69,24 @@ export function useStudentData(studentId: string) {
         setStudent(studentData);
 
         // 2. 라이브러리 트리 로드 (전체 구조를 가져와야 부모-자식 연결이 유지됨)
-        const { data: dbLibrary } = await supabase
-          .from('exam_library')
-          .select('*'); 
+        // PostgREST 기본 max-rows(예: 1000) 때문에 한 번에만 select 하면 하위 폴더 행이 잘리고
+        // 형제 폴더가 화면에서 사라질 수 있음 → 페이지 단위로 모두 수집
+        const pageSize = 1000;
+        let from = 0;
+        const dbLibrary: any[] = [];
+        for (;;) {
+          const { data: page, error: libErr } = await supabase
+            .from('exam_library')
+            .select('*')
+            .range(from, from + pageSize - 1);
+          if (libErr) throw libErr;
+          if (!page?.length) break;
+          dbLibrary.push(...page);
+          if (page.length < pageSize) break;
+          from += pageSize;
+        }
 
-        if (dbLibrary && dbLibrary.length > 0) {
+        if (dbLibrary.length > 0) {
           setExamLibrary(buildTree(dbLibrary));
         }
 

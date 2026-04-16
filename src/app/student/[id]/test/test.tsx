@@ -274,11 +274,9 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
                     <input 
                       type="number" 
                       autoFocus
-                      // 🔥 minutes가 0이거나 빈값이면 화면엔 빈칸으로 표시
                       value={minutes === 0 ? "" : minutes} 
                       onChange={(e) => {
                         const val = e.target.value;
-                        // 🔥 지우는 도중에는 0으로 세팅 (제약 없이 다 지워지게)
                         setMinutes(val === "" ? 0 : Number(val));
                       }}
                       onBlur={finalizeMinutes}

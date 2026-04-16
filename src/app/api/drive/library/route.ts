@@ -30,7 +30,7 @@ export async function GET(request: Request) {
   }
 }
 
-// 2️⃣ 학생의 개별 회차 권한(배열) 저장하기 🔥 추가됨!
+// 2️⃣ 학생의 개별 회차 권한(배열) 저장하기
 export async function PATCH(request: Request) {
   try {
     const { studentId, unlockedFolders } = await request.json();
@@ -39,11 +39,10 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: 'Invalid parameters' }, { status: 400 });
     }
 
-    // 🔥 Supabase의 text[] 배열 타입에 맞게 직접 배열을 꽂아넣음
     const { data, error } = await supabase
       .from('students')
       .update({ 
-        unlocked_folders: unlockedFolders // ['id1', 'id2'] 형태 그대로 전송
+        unlocked_folders: unlockedFolders
       })
       .eq('id', studentId)
       .select();

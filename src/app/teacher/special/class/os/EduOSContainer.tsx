@@ -58,6 +58,7 @@ function SaveButton({
       
       const GAS_URL = "https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec";
       
+      // 🔥 [수정 포인트] 파일명에 [카트리지명]을 포함하여 저장 (리뷰 모드 분류용)
       const fileName = `[${selectedPack.title}] ${currentIdx}번_${selectedStudent.name}.png`;
 
       const res = await fetch(GAS_URL, {
@@ -67,7 +68,7 @@ function SaveButton({
           action: "upload_and_record",
           studentFolderId: selectedStudent.folderId || (selectedStudent as any).drive_folder_id,
           imageData: canvasData.split(',')[1], 
-          fileName: fileName,
+          fileName: fileName, // 수정된 파일명 적용
           problemUrl: pFileId, 
           solutionUrl: sFileId,
           cartridgeName: selectedPack.title
@@ -123,11 +124,10 @@ export default function EduOSContainer() {
     loadSpecificProblem 
   } = useProblemEngine();
 
-  // 🔥 [빌드 에러 해결] 초기값에 window를 쓰지 않고 useEffect에서 설정합니다.
   const [useTiling, setUseTiling] = useState(false);
   useEffect(() => {
     const handleResize = () => setUseTiling(window.innerWidth <= 1920);
-    handleResize(); // 마운트 시점에 한 번 실행
+    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -140,9 +140,6 @@ export default function EduOSContainer() {
   const activeCount = activeWindows.length;
 
   const getResponsiveScale = useCallback((id: WindowType) => {
-    // 🔥 [빌드 에러 해결] 서버 사이드 렌더링 중에는 window 참조 방지
-    if (typeof window === 'undefined') return null;
-
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
@@ -225,6 +222,7 @@ export default function EduOSContainer() {
     focusWindow('blackboard');
   };
 
+  // 🔥 [무한 루프 방어] 4분할 레이아웃 자동 계산 로직
   useEffect(() => {
     if (useTiling) {
       activeWindows.forEach(id => {
@@ -232,6 +230,7 @@ export default function EduOSContainer() {
         if (!newScale) return;
 
         const currentWin = windows[id];
+        // 🛠️ 현재 창의 크기/위치가 새로 계산된 값과 진짜로 다를 때만 업데이트를 요청함!
         if (
           currentWin.x !== newScale.x || 
           currentWin.y !== newScale.y || 
@@ -242,6 +241,7 @@ export default function EduOSContainer() {
         }
       });
     }
+  // windows 객체를 의존성에 넣되, 내부에서 비교 로직으로 업데이트를 제어함
   }, [activeCount, useTiling, activeWindows, getResponsiveScale, updateWindowScale, windows]);
 
   return (
