@@ -140,6 +140,19 @@ export default function EduOSContainer() {
   const activeCount = activeWindows.length;
 
   const getResponsiveScale = useCallback((id: WindowType) => {
+    const desktopMap: Record<string, { x: number; y: number; width: number; height: number }> = {
+      problem: { x: 80, y: 60, width: 600, height: 700 },
+      monitor: { x: 120, y: 80, width: 750, height: 850 },
+      solution: { x: 160, y: 100, width: 750, height: 850 },
+      blackboard: { x: 60, y: 50, width: 850, height: 900 },
+      cartridge: { x: 400, y: 80, width: 700, height: 750 },
+    };
+
+    // SSR / 빌드 시 프리렌더: window 없음 → 고정 레이아웃만 사용
+    if (typeof window === 'undefined') {
+      return desktopMap[id] || { x: 100, y: 100, width: 700, height: 800 };
+    }
+
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
@@ -160,13 +173,7 @@ export default function EduOSContainer() {
         height: contentHeight - 64 
       };
     }
-    
-    const desktopMap: Record<string, any> = {
-      problem: { x: 80, y: 60, width: 600, height: 700 },
-      monitor: { x: 120, y: 80, width: 750, height: 850 },
-      solution: { x: 160, y: 100, width: 750, height: 850 },
-      blackboard: { x: 60, y: 50, width: 850, height: 900 } 
-    };
+
     return desktopMap[id] || { x: 100, y: 100, width: 700, height: 800 };
   }, [useTiling, activeWindows, activeCount]);
 
