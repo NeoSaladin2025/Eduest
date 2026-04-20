@@ -8,7 +8,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyiMq-5QOCRjaqwYNyttL09WByzTcfxlwoac6mSdg-EHtXpieEd4Zsi-owUIUAu1KbH0w/exec';
+const GAS_LIBRARY_PROXY = '/api/gas/library';
 
 export function useStudentData(studentId: string) {
   // --- 상태 관리 ---
@@ -91,8 +91,9 @@ export function useStudentData(studentId: string) {
         }
 
         // 3. 복습 기록 로드 (Google Apps Script 연동)
-        fetch(APPS_SCRIPT_URL, { 
-          method: 'POST', 
+        fetch(GAS_LIBRARY_PROXY, { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             action: 'get_student_records', 
             studentFolderId: studentData.drive_folder_id, 
@@ -149,8 +150,9 @@ export function useStudentData(studentId: string) {
 
       prefetchQueue.current.add(cacheKey);
       try {
-        const res = await fetch(APPS_SCRIPT_URL, { 
-          method: 'POST', 
+        const res = await fetch(GAS_LIBRARY_PROXY, { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             action: 'get_file_data', 
             fileId: item.id, 

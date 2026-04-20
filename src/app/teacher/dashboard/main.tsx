@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyiMq-5QOCRjaqwYNyttL09WByzTcfxlwoac6mSdg-EHtXpieEd4Zsi-owUIUAu1KbH0w/exec';
+/** 브라우저→GAS 직접 호출은 CORS 차단 → 서버 프록시 (`GAS_LIBRARY_WEBAPP_URL`로 타깃 덮어쓰기 가능) */
+const GAS_LIBRARY_PROXY = "/api/gas/library";
 
 export default function DashboardMain() {
   const [adminName, setAdminName] = useState('');
@@ -37,8 +38,9 @@ export default function DashboardMain() {
 
     setSyncStatus('loading');
     try {
-      const res = await fetch(APPS_SCRIPT_URL, {
+      const res = await fetch(GAS_LIBRARY_PROXY, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           action: 'sync_to_supabase', 
           apiKey: "eduest_super_secret_key_1234" 

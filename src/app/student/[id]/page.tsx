@@ -7,7 +7,7 @@ import {
 import TestModule from './test/test';
 import { useStudentData } from './useStudentData';
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyiMq-5QOCRjaqwYNyttL09WByzTcfxlwoac6mSdg-EHtXpieEd4Zsi-owUIUAu1KbH0w/exec';
+const GAS_LIBRARY_PROXY = '/api/gas/library';
 
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
@@ -129,8 +129,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       const fileId = selectedTab === 'solution' ? selectedRecord.solutionUrl : (selectedTab === 'problem' ? selectedRecord.problemUrl : selectedRecord.id);
       const type = selectedTab === 'solution' ? 'html' : 'image';
       try {
-        const res = await fetch(APPS_SCRIPT_URL, { 
-          method: 'POST', 
+        const res = await fetch(GAS_LIBRARY_PROXY, { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'get_file_data', fileId, type, apiKey: "eduest_super_secret_key_1234" }) 
         });
         const result = await res.json();
