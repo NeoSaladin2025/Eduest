@@ -46,17 +46,31 @@ export default function DashboardMain() {
           apiKey: "eduest_super_secret_key_1234" 
         }),
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data: { success?: boolean; message?: string; error?: string; cleanupDeleted?: number } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        const snippet = raw.slice(0, 500);
+        throw new Error(
+          `응답이 JSON이 아님 (HTTP ${res.status}). GAS 배포 URL·배포 권한을 확인하세요. 본문 앞부분: ${snippet}`
+        );
+      }
 
       if (data.success) {
         setSyncStatus('success');
-        setSyncMessage(data.message || "동기화가 완료되었습니다.");
+        const extra =
+          typeof data.cleanupDeleted === "number" && data.cleanupDeleted > 0
+            ? ` (고아 삭제 ${data.cleanupDeleted}건)`
+            : "";
+        setSyncMessage((data.message || "동기화가 완료되었습니다.") + extra);
       } else {
-        throw new Error(data.error);
+        const detail = data.error || JSON.stringify(data) || "(error 필드 없음)";
+        throw new Error(`HTTP ${res.status}: ${detail}`);
       }
     } catch (err: any) {
       setSyncStatus('error');
-      setSyncMessage("동기화 중 오류 발생: " + err.message);
+      setSyncMessage("동기화 중 오류 발생: " + (err?.message || String(err)));
     }
   };
 

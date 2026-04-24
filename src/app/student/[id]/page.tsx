@@ -9,6 +9,27 @@ import { useStudentData } from './useStudentData';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 
+/** `extractNumber`와 동일: `N번` 우선, 없으면 이름 안 첫 숫자열 — 없으면 null */
+function primaryNumberFromFolderName(name: string): number | null {
+  const 번 = name.match(/(\d+)번/);
+  if (번) return parseInt(번[1], 10);
+  const any = name.match(/(\d+)/);
+  if (any) return parseInt(any[1], 10);
+  return null;
+}
+
+/** 숫자 있으면 숫자 오름차순, 없으면 한글 가나다. 숫자 있는 항목을 앞에 둠. */
+function sortLibraryDisplayFolders<T extends { name: string }>(folders: T[]): T[] {
+  return [...folders].sort((a, b) => {
+    const na = primaryNumberFromFolderName(a.name);
+    const nb = primaryNumberFromFolderName(b.name);
+    if (na !== null && nb !== null && na !== nb) return na - nb;
+    if (na !== null && nb === null) return -1;
+    if (na === null && nb !== null) return 1;
+    return a.name.localeCompare(b.name, 'ko');
+  });
+}
+
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   
@@ -45,11 +66,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       const gradeFolder = examLibrary.find(f => f.name.includes(student.grade));
       
       if (gradeFolder) {
-        setDisplayLibrary(gradeFolder.subFolders || []);
+        setDisplayLibrary(sortLibraryDisplayFolders(gradeFolder.subFolders || []));
         setCurrentPath([gradeFolder]);
       } else {
         const fallbackList = examLibrary.filter(f => f.grade === student.grade);
-        setDisplayLibrary(fallbackList);
+        setDisplayLibrary(sortLibraryDisplayFolders(fallbackList));
         setCurrentPath([]);
       }
     }
@@ -78,7 +99,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
     if (folder.subFolders && folder.subFolders.length > 0) {
       setCurrentPath(prev => [...prev, folder]);
-      setDisplayLibrary(folder.subFolders);
+      setDisplayLibrary(sortLibraryDisplayFolders(folder.subFolders));
       return;
     }
     if (folder.files && folder.files.length > 0) {
@@ -102,15 +123,15 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       if (newPath.length === 0) {
         const gradeFolder = examLibrary.find((f: any) => f.name.includes(student?.grade));
         if (gradeFolder) {
-          setDisplayLibrary(gradeFolder.subFolders || []);
+          setDisplayLibrary(sortLibraryDisplayFolders(gradeFolder.subFolders || []));
           return [gradeFolder];
         } else {
-          setDisplayLibrary(examLibrary.filter((f: any) => f.grade === student?.grade));
+          setDisplayLibrary(sortLibraryDisplayFolders(examLibrary.filter((f: any) => f.grade === student?.grade)));
           return [];
         }
       } else {
         const lastFolder = newPath[newPath.length - 1];
-        setDisplayLibrary(lastFolder.subFolders || []);
+        setDisplayLibrary(sortLibraryDisplayFolders(lastFolder.subFolders || []));
         return newPath;
       }
     });
@@ -318,10 +339,22 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               <div className="w-[1px] h-10 bg-white/10 mx-2" />
               <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x">
                 {selectedList.map((record, idx) => {
-                  const displayNum = record.name.match(/(\d+)번/) ? record.name.match(/(\d+)번/)[1] : idx + 1;
+                  const 번Match = record.name.match(/(\d+)번/);
+                  const reviewLabel = 번Match ? 번Match[1] : String(idx + 1);
+                  const isLibrary = mode === 'library';
+                  const libraryLabel = record.name.replace(/\.html?$/i, '');
                   return (
-                    <button key={record.id} onClick={() => { setSelectedRecord(record); if(mode==='review') setSelectedTab('problem'); }} className={`shrink-0 w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center font-black text-lg transition-all snap-center ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}`}>
-                      {displayNum}
+                    <button
+                      key={record.id}
+                      title={isLibrary ? libraryLabel : undefined}
+                      onClick={() => { setSelectedRecord(record); if(mode==='review') setSelectedTab('problem'); }}
+                      className={`shrink-0 rounded-2xl flex items-center justify-center font-black transition-all snap-center ${
+                        isLibrary
+                          ? `max-w-[min(220px,70vw)] px-3 py-2.5 md:px-4 md:py-3 text-xs md:text-sm ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-[1.02]' : 'bg-white/5 text-slate-400 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
+                          : `w-14 h-14 md:w-16 md:h-16 text-lg ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
+                      }`}
+                    >
+                      {isLibrary ? <span className="truncate text-left w-full">{libraryLabel}</span> : reviewLabel}
                     </button>
                   );
                 })}
