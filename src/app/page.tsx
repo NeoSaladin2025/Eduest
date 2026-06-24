@@ -42,6 +42,7 @@ export default function LandingPage() {
 
       // 2. 로그인 성공 시 성함을 로컬 스토리지에 잠깐 저장 (선생님 페이지에서 보여주기용)
       localStorage.setItem('currentAdminName', manager.name);
+      document.cookie = `currentAdminName=${encodeURIComponent(manager.name)}; path=/; max-age=86400; SameSite=Strict; Secure`;
 
       // 3. 선생님 전용 메인으로 이동
       router.push('/teacher');

@@ -86,7 +86,11 @@ export default function TeacherAdminPage() {
           </div>
           <div className="h-8 w-[1px] bg-slate-200 mx-1"></div>
           <button 
-            onClick={() => { localStorage.clear(); window.location.href = '/'; }}
+            onClick={() => { 
+              localStorage.clear(); 
+              document.cookie = 'currentAdminName=; path=/; max-age=0; SameSite=Strict; Secure';
+              window.location.href = '/'; 
+            }}
             className="p-2.5 bg-slate-50 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
           >
             <LogOut size={18} />
