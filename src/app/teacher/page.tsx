@@ -74,7 +74,7 @@ export default function TeacherAdminPage() {
                 {item.label}
                 {item.id === 'special' && (
                   <span className="ml-1 px-2 py-0.5 text-xs font-black text-rose-500 bg-rose-50 border border-rose-200 rounded-md animate-pulse">
-                    배포테스트
+                    배포테스트2 🚀✨
                   </span>
                 )}
               </button>
