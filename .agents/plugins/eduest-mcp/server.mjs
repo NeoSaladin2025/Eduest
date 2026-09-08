@@ -36,7 +36,7 @@ function loadEnv() {
 loadEnv();
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nqctewzhivglswlgwbvn.supabase.co';
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_-nlZnEQGq5QXCou6H0MJlg_G8k3teT9';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_-nlZnEQGq5QXCou6H0MJlg_G8k3teT9';
 const GAS_URL = 'https://script.google.com/macros/s/AKfycbzRXwdja0xFm9wKcTG0asR5cv2mmhUDLK_S9j1VgtCcI37Dqw228mNrwNm74yzfyS05GA/exec';
 const GAS_API_KEY = 'eduest_super_secret_key_1234';
 const PARENT_FOLDER_ID = '19qVOvQECMVXVrZcnSFbEIHPrGqn1lt8v';
@@ -396,6 +396,122 @@ server.tool(
       };
     } catch (err) {
       return { content: [{ type: 'text', text: `❌ 드라이브 파일 조회 실패: ${err.message}` }] };
+    }
+  }
+);
+
+// ==========================================
+// 4. Supabase Storage (버킷) & 파일 업로드 도구
+// ==========================================
+
+server.tool(
+  'eduest_storage_list_buckets',
+  'Supabase Storage 버킷 목록 조회',
+  {},
+  async () => {
+    const { data, error } = await supabase.storage.listBuckets();
+    if (error) {
+      return { content: [{ type: 'text', text: `❌ 버킷 목록 조회 실패: ${error.message}` }] };
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(data || [], null, 2) }]
+    };
+  }
+);
+
+server.tool(
+  'eduest_storage_create_bucket',
+  'Supabase Storage 새 버킷 생성',
+  {
+    bucketName: z.string().describe('생성할 버킷 이름 (소문자, 영숫자, 하이픈)'),
+    isPublic: z.boolean().default(true).describe('공개 버킷 여부 (기본값: true)')
+  },
+  async ({ bucketName, isPublic }) => {
+    const { data, error } = await supabase.storage.createBucket(bucketName, {
+      public: isPublic
+    });
+    if (error) {
+      return { content: [{ type: 'text', text: `❌ 버킷 생성 실패: ${error.message}` }] };
+    }
+    return {
+      content: [{ type: 'text', text: `✅ [${bucketName}] 버킷 생성 완료 (공개: ${isPublic})` }]
+    };
+  }
+);
+
+server.tool(
+  'eduest_storage_upload_file',
+  'Supabase Storage 버킷에 텍스트 또는 Base64 파일 업로드',
+  {
+    bucketName: z.string().describe('대상 버킷 이름'),
+    filePath: z.string().describe('버킷 내 저장할 경로/파일명 (예: exams/q1.png)'),
+    content: z.string().describe('업로드할 텍스트 내용 또는 Base64 인코딩 데이터'),
+    isBase64: z.boolean().default(false).describe('내용이 Base64 형식인지 여부'),
+    contentType: z.string().default('text/plain').describe('파일 MIME 타입 (예: image/png, application/pdf)')
+  },
+  async ({ bucketName, filePath, content, isBase64, contentType }) => {
+    try {
+      const buffer = isBase64 ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+      const { data, error } = await supabase.storage
+        .from(bucketName)
+        .upload(filePath, buffer, {
+          contentType,
+          upsert: true
+        });
+
+      if (error) throw error;
+
+      const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(filePath);
+      return {
+        content: [{
+          type: 'text',
+          text: `✅ 파일 업로드 완료!\n- 경로: ${filePath}\n- 공개 URL: ${urlData.publicUrl}`
+        }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 업로드 실패: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  'eduest_drive_upload_file',
+  'Google Drive 특정 폴더에 텍스트 또는 Base64 파일 직접 업로드',
+  {
+    folderId: z.string().describe('Google Drive 대상 폴더 ID'),
+    fileName: z.string().describe('저장할 파일 이름'),
+    content: z.string().describe('파일 텍스트 내용 또는 Base64 데이터'),
+    isBase64: z.boolean().default(false).describe('Base64 여부'),
+    mimeType: z.string().default('text/plain').describe('MIME 타입')
+  },
+  async ({ folderId, fileName, content, isBase64, mimeType }) => {
+    try {
+      const drive = getGoogleDrive();
+      const { Readable } = await import('stream');
+      const buffer = isBase64 ? Buffer.from(content, 'base64') : Buffer.from(content, 'utf8');
+      const stream = Readable.from(buffer);
+
+      const res = await drive.files.create({
+        requestBody: {
+          name: fileName,
+          parents: [folderId]
+        },
+        media: {
+          mimeType,
+          body: stream
+        },
+        fields: 'id, name, webViewLink',
+        supportsAllDrives: true
+      });
+
+      return {
+        content: [{
+          type: 'text',
+          text: `✅ Google Drive 파일 업로드 완료!\n- 파일명: ${fileName}\n- 파일 ID: ${res.data.id}\n- 링크: ${res.data.webViewLink || '생성됨'}`
+        }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 드라이브 업로드 실패: ${err.message}` }] };
     }
   }
 );
