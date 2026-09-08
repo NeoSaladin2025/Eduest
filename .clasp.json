@@ -1,0 +1,16 @@
+{
+  "scriptId": "1iny6rJGNtnxjnfHS4yaPtFM7gXTassIbiYLuN659PuMC-qBUejs1JQSA",
+  "rootDir": "gas\\EduOS_Drive_Proxy",
+  "scriptExtensions": [
+    ".js",
+    ".gs"
+  ],
+  "htmlExtensions": [
+    ".html"
+  ],
+  "jsonExtensions": [
+    ".json"
+  ],
+  "filePushOrder": [],
+  "skipSubdirectories": false
+}
