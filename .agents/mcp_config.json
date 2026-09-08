@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "eduest-mcp": {
+      "command": "node",
+      "args": ["C:/my-first-vibe/eduest/.agents/plugins/eduest-mcp/server.mjs"],
+      "env": {
+        "NODE_PATH": "C:/my-first-vibe/eduest/node_modules"
+      }
+    }
+  }
+}
