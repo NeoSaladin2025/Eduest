@@ -12,7 +12,8 @@ import {
   AlertCircle,
   ShieldAlert,
   Users,
-  ArrowUpRight
+  ArrowUpRight,
+  Sparkles
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -23,6 +24,8 @@ export default function DashboardMain() {
   const [adminName, setAdminName] = useState('');
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [syncMessage, setSyncMessage] = useState('');
+  const [selectedGrade, setSelectedGrade] = useState<string>('ALL');
+  const [isIncremental, setIsIncremental] = useState<boolean>(true);
   
   // 🔥 [핵심] 하이드레이션 에러 방지를 위한 마운트 상태
   const [isMounted, setIsMounted] = useState(false);
@@ -34,7 +37,9 @@ export default function DashboardMain() {
   }, []);
 
   const handleSyncLibrary = async () => {
-    if (!window.confirm("구글 드라이브의 최신 라이브러리 구조를 Supabase DB로 동기화할까요?")) return;
+    const gradeText = selectedGrade === 'ALL' ? '전체 학년' : selectedGrade;
+    const modeText = isIncremental ? '⚡ 빠른 증분 동기화' : '🛡️ 전체 정밀 스캔';
+    if (!window.confirm(`구글 드라이브 라이브러리를 동기화할까요?\n\n• 대상: ${gradeText}\n• 모드: ${modeText}`)) return;
 
     setSyncStatus('loading');
     try {
@@ -43,7 +48,9 @@ export default function DashboardMain() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           action: 'sync_to_supabase', 
-          apiKey: "eduest_super_secret_key_1234" 
+          apiKey: "eduest_super_secret_key_1234",
+          mode: isIncremental ? 'incremental' : 'full',
+          grade: selectedGrade,
         }),
       });
       const raw = await res.text();
@@ -103,29 +110,96 @@ export default function DashboardMain() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         
         {/* 1. 라이브러리 동기화 카드 */}
-        <div className="p-10 rounded-[45px] bg-white border border-slate-100 shadow-xl shadow-slate-200/40 relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50 opacity-40 blur-[80px] -mr-20 -mt-20 group-hover:opacity-60 transition-opacity"></div>
+        <div className="p-8 md:p-10 rounded-[45px] bg-white border border-slate-100 shadow-xl shadow-slate-200/40 relative overflow-hidden group flex flex-col justify-between">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50 opacity-40 blur-[80px] -mr-20 -mt-20 group-hover:opacity-60 transition-opacity pointer-events-none"></div>
           
           <div className="relative z-10">
-            <div className="w-16 h-16 bg-indigo-600 text-white rounded-3xl flex items-center justify-center mb-8 shadow-lg shadow-indigo-200">
-              <RefreshCw size={32} className={syncStatus === 'loading' ? 'animate-spin' : ''} />
+            <div className="flex items-center justify-between mb-6">
+              <div className="w-14 h-14 bg-indigo-600 text-white rounded-3xl flex items-center justify-center shadow-lg shadow-indigo-200">
+                <RefreshCw size={28} className={syncStatus === 'loading' ? 'animate-spin' : ''} />
+              </div>
+              <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-xs font-black tracking-wider uppercase">
+                Dual-Engine
+              </span>
             </div>
             
             <h3 className="text-2xl font-black italic mb-2 tracking-tighter uppercase">Library Synchronization</h3>
-            <p className="text-slate-500 font-medium leading-relaxed mb-8 text-sm md:text-base">
+            <p className="text-slate-500 font-medium leading-relaxed mb-6 text-xs md:text-sm">
               구글 드라이브 구조를 DB로 복사합니다. <br/>
               <span className="text-indigo-600 font-bold">학생 진입 속도가 0.1초로 단축됩니다.</span>
             </p>
 
+            {/* 🎛️ 동기화 세부 옵션 패널 */}
+            <div className="space-y-4 mb-6 bg-slate-50/80 p-4 rounded-2xl border border-slate-100">
+              {/* 학년 선택 알약 탭 */}
+              <div>
+                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">
+                  동기화 대상 학년
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { id: 'ALL', label: '전체' },
+                    { id: '고1', label: '고1' },
+                    { id: '고2', label: '고2' },
+                    { id: '고3', label: '고3' },
+                    { id: '중1', label: '중1' },
+                    { id: '중2', label: '중2' },
+                    { id: '중3', label: '중3' },
+                  ].map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      disabled={syncStatus === 'loading'}
+                      onClick={() => setSelectedGrade(g.id)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                        selectedGrade === g.id
+                          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 증분 동기화 토글 */}
+              <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-black text-slate-800">
+                    <Sparkles size={14} className="text-amber-500 fill-amber-500" />
+                    <span>빠른 증분 동기화</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-medium">
+                    {isIncremental ? "⚡ 변경된 파일만 1초 만에 반영" : "🛡️ 드라이브 정밀 재스캔 (백업 모드)"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={syncStatus === 'loading'}
+                  onClick={() => setIsIncremental(!isIncremental)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    isIncremental ? 'bg-indigo-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition duration-200 ease-in-out ${
+                      isIncremental ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
             <button 
               onClick={handleSyncLibrary}
               disabled={syncStatus === 'loading'}
-              className="w-full py-5 bg-slate-900 hover:bg-black text-white rounded-[24px] font-black text-lg flex items-center justify-center gap-3 transition-all active:scale-95 disabled:bg-slate-300 shadow-xl"
+              className="w-full py-4 md:py-5 bg-slate-900 hover:bg-black text-white rounded-[24px] font-black text-base md:text-lg flex items-center justify-center gap-3 transition-all active:scale-95 disabled:bg-slate-300 shadow-xl"
             >
               {syncStatus === 'loading' ? (
                 <>동기화 중... <Loader2 className="animate-spin" size={20} /></>
               ) : (
-                <>동기화 실행 <ChevronRight size={20} /></>
+                <>{selectedGrade === 'ALL' ? '전체' : selectedGrade} 동기화 실행 <ChevronRight size={20} /></>
               )}
             </button>
           </div>

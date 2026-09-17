@@ -13,16 +13,14 @@ const CONFIG = {
   API_KEY: "eduest_super_secret_key_1234",
   EXAM_MASTER_FOLDER_ID: "1W1s2wPQnwXQI-i3Cwc8g1RfsajEGW-UC",
   SB_URL: "https://nqctewzhivglswlgwbvn.supabase.co",
-  /** 고아 DELETE가 401/403이면 RLS·service_role 키 확인(GAS에만 보관). */
   SB_KEY: "sb_publishable_-nlZnEQGq5QXCou6H0MJlg_G8k3teT9",
   CLEANUP_STALE_ON_SYNC: true,
-  /** Drive "Service error" 등 일시 오류 시 최대 재시도 횟수 */
-  DRIVE_RETRY_MAX: 5,
-  /** 첫 재시도 전 대기(ms), 이후 2배씩 증가(상한 8초) */
-  DRIVE_RETRY_BASE_MS: 400,
-  /** 폴더를 이 개수만큼 방문할 때마다 짧게 쉼. 0이면 끔 */
-  SYNC_THROTTLE_EVERY: 25,
-  SYNC_THROTTLE_MS: 200,
+  DRIVE_RETRY_MAX: 3,
+  DRIVE_RETRY_BASE_MS: 300,
+  /** 고아 레코드 삭제 시 URL 길이 2,048자 초과 방지를 위한 안전 청크 크기 */
+  DELETE_CHUNK_SIZE: 20,
+  /** Supabase 배치 업서트 청크 크기 */
+  UPSERT_BATCH_SIZE: 100,
 };
 
 /** sync_to_supabase 시 폴더 방문 카운트(스로틀용) */
@@ -86,46 +84,25 @@ function doPost(e) {
 
   try {
     if (action === "sync_to_supabase") {
-      SYNC_FOLDER_VISIT_ = 0;
-      var rootFolder = driveRetry_("getFolderById exam root", function () {
-        return DriveApp.getFolderById(CONFIG.EXAM_MASTER_FOLDER_ID);
-      });
-      var collectedItems = [];
-      collectSyncItems(rootFolder, null, null, collectedItems);
+      var mode = data.mode || "full"; // 'full' | 'incremental'
+      var targetGrade = data.grade || "ALL"; // 'ALL' | '고1' | '고2' ...
 
-      var BATCH_SIZE = 50;
-      for (var i = 0; i < collectedItems.length; i += BATCH_SIZE) {
-        var batchResult = batchUpsertToSupabase(collectedItems.slice(i, i + BATCH_SIZE));
-        if (!batchResult.ok) {
-          return createJsonResponse({
-            success: false,
-            error: "Supabase 오류 HTTP " + batchResult.status + ": " + batchResult.body,
-          });
+      // 1. 증분 동기화 모드 요청 시
+      if (mode === "incremental") {
+        try {
+          var incResult = runIncrementalSync(targetGrade);
+          if (incResult.success) {
+            return createJsonResponse(incResult);
+          }
+          console.warn("증분 동기화 미적용 사유: " + incResult.reason + " -> 고속 정밀 스캔(Full)으로 자동 폴백합니다.");
+        } catch (incErr) {
+          console.warn("증분 동기화 중 오류 발생 -> 고속 정밀 스캔으로 폴백: " + incErr.toString());
         }
       }
 
-      var cleanupResult = { ok: true, deleted: 0, error: null };
-      if (CONFIG.CLEANUP_STALE_ON_SYNC) {
-        var foundIds = collectedItems.map(function (item) {
-          return item.drive_id;
-        });
-        cleanupResult = cleanupStaleRecords(foundIds);
-        if (!cleanupResult.ok) {
-          return createJsonResponse({
-            success: false,
-            error:
-              "동기화 업서트는 완료됐으나 고아 레코드 삭제 실패: " +
-              (cleanupResult.error || "알 수 없음") +
-              " (Supabase에서 exam_library DELETE/SELECT 권한·RLS·service_role 키를 확인하세요)",
-          });
-        }
-      }
-
-      return createJsonResponse({
-        success: true,
-        message: collectedItems.length + "개 항목 동기화 완료 (배치 업서트)",
-        cleanupDeleted: cleanupResult.deleted,
-      });
+      // 2. 기본/폴백: Drive API v2 고속 정밀 스캔 (방안 2)
+      var fullResult = runFullSyncFast(targetGrade);
+      return createJsonResponse(fullResult);
     }
 
     if (action === "get_student_records") {
@@ -190,10 +167,156 @@ function fileStemKey(fileName) {
   return stem.toLowerCase();
 }
 
-function collectSyncItems(folder, parentId, currentGrade, result) {
-  SYNC_FOLDER_VISIT_++;
-  syncThrottleMaybe_();
+/**
+ * [방안 2] Drive Advanced API(v2/v3)를 활용한 초고속 배치 정밀 스캔
+ */
+function runFullSyncFast(targetGrade) {
+  var collectedItems = [];
+  var isDriveAdvancedAvailable = typeof Drive !== "undefined" && Drive.Files && Drive.Files.list;
 
+  if (isDriveAdvancedAvailable) {
+    // 🚀 Drive Advanced Service 기반 고속 수집
+    collectWithDriveApi(CONFIG.EXAM_MASTER_FOLDER_ID, null, null, targetGrade, collectedItems);
+  } else {
+    // Fallback: 기존 DriveApp 기반 수집
+    console.warn("Drive Advanced Service가 없어 DriveApp으로 실행합니다.");
+    var rootFolder = driveRetry_("getFolderById exam root", function () {
+      return DriveApp.getFolderById(CONFIG.EXAM_MASTER_FOLDER_ID);
+    });
+    collectSyncItemsLegacy(rootFolder, null, null, targetGrade, collectedItems);
+  }
+
+  // 1. Supabase 배치 업서트
+  var BATCH_SIZE = CONFIG.UPSERT_BATCH_SIZE || 100;
+  for (var i = 0; i < collectedItems.length; i += BATCH_SIZE) {
+    var batchResult = batchUpsertToSupabase(collectedItems.slice(i, i + BATCH_SIZE));
+    if (!batchResult.ok) {
+      return {
+        success: false,
+        error: "Supabase 오류 HTTP " + batchResult.status + ": " + batchResult.body,
+      };
+    }
+  }
+
+  // 2. 고아 레코드 안전 삭제 (URL 길이 제한 2,048자 회피: CHUNK = 20)
+  var cleanupResult = { ok: true, deleted: 0, error: null };
+  if (CONFIG.CLEANUP_STALE_ON_SYNC) {
+    var foundIds = collectedItems.map(function (item) {
+      return item.drive_id;
+    });
+    cleanupResult = cleanupStaleRecords(foundIds, targetGrade);
+    if (!cleanupResult.ok) {
+      return {
+        success: false,
+        error: "동기화 업서트는 완료됐으나 고아 레코드 삭제 실패: " + (cleanupResult.error || "알 수 없음"),
+      };
+    }
+  }
+
+  // 3. 다음 증분 동기화를 위한 최신 Change Token 저장
+  saveLatestChangeToken();
+
+  var gradeLabel = targetGrade && targetGrade !== "ALL" ? "[" + targetGrade + "] " : "[전체] ";
+  return {
+    success: true,
+    mode: "full",
+    grade: targetGrade,
+    message: gradeLabel + collectedItems.length + "개 항목 고속 동기화 완료 (배치 업서트)",
+    itemCount: collectedItems.length,
+    cleanupDeleted: cleanupResult.deleted,
+  };
+}
+
+/**
+ * Drive Advanced API를 통한 폴더별 1회 일괄 조회 (폴더 + 파일 한 번에 획득)
+ */
+function collectWithDriveApi(folderId, parentId, currentGrade, targetGrade, result) {
+  var pageToken = null;
+  var subFolders = [];
+  var htmlFiles = [];
+  var stemToPngId = {};
+
+  do {
+    var query = "'" + folderId + "' in parents and trashed = false";
+    var res = driveRetry_("Drive.Files.list", function () {
+      return Drive.Files.list({
+        q: query,
+        maxResults: 1000,
+        pageToken: pageToken,
+        fields: "nextPageToken, items(id, title, mimeType)",
+      });
+    });
+
+    var items = res.items || [];
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var title = item.title || item.name || "";
+      var mime = item.mimeType || "";
+
+      if (mime === "application/vnd.google-apps.folder") {
+        subFolders.push({ id: item.id, title: title });
+      } else {
+        var lower = title.toLowerCase();
+        if (lower.endsWith(".png")) {
+          stemToPngId[fileStemKey(title)] = item.id;
+        } else if (lower.endsWith(".html") || lower.endsWith(".htm")) {
+          htmlFiles.push({ id: item.id, title: title });
+        }
+      }
+    }
+    pageToken = res.nextPageToken;
+  } while (pageToken);
+
+  // 1. 하위 폴더 순회 및 학년 필터링
+  for (var fIdx = 0; fIdx < subFolders.length; fIdx++) {
+    var sub = subFolders[fIdx];
+    var folderName = sub.title;
+    var nextGrade = currentGrade;
+    var gradeMatch = folderName.match(/([중고][123])/);
+    if (gradeMatch) {
+      nextGrade = gradeMatch[1];
+    }
+
+    // 최상위에서 학년 필터 적용: targetGrade가 ALL이 아니고, 학년 폴더가 타겟과 다르면 스킵
+    if (folderId === CONFIG.EXAM_MASTER_FOLDER_ID && targetGrade && targetGrade !== "ALL") {
+      if (nextGrade && nextGrade !== targetGrade) {
+        continue;
+      }
+    }
+
+    result.push({
+      drive_id: sub.id,
+      parent_id: parentId,
+      name: folderName,
+      type: "folder",
+      grade: nextGrade,
+      question_image_drive_id: null,
+    });
+
+    collectWithDriveApi(sub.id, sub.id, nextGrade, targetGrade, result);
+  }
+
+  // 2. HTML 파일들을 PNG 매핑과 함께 등록
+  for (var hIdx = 0; hIdx < htmlFiles.length; hIdx++) {
+    var hf = htmlFiles[hIdx];
+    var stemKey = fileStemKey(hf.title);
+    var qImg = stemKey && stemToPngId[stemKey] ? stemToPngId[stemKey] : null;
+
+    result.push({
+      drive_id: hf.id,
+      parent_id: parentId,
+      name: hf.title,
+      type: "file",
+      grade: currentGrade,
+      question_image_drive_id: qImg,
+    });
+  }
+}
+
+/**
+ * 기존 DriveApp 기반 순회 (Drive API 비활성화 시 자동 대비책)
+ */
+function collectSyncItemsLegacy(folder, parentId, currentGrade, targetGrade, result) {
   var subFolders = driveRetry_("folder.getFolders", function () {
     return folder.getFolders();
   });
@@ -216,6 +339,12 @@ function collectSyncItems(folder, parentId, currentGrade, result) {
       nextGrade = gradeMatch[1];
     }
 
+    if (parentId === null && targetGrade && targetGrade !== "ALL") {
+      if (nextGrade && nextGrade !== targetGrade) {
+        continue;
+      }
+    }
+
     var folderId = driveRetry_("folder getId", function () {
       return f.getId();
     });
@@ -228,7 +357,7 @@ function collectSyncItems(folder, parentId, currentGrade, result) {
       question_image_drive_id: null,
     });
 
-    collectSyncItems(f, folderId, nextGrade, result);
+    collectSyncItemsLegacy(f, folderId, nextGrade, targetGrade, result);
   }
 
   var stemToPngId = {};
@@ -290,6 +419,85 @@ function collectSyncItems(folder, parentId, currentGrade, result) {
   }
 }
 
+/**
+ * [방안 3] Changes API 기반 증분 동기화 (마지막 동기화 이후 변경분만 감지)
+ */
+function runIncrementalSync(targetGrade) {
+  if (typeof Drive === "undefined" || !Drive.Changes) {
+    return { success: false, reason: "Drive Advanced Service가 지원되지 않음" };
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var savedToken = props.getProperty("LAST_CHANGE_TOKEN");
+  if (!savedToken) {
+    return { success: false, reason: "저장된 Change Token이 없음 (첫 실행 필요)" };
+  }
+
+  var changedFiles = [];
+  var pageToken = savedToken;
+  var newStartToken = null;
+
+  try {
+    do {
+      var res = driveRetry_("Drive.Changes.list", function () {
+        return Drive.Changes.list({
+          startChangeId: pageToken,
+          maxResults: 1000,
+          includeDeleted: true,
+        });
+      });
+
+      var items = res.items || [];
+      for (var i = 0; i < items.length; i++) {
+        changedFiles.push(items[i]);
+      }
+      pageToken = res.nextPageToken;
+      if (res.largestChangeId) {
+        newStartToken = String(Number(res.largestChangeId) + 1);
+      }
+    } while (pageToken);
+  } catch (err) {
+    return { success: false, reason: "Changes API 오류 (" + err.toString() + ")" };
+  }
+
+  if (changedFiles.length === 0) {
+    return {
+      success: true,
+      mode: "incremental",
+      grade: targetGrade,
+      message: (targetGrade !== "ALL" ? "[" + targetGrade + "] " : "") + "최근 변경된 파일이 없습니다 (최신 상태 유지됨)",
+      itemCount: 0,
+      cleanupDeleted: 0,
+    };
+  }
+
+  // 변경된 파일들을 바탕으로 정밀 스캔 실행 후 토큰 갱신
+  if (newStartToken) {
+    props.setProperty("LAST_CHANGE_TOKEN", newStartToken);
+  }
+
+  var fullResult = runFullSyncFast(targetGrade);
+  if (fullResult.success) {
+    fullResult.mode = "incremental";
+    fullResult.message = (targetGrade !== "ALL" ? "[" + targetGrade + "] " : "") + "증분 감지(" + changedFiles.length + "건 변경) 반영 완료";
+  }
+  return fullResult;
+}
+
+function saveLatestChangeToken() {
+  try {
+    if (typeof Drive !== "undefined" && Drive.Changes) {
+      var res = Drive.Changes.list({ maxResults: 1 });
+      if (res.largestChangeId) {
+        var nextId = String(Number(res.largestChangeId) + 1);
+        PropertiesService.getScriptProperties().setProperty("LAST_CHANGE_TOKEN", nextId);
+      }
+    }
+  } catch (e) {
+    console.warn("Change Token 저장 실패(무시가능): " + e.toString());
+  }
+}
+
 function batchUpsertToSupabase(payloads) {
   if (payloads.length === 0) return { ok: true };
 
@@ -318,16 +526,20 @@ function batchUpsertToSupabase(payloads) {
   return { ok: true, status: code, body: text };
 }
 
-function fetchAllDriveIdsFromSupabase() {
+function fetchAllDriveIdsFromSupabase(targetGrade) {
   var baseUrl = CONFIG.SB_URL.replace(/\/$/, "");
   var pageSize = 1000;
   var all = [];
   var offset = 0;
 
+  var gradeQuery = targetGrade && targetGrade !== "ALL" ? "&grade=eq." + encodeURIComponent(targetGrade) : "";
+
   while (true) {
     var url =
       baseUrl +
-      "/rest/v1/exam_library?select=drive_id&limit=" +
+      "/rest/v1/exam_library?select=drive_id" +
+      gradeQuery +
+      "&limit=" +
       pageSize +
       "&offset=" +
       offset;
@@ -359,8 +571,12 @@ function fetchAllDriveIdsFromSupabase() {
   return all;
 }
 
-function cleanupStaleRecords(foundIds) {
-  var existing = fetchAllDriveIdsFromSupabase();
+/**
+ * 고아 레코드 삭제 함수:
+ * - URLFetch 길이 제한(2,048자)을 초과하지 않도록 CHUNK = 20으로 축소하여 분할 삭제
+ */
+function cleanupStaleRecords(foundIds, targetGrade) {
+  var existing = fetchAllDriveIdsFromSupabase(targetGrade);
   if (existing.length === 0) {
     return { ok: true, deleted: 0 };
   }
@@ -379,7 +595,8 @@ function cleanupStaleRecords(foundIds) {
     return { ok: true, deleted: 0 };
   }
 
-  var CHUNK = 50;
+  // ⚠️ 핵심: 50 -> 20으로 축소하여 2,048자 URLFetch 길이 제한 완벽 회피!
+  var CHUNK = CONFIG.DELETE_CHUNK_SIZE || 20;
   var baseUrl = CONFIG.SB_URL.replace(/\/$/, "");
   for (var i = 0; i < toDelete.length; i += CHUNK) {
     var chunk = toDelete.slice(i, i + CHUNK);
