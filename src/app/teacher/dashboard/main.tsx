@@ -38,10 +38,15 @@ export default function DashboardMain() {
 
   const handleSyncLibrary = async () => {
     const gradeText = selectedGrade === 'ALL' ? '전체 학년' : selectedGrade;
-    const modeText = isIncremental ? '⚡ 빠른 증분 동기화' : '🛡️ 전체 정밀 스캔';
+    const modeText = isIncremental 
+      ? '⚡ 빠른 증분 동기화 (약 1~2초)' 
+      : '🛡️ 드라이브 정밀 재스캔 (전체 스캔으로 30~50초 소요될 수 있음)';
+    
     if (!window.confirm(`구글 드라이브 라이브러리를 동기화할까요?\n\n• 대상: ${gradeText}\n• 모드: ${modeText}`)) return;
 
     setSyncStatus('loading');
+    setSyncMessage(isIncremental ? "빠른 증분 동기화 중..." : "드라이브 전체를 정밀 스캔 중입니다 (잠시만 기다려주세요)...");
+
     try {
       const res = await fetch(GAS_LIBRARY_PROXY, {
         method: 'POST',
@@ -53,18 +58,10 @@ export default function DashboardMain() {
           grade: selectedGrade,
         }),
       });
-      const raw = await res.text();
-      let data: { success?: boolean; message?: string; error?: string; cleanupDeleted?: number } = {};
-      try {
-        data = raw ? JSON.parse(raw) : {};
-      } catch {
-        const snippet = raw.slice(0, 500);
-        throw new Error(
-          `응답이 JSON이 아님 (HTTP ${res.status}). GAS 배포 URL·배포 권한을 확인하세요. 본문 앞부분: ${snippet}`
-        );
-      }
 
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+
+      if (data && data.success) {
         setSyncStatus('success');
         const extra =
           typeof data.cleanupDeleted === "number" && data.cleanupDeleted > 0
@@ -72,12 +69,12 @@ export default function DashboardMain() {
             : "";
         setSyncMessage((data.message || "동기화가 완료되었습니다.") + extra);
       } else {
-        const detail = data.error || JSON.stringify(data) || "(error 필드 없음)";
-        throw new Error(`HTTP ${res.status}: ${detail}`);
+        const errorMsg = data?.error || (res.status === 504 ? "서버 처리 시간 초과 (타임아웃)" : `서버 오류 (HTTP ${res.status})`);
+        throw new Error(errorMsg);
       }
     } catch (err: any) {
       setSyncStatus('error');
-      setSyncMessage("동기화 중 오류 발생: " + (err?.message || String(err)));
+      setSyncMessage(err?.message || "동기화 중 오류가 발생했습니다. '빠른 증분 동기화'로 다시 시도해 주세요.");
     }
   };
 

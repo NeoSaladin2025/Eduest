@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { getCachedContent, setCachedContent } from '@/lib/contentCache';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -9,6 +10,7 @@ const supabase = createClient(
 );
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
+const FAST_FILE_PROXY = '/api/drive/library/file';
 
 export function useStudentData(studentId: string) {
   // --- 상태 관리 ---
@@ -140,37 +142,74 @@ export function useStudentData(studentId: string) {
     };
   }, [studentId]);
 
-  // --- 프리패치 로직 ---
-  const startStealthPrefetch = async (items: any[]) => {
-    for (const item of items) {
-      const cacheKey = `${item.id}_solution`;
-      
-      // 이미 캐시되었거나 대기열에 있다면 패스
-      if (dataCache.current[cacheKey] || prefetchQueue.current.has(cacheKey)) continue;
+  // --- 고속 파일 로더 (메모리 -> IndexedDB -> 고속 API) ---
+  const fetchFileContent = async (fileId: string, type: 'html' | 'image' = 'html'): Promise<string | null> => {
+    if (!fileId) return null;
+    const cacheKey = `${fileId}_${type === 'html' ? 'solution' : 'problem'}`;
+    
+    // 1단계: 인메모리 캐시 확인 (즉시 0ms)
+    if (dataCache.current[cacheKey]) {
+      return dataCache.current[cacheKey];
+    }
 
-      prefetchQueue.current.add(cacheKey);
-      try {
-        const res = await fetch(GAS_LIBRARY_PROXY, { 
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            action: 'get_file_data', 
-            fileId: item.id, 
-            type: 'html', 
-            apiKey: "eduest_super_secret_key_1234" 
-          }) 
-        });
-        const resJson = await res.json();
-        if (resJson.success) {
-          let d = resJson.data;
-          if (d) {
-            d = d.replace(/[₩¥]/g, '\\');
-            dataCache.current[cacheKey] = d;
-          }
-        }
-      } catch (e) {
-        console.error("Prefetching failed:", e);
+    // 2단계: 브라우저 영구 IndexedDB 캐시 확인 (0~2ms)
+    const idbData = await getCachedContent(cacheKey);
+    if (idbData) {
+      dataCache.current[cacheKey] = idbData;
+      return idbData;
+    }
+
+    // 3단계: 고속 API 엔드포인트 호출 (~200ms)
+    try {
+      const res = await fetch(`${FAST_FILE_PROXY}?fileId=${encodeURIComponent(fileId)}&type=${type}`);
+      const json = await res.json();
+      if (json.success && json.data) {
+        let d = json.data;
+        if (type === 'html') d = d.replace(/[₩¥]/g, '\\');
+        dataCache.current[cacheKey] = d;
+        setCachedContent(cacheKey, d); // 비동기 백그라운드 영구 캐싱
+        return d;
       }
+    } catch (e) {
+      console.error("fetchFileContent failed:", e);
+    }
+    return null;
+  };
+
+  // 단일 항목 프리패치 (마우스 호버 시 즉시 호출 가능)
+  const prefetchItem = async (item: any, type: 'html' | 'image' = 'html') => {
+    if (!item) return;
+    const fileId = type === 'html' ? (item.solutionUrl || item.id) : (item.problemUrl || item.id);
+    if (!fileId) return;
+    const cacheKey = `${item.id}_${type === 'html' ? 'solution' : 'problem'}`;
+    if (dataCache.current[cacheKey] || prefetchQueue.current.has(cacheKey)) return;
+
+    prefetchQueue.current.add(cacheKey);
+    try {
+      await fetchFileContent(fileId, type);
+    } finally {
+      prefetchQueue.current.delete(cacheKey);
+    }
+  };
+
+  // 스마트 지능형 병렬 프리패치 (현재 문항 인근 우선 로딩 + 3개씩 병렬 청크 처리)
+  const startStealthPrefetch = async (items: any[], currentIndex: number = 0, type: 'html' | 'image' = 'html') => {
+    if (!items || items.length === 0) return;
+
+    // 현재 보고 있는 문항 인근을 최우선으로 정렬 (예: 6번 보고 있다면 7, 5, 8, 4...)
+    const orderedItems = [...items].sort((a, b) => {
+      const idxA = items.indexOf(a);
+      const idxB = items.indexOf(b);
+      const distA = Math.abs(idxA - currentIndex);
+      const distB = Math.abs(idxB - currentIndex);
+      return distA - distB;
+    });
+
+    // 3개씩 묶어서 병렬 실행
+    const CHUNK_SIZE = 3;
+    for (let i = 0; i < orderedItems.length; i += CHUNK_SIZE) {
+      const chunk = orderedItems.slice(i, i + CHUNK_SIZE);
+      await Promise.allSettled(chunk.map(item => prefetchItem(item, type)));
     }
   };
 
@@ -181,6 +220,8 @@ export function useStudentData(studentId: string) {
     examLibrary,
     loading,
     dataCache,
+    fetchFileContent,
+    prefetchItem,
     startStealthPrefetch,
     extractNumber
   };

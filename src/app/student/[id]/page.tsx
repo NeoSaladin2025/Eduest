@@ -40,6 +40,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     examLibrary, 
     loading, 
     dataCache, 
+    fetchFileContent,
+    prefetchItem,
     startStealthPrefetch, 
     extractNumber 
   } = useStudentData(resolvedParams.id);
@@ -110,7 +112,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       setShowReviewer(true);
       setSelectedTab('solution');
       setSelectedRecord(files[0]);
-      startStealthPrefetch(files);
+      startStealthPrefetch(files, 0, 'html');
     } else {
       alert("이 폴더는 비어있거나 준비 중입니다! 📁");
     }
@@ -139,6 +141,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     if (!selectedRecord) return;
+    let isCancelled = false;
+
     const loadContent = async () => {
       const key = `${selectedRecord.id}_${selectedTab}`;
       if (dataCache.current[key]) {
@@ -146,28 +150,30 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         setIsContentLoading(false);
         return;
       }
+
       setIsContentLoading(true);
       const fileId = selectedTab === 'solution' ? selectedRecord.solutionUrl : (selectedTab === 'problem' ? selectedRecord.problemUrl : selectedRecord.id);
       const type = selectedTab === 'solution' ? 'html' : 'image';
+
       try {
-        const res = await fetch(GAS_LIBRARY_PROXY, { 
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'get_file_data', fileId, type, apiKey: "eduest_super_secret_key_1234" }) 
-        });
-        const result = await res.json();
-        let d = result.data;
-        if (type === 'html' && d) d = d.replace(/[₩¥]/g, '\\');
-        dataCache.current[key] = d;
-        setContentData(d);
+        const d = await fetchFileContent(fileId, type);
+        if (!isCancelled) {
+          if (d) setContentData(d);
+        }
       } catch (e) {
         console.error(e);
       } finally {
-        setIsContentLoading(false);
+        if (!isCancelled) {
+          setIsContentLoading(false);
+        }
       }
     };
+
     loadContent();
-  }, [selectedRecord, selectedTab, dataCache]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedRecord, selectedTab, dataCache, fetchFileContent]);
 
   // ── 비번 확인 ──────────────────────────────────────────────
   const handlePwdSubmit = () => {
@@ -264,7 +270,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   cartridges.map(cat => (
                     <div key={cat} onClick={() => {
                       const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
-                      setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered);
+                      setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered, 0, 'image');
                     }} className="bg-white/5 p-12 rounded-[56px] border border-white/10 hover:bg-indigo-600 transition-all cursor-pointer shadow-3xl group relative overflow-hidden">
                       <Database size={40} className="text-indigo-500 group-hover:text-white mb-8 transition-colors"/>
                       <div className="text-4xl font-black mb-3 group-hover:translate-x-2 transition-transform">{cat}</div>
@@ -347,7 +353,14 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                     <button
                       key={record.id}
                       title={isLibrary ? libraryLabel : undefined}
-                      onClick={() => { setSelectedRecord(record); if(mode==='review') setSelectedTab('problem'); }}
+                      onClick={() => { 
+                        setSelectedRecord(record); 
+                        if (mode === 'review') setSelectedTab('problem'); 
+                        startStealthPrefetch(selectedList, idx, isLibrary ? 'html' : 'image');
+                      }}
+                      onMouseEnter={() => {
+                        prefetchItem(record, isLibrary ? 'html' : 'image');
+                      }}
                       className={`shrink-0 rounded-2xl flex items-center justify-center font-black transition-all snap-center ${
                         isLibrary
                           ? `max-w-[min(220px,70vw)] px-3 py-2.5 md:px-4 md:py-3 text-xs md:text-sm ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-[1.02]' : 'bg-white/5 text-slate-400 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
@@ -362,7 +375,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
             </div>
             <div className="bg-white/5 border border-white/10 rounded-[48px] md:rounded-[64px] overflow-hidden flex flex-col min-h-[750px] lg:min-h-[850px] relative shadow-3xl backdrop-blur-3xl">
               <div className="flex-1 flex items-center justify-center p-4 md:p-8 bg-gradient-to-br from-transparent to-indigo-950/20 overflow-auto relative min-h-[600px]">
-                {isContentLoading && <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-xl z-50"><Loader2 className="animate-spin text-indigo-500" size={50} /></div>}
+                {isContentLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-50 transition-all">
+                    <Loader2 className="animate-spin text-indigo-500" size={50} />
+                  </div>
+                )}
                 {contentData ? (
                   selectedTab === 'solution' ? <iframe srcDoc={contentData} className="w-full h-full min-h-[700px] border-0 rounded-[32px] bg-white shadow-3xl animate-in fade-in duration-1000" /> 
                   : <img src={contentData} alt="content" className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-3xl animate-in zoom-in-95 duration-700" />
