@@ -30,6 +30,38 @@ function sortLibraryDisplayFolders<T extends { name: string }>(folders: T[]): T[
   });
 }
 
+/**
+ * 폴더 접근 권한 판별:
+ * 1. 폴더 본인의 drive_id가 unlocked_folders에 있으면 열림
+ * 2. 하위 폴더(subFolders)가 있는 상위 폴더인 경우:
+ *    하위 자손 폴더 중 최소 1개 이상이 unlocked_folders에 있으면 탐색 가능(열림)
+ * 3. 하위 폴더가 없는 최종 회차 폴더인 경우:
+ *    본인의 drive_id가 unlocked_folders에 있어야만 열림
+ */
+function isFolderAccessible(folder: any, unlockedFolders?: string[]): boolean {
+  if (!unlockedFolders || unlockedFolders.length === 0) return false;
+  const set = new Set(unlockedFolders);
+  const folderId = folder.drive_id || folder.id;
+
+  if (folderId && set.has(folderId)) {
+    return true;
+  }
+
+  if (folder.subFolders && folder.subFolders.length > 0) {
+    const hasUnlockedChild = (node: any): boolean => {
+      const id = node.drive_id || node.id;
+      if (id && set.has(id)) return true;
+      if (node.subFolders && node.subFolders.length > 0) {
+        return node.subFolders.some((child: any) => hasUnlockedChild(child));
+      }
+      return false;
+    };
+    return folder.subFolders.some((child: any) => hasUnlockedChild(child));
+  }
+
+  return false;
+}
+
 export default function StudentPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   
@@ -87,15 +119,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     setCurrentPath([]);
   };
 
-  // 🔥 [수정] 개별 폴더 클릭 핸들러 (회차 폴더인 경우에만 락 체크)
+  // 개별 폴더 클릭 핸들러 (계층형 권한 체크)
   const handleLibraryFolderClick = (folder: any) => {
-    // 🔍 로직: 이름에 '차'가 들어간 경우(시험지 회차)에만 선생님이 준 개별 권한을 확인해
-    const isExamSession = folder.name.includes('차');
-    const isUnlocked = student?.unlocked_folders?.includes(folder.drive_id);
+    const isUnlocked = isFolderAccessible(folder, student?.unlocked_folders);
 
-    // 만약 회차 폴더인데 내 권한 리스트에 없다면? 철통 방어!
-    if (isExamSession && !isUnlocked) {
-      alert("🔒 해당 회차는 아직 시험 전이거나 잠겨있어 해설을 볼 수 없습니다.");
+    if (!isUnlocked) {
+      alert("🔒 해당 폴더는 아직 시험 전이거나 잠겨있어 접근할 수 없습니다.");
       return;
     }
 
@@ -303,10 +332,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                       </div>
                     )}
                     {displayLibrary.map(folder => {
-                      // 🔥 [수정] 회차 폴더(이름에 '차' 포함)인 경우에만 락 비주얼을 적용해
-                      const isExamSession = folder.name.includes('차');
-                      const isUnlocked = student?.unlocked_folders?.includes(folder.drive_id);
-                      const isLocked = isExamSession && !isUnlocked;
+                      const isUnlocked = isFolderAccessible(folder, student?.unlocked_folders);
+                      const isLocked = !isUnlocked;
 
                       return (
                         <div 
@@ -323,11 +350,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                             {folder.name}
                           </div>
                           <div className="text-[10px] font-bold text-slate-500 group-hover:text-white opacity-60 uppercase tracking-widest">
-                            {isLocked ? 'LOCKED SESSION' : folder.subFolders?.length > 0 ? `${folder.subFolders.length} folders` : `${folder.files?.length || 0} solutions`}
+                            {isLocked ? 'LOCKED FOLDER' : folder.subFolders?.length > 0 ? `${folder.subFolders.length} folders` : `${folder.files?.length || 0} solutions`}
                           </div>
                           {!isLocked && <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>}
                         </div>
-                      )
+                      );
                     })}
                   </>
                 )}

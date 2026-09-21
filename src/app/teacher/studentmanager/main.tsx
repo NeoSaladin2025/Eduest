@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
-  Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound
+  Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound,
+  ChevronRight, ChevronDown, Folder, FolderOpen, MinusSquare
 } from 'lucide-react';
 
 interface Student {
@@ -14,6 +15,59 @@ interface Student {
   is_unlocked: boolean;
   unlocked_folders?: string[];
   password?: string;
+}
+
+interface FolderNode {
+  drive_id: string;
+  parent_id: string | null;
+  name: string;
+  children: FolderNode[];
+}
+
+function buildFolderTree(items: any[], grade: string): FolderNode[] {
+  const nodeMap = new Map<string, FolderNode>();
+  items.forEach(item => {
+    nodeMap.set(item.drive_id, {
+      drive_id: item.drive_id,
+      parent_id: item.parent_id,
+      name: item.name,
+      children: []
+    });
+  });
+
+  const gradeNodeIds = new Set<string>();
+  items.forEach(item => {
+    if (item.name && item.name.trim() === grade.trim()) {
+      gradeNodeIds.add(item.drive_id);
+    }
+  });
+
+  const roots: FolderNode[] = [];
+
+  nodeMap.forEach(node => {
+    if (gradeNodeIds.has(node.drive_id)) return;
+    if (node.parent_id && nodeMap.has(node.parent_id) && !gradeNodeIds.has(node.parent_id)) {
+      nodeMap.get(node.parent_id)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  const sortNodes = (nodes: FolderNode[]) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
+    nodes.forEach(n => sortNodes(n.children));
+  };
+  sortNodes(roots);
+
+  return roots;
+}
+
+function getAllDescendantIds(node: FolderNode): string[] {
+  const ids: string[] = [node.drive_id];
+  node.children.forEach(child => {
+    ids.push(...getAllDescendantIds(child));
+  });
+  return ids;
 }
 
 export default function StudentManagerMain() {
@@ -32,6 +86,8 @@ export default function StudentManagerMain() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
+  const [treeRoots, setTreeRoots] = useState<FolderNode[]>([]);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [modalLoading, setModalLoading] = useState(false);
 
   // 비번 모달 상태
@@ -183,22 +239,92 @@ export default function StudentManagerMain() {
     setIsModalOpen(true);
     setModalLoading(true);
     try {
-      const res = await fetch(`/api/drive/library?grade=${student.grade}`);
+      const res = await fetch(`/api/drive/library?grade=${encodeURIComponent(student.grade)}`);
       const data = await res.json();
       
-      const filtered = (data.items || [])
-        .filter((item: any) => 
-          item.type === 'folder' && 
-          item.name.trim() !== student.grade.trim()
-        )
-        .sort((a: any, b: any) => a.name.localeCompare(b.name, 'ko'));
-        
-      setLibraryItems(filtered);
+      const folders = (data.items || []).filter((item: any) => item.type === 'folder');
+      const roots = buildFolderTree(folders, student.grade);
+      setTreeRoots(roots);
+      setLibraryItems(folders);
+
+      // 상위 및 1단계 하위 폴더 기본 펼침
+      const initialExpanded = new Set<string>();
+      roots.forEach(r => {
+        initialExpanded.add(r.drive_id);
+        r.children.forEach(c => initialExpanded.add(c.drive_id));
+      });
+      setExpandedNodes(initialExpanded);
     } catch (err) {
       console.error(err);
     } finally {
       setModalLoading(false);
     }
+  };
+
+  const allTreeIds = useMemo(() => {
+    return treeRoots.flatMap(r => getAllDescendantIds(r));
+  }, [treeRoots]);
+
+  const isAllTreeSelected = useMemo(() => {
+    if (allTreeIds.length === 0) return false;
+    const current = new Set(selectedStudent?.unlocked_folders || []);
+    return allTreeIds.every(id => current.has(id));
+  }, [allTreeIds, selectedStudent?.unlocked_folders]);
+
+  const toggleNodeSelection = (node: FolderNode) => {
+    if (!selectedStudent) return;
+    const currentUnlocked = new Set(selectedStudent.unlocked_folders || []);
+    const subIds = getAllDescendantIds(node);
+
+    const isAllChecked = subIds.every(id => currentUnlocked.has(id));
+
+    if (isAllChecked) {
+      // 해당 노드 및 하위 모든 노드 일괄 해제
+      subIds.forEach(id => currentUnlocked.delete(id));
+    } else {
+      // 해당 노드 및 하위 모든 노드 일괄 선택
+      subIds.forEach(id => currentUnlocked.add(id));
+    }
+
+    setSelectedStudent({
+      ...selectedStudent,
+      unlocked_folders: Array.from(currentUnlocked)
+    });
+  };
+
+  const toggleExpand = (driveId: string) => {
+    setExpandedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(driveId)) next.delete(driveId);
+      else next.add(driveId);
+      return next;
+    });
+  };
+
+  const handleToggleSelectAll = () => {
+    if (!selectedStudent) return;
+    if (isAllTreeSelected) {
+      setSelectedStudent({ ...selectedStudent, unlocked_folders: [] });
+    } else {
+      setSelectedStudent({ ...selectedStudent, unlocked_folders: allTreeIds });
+    }
+  };
+
+  const handleToggleExpandAll = () => {
+    if (expandedNodes.size > 0) {
+      setExpandedNodes(new Set());
+    } else {
+      setExpandedNodes(new Set(allTreeIds));
+    }
+  };
+
+  const getNodeCheckState = (node: FolderNode, unlockedList: string[] = []): 'all' | 'some' | 'none' => {
+    const set = new Set(unlockedList);
+    const subIds = getAllDescendantIds(node);
+    const checkedCount = subIds.filter(id => set.has(id)).length;
+    if (checkedCount === 0) return 'none';
+    if (checkedCount === subIds.length) return 'all';
+    return 'some';
   };
 
   const handleAddStudent = async (e: React.FormEvent) => {
@@ -266,72 +392,150 @@ export default function StudentManagerMain() {
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   }, [students, searchTerm, selectedGradeFilter]);
 
+  const renderTreeNode = (node: FolderNode, depth: number = 0) => {
+    const isExpanded = expandedNodes.has(node.drive_id);
+    const checkState = getNodeCheckState(node, selectedStudent?.unlocked_folders);
+    const hasChildren = node.children.length > 0;
+
+    return (
+      <div key={node.drive_id} className="w-full">
+        <div 
+          className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl transition-all select-none border ${
+            depth === 0
+              ? checkState === 'all'
+                ? 'bg-indigo-50/90 border-indigo-300 shadow-xs'
+                : checkState === 'some'
+                ? 'bg-indigo-50/40 border-indigo-200'
+                : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+              : checkState === 'all'
+              ? 'bg-indigo-50/70 border-indigo-200'
+              : checkState === 'some'
+              ? 'bg-indigo-50/30 border-indigo-100'
+              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200'
+          }`}
+        >
+          {/* 접기/펼치기 토글 화살표 */}
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleExpand(node.drive_id);
+              }}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-all shrink-0"
+            >
+              {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            </button>
+          ) : (
+            <div className="w-6 shrink-0" />
+          )}
+
+          {/* 체크박스 & 라벨 영역 (클릭 시 일괄 체크/해제) */}
+          <div 
+            onClick={() => toggleNodeSelection(node)}
+            className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
+          >
+            {checkState === 'all' ? (
+              <CheckSquare size={20} className="text-indigo-600 shrink-0" />
+            ) : checkState === 'some' ? (
+              <MinusSquare size={20} className="text-indigo-500 shrink-0" />
+            ) : (
+              <Square size={20} className="text-slate-300 shrink-0" />
+            )}
+
+            {hasChildren ? (
+              isExpanded ? (
+                <FolderOpen size={19} className="text-amber-500 shrink-0" />
+              ) : (
+                <Folder size={19} className="text-amber-500 shrink-0" />
+              )
+            ) : (
+              <Folder size={16} className="text-slate-400 shrink-0" />
+            )}
+
+            <span 
+              className={`truncate ${
+                depth === 0 
+                  ? 'text-base font-black text-slate-800' 
+                  : depth === 1 
+                  ? 'text-sm font-bold text-slate-700' 
+                  : 'text-sm font-semibold text-slate-600'
+              } ${checkState === 'all' ? 'text-indigo-900 font-black' : ''}`}
+            >
+              {node.name}
+            </span>
+
+            {hasChildren && (
+              <span className="ml-auto text-[11px] font-bold text-slate-400 bg-white/80 border border-slate-200 px-2.5 py-0.5 rounded-full shrink-0">
+                하위 {node.children.length}개
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* 하위 폴더 렌더링 (들여쓰기 + 세로 연결 가이드라인) */}
+        {hasChildren && isExpanded && (
+          <div className="pl-4 ml-3 border-l-2 border-slate-200/80 mt-1.5 space-y-1.5">
+            {node.children.map(child => renderTreeNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="p-8 max-w-[1200px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
       
-      {/* 🔐 [완전 강제 교정본] 회차 관리 설정창 */}
+      {/* 🔐 회차 및 폴더 관리 설정창 (계층형 트리 구조) */}
       {isModalOpen && selectedStudent && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => setIsModalOpen(false)} />
           
-          {/* 🔥 1. 모달 전체 높이 제한 강제 (maxHeight: 80vh) */}
           <div 
             className="relative bg-white w-full max-w-2xl rounded-[32px] shadow-2xl flex flex-col animate-in zoom-in duration-200"
-            style={{ maxHeight: '80vh' }} 
+            style={{ maxHeight: '82vh' }} 
           >
             
             {/* 상단 헤더 (높이 고정) */}
             <div className="shrink-0 p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-[32px]">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 tracking-tighter italic uppercase leading-none">
-                  {selectedStudent.name} <span className="text-indigo-600 font-bold ml-1 text-xl">회차 관리</span>
+                  {selectedStudent.name} <span className="text-indigo-600 font-bold ml-1 text-xl">회차 및 폴더 관리</span>
                 </h2>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Exam Sessions Selection</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Hierarchical Library Permission Access</p>
               </div>
               <button onClick={() => setIsModalOpen(false)} className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors">
                 <X size={20} />
               </button>
             </div>
+
+            {/* 상단 안내 & 툴바 */}
+            <div className="shrink-0 px-6 py-3 bg-slate-50/90 border-b border-slate-100 flex items-center justify-between text-xs">
+              <span className="font-bold text-slate-500">
+                열린 폴더: <strong className="text-indigo-600 font-black">{(selectedStudent.unlocked_folders || []).length}</strong> / {allTreeIds.length}개
+              </span>
+              <button
+                type="button"
+                onClick={handleToggleExpandAll}
+                className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-xs transition-all"
+              >
+                {expandedNodes.size > 0 ? '모두 접기' : '모두 펼치기'}
+              </button>
+            </div>
             
-            {/* 🔥 2. 스크롤 강제 활성화 영역 (overflowY: auto) */}
+            {/* 트리 스크롤 영역 */}
             <div 
-              className="flex-1 p-6 bg-white"
-              style={{ overflowY: 'auto' }}
+              className="flex-1 p-6 bg-white overflow-y-auto"
             >
               {modalLoading ? (
                 <div className="h-full flex items-center justify-center py-20"><Loader2 size={40} className="animate-spin text-indigo-500" /></div>
-              ) : libraryItems.length > 0 ? (
-                
-                /* 🔥 3. 2열 그리드 강제 (인라인 스타일) */
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
-                  {libraryItems.map(item => {
-                    const isChecked = selectedStudent.unlocked_folders?.includes(item.drive_id);
-                    return (
-                      <div 
-                        key={item.id} 
-                        onClick={() => {
-                          const current = selectedStudent.unlocked_folders || [];
-                          const next = isChecked ? current.filter(id => id !== item.drive_id) : [...current, item.drive_id];
-                          setSelectedStudent({ ...selectedStudent, unlocked_folders: next });
-                        }}
-                        className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all cursor-pointer select-none ${isChecked ? 'border-indigo-600 bg-indigo-50 shadow-sm' : 'border-slate-100 bg-slate-50 hover:border-slate-300'}`}
-                        style={{ overflow: 'hidden' }}
-                      >
-                        {isChecked ? <CheckSquare size={22} className="text-indigo-600 shrink-0" /> : <Square size={22} className="text-slate-300 shrink-0" />}
-                        <span 
-                          className={`font-black text-sm sm:text-base ${isChecked ? 'text-indigo-700' : 'text-slate-600'}`}
-                          style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                        >
-                          {item.name}
-                        </span>
-                      </div>
-                    );
-                  })}
+              ) : treeRoots.length > 0 ? (
+                <div className="space-y-2">
+                  {treeRoots.map(root => renderTreeNode(root, 0))}
                 </div>
-                
               ) : (
                 <div className="h-full flex items-center justify-center py-20">
-                  <p className="text-center text-slate-400 font-bold italic text-lg">데이터가 없습니다.</p>
+                  <p className="text-center text-slate-400 font-bold italic text-lg">폴더 데이터가 없습니다.</p>
                 </div>
               )}
             </div>
@@ -339,14 +543,10 @@ export default function StudentManagerMain() {
             {/* 하단 버튼 (높이 고정) */}
             <div className="shrink-0 p-6 bg-slate-50 border-t border-slate-100 flex gap-3 rounded-b-[32px]">
               <button 
-                onClick={() => {
-                  const allIds = libraryItems.map(i => i.drive_id);
-                  const isAll = libraryItems.length > 0 && allIds.every(i => selectedStudent.unlocked_folders?.includes(i));
-                  setSelectedStudent({ ...selectedStudent, unlocked_folders: isAll ? [] : allIds });
-                }}
-                className="w-28 sm:w-32 py-4 bg-white border-2 border-slate-200 text-slate-500 font-black rounded-xl text-xs uppercase hover:bg-slate-100 transition-all shadow-sm"
+                onClick={handleToggleSelectAll}
+                className="w-28 sm:w-32 py-4 bg-white border-2 border-slate-200 text-slate-600 font-black rounded-xl text-xs uppercase hover:bg-slate-100 transition-all shadow-sm"
               >
-                전체 선택
+                {isAllTreeSelected ? '전체 해제' : '전체 선택'}
               </button>
               <button 
                 onClick={() => saveFolderPermissions(selectedStudent.unlocked_folders || [])}
