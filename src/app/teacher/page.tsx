@@ -9,7 +9,8 @@ import {
   Bell, 
   LayoutDashboard, 
   UserCheck,
-  Zap 
+  Zap,
+  CalendarDays
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -17,6 +18,8 @@ import DashboardMain from './dashboard/main';
 import SpecialMain from './special/main';
 // ✅ 학생 관리 컴포넌트 추가
 import StudentManagerMain from './studentmanager/main'; 
+// ✅ 수업 관리 컴포넌트 추가
+import ClassManagerMain from './classmanager/main';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -32,7 +35,7 @@ export default function TeacherAdminPage() {
   const menuItems = [
     { id: 'dashboard', label: '대시보드', icon: <LayoutDashboard size={19} /> },
     { id: 'students', label: '학생 관리', icon: <Users size={19} /> },
-    { id: 'lessons', label: '수업/과제', icon: <BookOpen size={19} /> },
+    { id: 'classes', label: '수업관리', icon: <CalendarDays size={19} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={19} /> },
   ];
 
@@ -128,8 +131,15 @@ export default function TeacherAdminPage() {
             </div>
           )}
 
+          {/* ✅ 수업관리 (신규 달력형 수업/출석/숙제 관리) */}
+          {activeMenu === 'classes' && (
+            <div className="w-full h-full bg-white overflow-hidden">
+              <ClassManagerMain />
+            </div>
+          )}
+
           {/* ✅ 기타 공사중 */}
-          {['lessons', 'notices'].includes(activeMenu) && (
+          {activeMenu === 'notices' && (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 italic font-medium text-lg">
                Under Construction... ❤️
             </div>
