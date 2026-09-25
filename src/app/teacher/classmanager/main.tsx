@@ -108,24 +108,31 @@ export default function ClassManagerMain() {
     try {
       setLoading(true);
       // First read local cache for 0ms render
+      let cachedClasses: ClassItem[] = [];
       const localClasses = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (localClasses) {
         try {
-          setClasses(JSON.parse(localClasses));
+          const parsed = JSON.parse(localClasses);
+          if (Array.isArray(parsed)) {
+            cachedClasses = parsed;
+            setClasses(cachedClasses);
+          }
         } catch (_) {}
       }
 
       const localReasons = localStorage.getItem(REASONS_STORAGE_KEY);
       if (localReasons) {
         try {
-          setReasons(JSON.parse(localReasons));
+          const parsed = JSON.parse(localReasons);
+          if (Array.isArray(parsed) && parsed.length > 0) setReasons(parsed);
         } catch (_) {}
       }
 
       const localActions = localStorage.getItem(ACTIONS_STORAGE_KEY);
       if (localActions) {
         try {
-          setActions(JSON.parse(localActions));
+          const parsed = JSON.parse(localActions);
+          if (Array.isArray(parsed) && parsed.length > 0) setActions(parsed);
         } catch (_) {}
       }
 
@@ -138,18 +145,40 @@ export default function ClassManagerMain() {
 
       // Fetch from API
       const res = await fetch('/api/classes');
-      const data = await res.json();
-      if (data.classes && Array.isArray(data.classes)) {
-        setClasses(data.classes);
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data.classes));
-      }
-      if (data.custom_reasons && Array.isArray(data.custom_reasons)) {
-        setReasons(data.custom_reasons);
-        localStorage.setItem(REASONS_STORAGE_KEY, JSON.stringify(data.custom_reasons));
-      }
-      if (data.custom_actions && Array.isArray(data.custom_actions)) {
-        setActions(data.custom_actions);
-        localStorage.setItem(ACTIONS_STORAGE_KEY, JSON.stringify(data.custom_actions));
+      if (res.ok) {
+        const data = await res.json();
+        const serverClasses: ClassItem[] = Array.isArray(data.classes) ? data.classes : [];
+
+        let finalClasses = serverClasses;
+
+        // 🛡️ SAFE MERGE STRATEGY (절대 데이터 유실 방지):
+        // 1. 서버가 빈 배열을 반환했지만 로컬 캐시에 등록된 수업이 있는 경우
+        //    -> 절대 로컬 데이터를 날리지 않고, 로컬 데이터를 보존하며 서버로 즉시 업로드!
+        if (serverClasses.length === 0 && cachedClasses.length > 0) {
+          finalClasses = cachedClasses;
+          saveToCloud(cachedClasses);
+        } else if (serverClasses.length > 0 && cachedClasses.length > 0) {
+          // 2. 서버에 수업이 있고 로컬에도 수업이 있는 경우
+          //    -> 서버에 아직 반영되지 않은 로컬 신규 수업이 있다면 합쳐서 서버에 재동기화!
+          const serverIdSet = new Set(serverClasses.map(c => c.id));
+          const localOnly = cachedClasses.filter(c => !serverIdSet.has(c.id));
+          if (localOnly.length > 0) {
+            finalClasses = [...serverClasses, ...localOnly];
+            saveToCloud(finalClasses);
+          }
+        }
+
+        setClasses(finalClasses);
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(finalClasses));
+
+        if (Array.isArray(data.custom_reasons) && data.custom_reasons.length > 0) {
+          setReasons(data.custom_reasons);
+          localStorage.setItem(REASONS_STORAGE_KEY, JSON.stringify(data.custom_reasons));
+        }
+        if (Array.isArray(data.custom_actions) && data.custom_actions.length > 0) {
+          setActions(data.custom_actions);
+          localStorage.setItem(ACTIONS_STORAGE_KEY, JSON.stringify(data.custom_actions));
+        }
       }
     } catch (err) {
       console.error('Error fetching classes:', err);
@@ -185,7 +214,7 @@ export default function ClassManagerMain() {
 
     try {
       setSaving(true);
-      await fetch('/api/classes', {
+      const res = await fetch('/api/classes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -194,6 +223,9 @@ export default function ClassManagerMain() {
           custom_actions: curActions,
         }),
       });
+      if (!res.ok) {
+        console.error('Save to server returned non-OK status:', res.status);
+      }
     } catch (err) {
       console.error('Failed to save data to cloud:', err);
     } finally {

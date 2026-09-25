@@ -3,36 +3,25 @@ import { NextResponse } from 'next/server';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const BUCKET_NAME = 'class_management';
-const FILE_PATH = 'classes.json';
-
-// Helper to ensure bucket exists
-async function ensureBucket() {
-  try {
-    const { data: buckets } = await supabase.storage.listBuckets();
-    if (!buckets?.some(b => b.name === BUCKET_NAME)) {
-      await supabase.storage.createBucket(BUCKET_NAME, { public: true });
-    }
-  } catch (e) {
-    console.error('Bucket check error:', e);
-  }
-}
+const RECORD_DRIVE_ID = 'class_schedule_root_data';
 
 // GET: 수업 목록 전체 가져오기
 export async function GET() {
   try {
-    await ensureBucket();
-    const { data, error } = await supabase.storage.from(BUCKET_NAME).download(FILE_PATH);
+    const { data, error } = await supabase
+      .from('exam_library')
+      .select('file_data')
+      .eq('drive_id', RECORD_DRIVE_ID)
+      .maybeSingle();
 
-    if (error || !data) {
-      return NextResponse.json({ classes: [] });
+    if (error || !data || !data.file_data) {
+      return NextResponse.json({ classes: [], custom_reasons: null, custom_actions: null });
     }
 
-    const text = await data.text();
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(data.file_data);
     return NextResponse.json({ 
       classes: parsed.classes || [],
       custom_reasons: parsed.custom_reasons || null,
@@ -47,7 +36,6 @@ export async function GET() {
 // POST: 수업 목록 및 사유/조치 저장 / 업데이트
 export async function POST(req: Request) {
   try {
-    await ensureBucket();
     const body = await req.json();
     const classes = body.classes || [];
     const custom_reasons = body.custom_reasons;
@@ -58,14 +46,18 @@ export async function POST(req: Request) {
       custom_reasons,
       custom_actions,
       updated_at: new Date().toISOString() 
-    }, null, 2);
+    });
 
-    const { error } = await supabase.storage
-      .from(BUCKET_NAME)
-      .upload(FILE_PATH, jsonString, {
-        upsert: true,
-        contentType: 'application/json',
-      });
+    const { error } = await supabase
+      .from('exam_library')
+      .upsert({
+        drive_id: RECORD_DRIVE_ID,
+        name: 'class_schedule_data.json',
+        type: 'file',
+        grade: '공통',
+        file_data: jsonString,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'drive_id' });
 
     if (error) {
       console.error('Classes save error:', error);
