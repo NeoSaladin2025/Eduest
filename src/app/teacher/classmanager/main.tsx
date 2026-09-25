@@ -541,6 +541,7 @@ export default function ClassManagerMain() {
           allStudents={allStudents}
           onBack={() => setActiveClassId(null)}
           onUpdateClass={handleUpdateClass}
+          onUpdateAllClasses={saveToCloud}
           onDeleteClass={handleDeleteClass}
           onEditClassInfo={c => {
             setEditingClass(c);

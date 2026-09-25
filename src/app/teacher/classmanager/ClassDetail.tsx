@@ -25,7 +25,8 @@ import {
   CheckCircle2,
   XCircle,
   HelpCircle,
-  ArrowDownLeft
+  ArrowDownLeft,
+  History
 } from 'lucide-react';
 import { 
   ClassItem, 
@@ -35,6 +36,7 @@ import {
   SuggestionItem 
 } from './types';
 import SuggestionsManagerModal from './SuggestionsManagerModal';
+import HomeworkHistoryModal from './HomeworkHistoryModal';
 
 interface ClassDetailProps {
   classItem: ClassItem;
@@ -42,6 +44,7 @@ interface ClassDetailProps {
   allStudents: StudentBasicInfo[];
   onBack: () => void;
   onUpdateClass: (updated: ClassItem) => void;
+  onUpdateAllClasses?: (classes: ClassItem[]) => void;
   onDeleteClass: (classId: string) => void;
   onEditClassInfo: (classItem: ClassItem) => void;
   reasons: SuggestionItem[];
@@ -56,6 +59,7 @@ export default function ClassDetail({
   allStudents,
   onBack,
   onUpdateClass,
+  onUpdateAllClasses,
   onDeleteClass,
   onEditClassInfo,
   reasons,
@@ -71,6 +75,9 @@ export default function ClassDetail({
   // Suggestions Manager Modal state
   const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
   const [suggestionsModalTab, setSuggestionsModalTab] = useState<'reason' | 'action'>('reason');
+
+  // 🌟 [사용자 요청] 숙제 히스토리 모달 state
+  const [isHomeworkHistoryOpen, setIsHomeworkHistoryOpen] = useState(false);
 
   // Sync internal state when classItem prop changes
   useEffect(() => {
@@ -402,6 +409,45 @@ export default function ClassDetail({
         updated_at: new Date().toISOString(),
       },
       '이전 수업 과제 내용을 불러왔습니다!'
+    );
+  };
+
+  // 🌟 [사용자 요청] 숙제 히스토리 모달을 통한 전체 수업 일지 동기화 핸들러
+  const handleUpdateAllClasses = (updatedClasses: ClassItem[]) => {
+    const updatedCurrent = updatedClasses.find(c => c.id === currentClass.id);
+    if (updatedCurrent) {
+      setCurrentClass(updatedCurrent);
+      onUpdateClass(updatedCurrent);
+    }
+    if (onUpdateAllClasses) {
+      onUpdateAllClasses(updatedClasses);
+    }
+  };
+
+  // 🌟 [사용자 요청] 히스토리에서 선택한 특정 과거 숙제를 현재 학생의 최근 숙제로 불러오기
+  const handleApplyHomeworkToCurrentClass = (content: string, dueDate: string) => {
+    if (!selectedStudent) return;
+    const nextAttendance = {
+      ...(currentClass.students_attendance || {}),
+      [selectedStudent.id]: {
+        ...(currentClass.students_attendance?.[selectedStudent.id] || {
+          student_id: selectedStudent.id,
+          student_name: selectedStudent.name,
+          student_grade: selectedStudent.grade,
+        }),
+        previous_homework: content,
+        previous_homework_due_date: dueDate,
+        updated_at: new Date().toISOString(),
+      },
+    };
+
+    saveClassState(
+      {
+        ...currentClass,
+        students_attendance: nextAttendance,
+        updated_at: new Date().toISOString(),
+      },
+      '선택한 숙제 내용을 최근 숙제로 불러왔습니다! 📥'
     );
   };
 
@@ -1030,6 +1076,15 @@ export default function ClassDetail({
                       )}
                       <button
                         type="button"
+                        onClick={() => setIsHomeworkHistoryOpen(true)}
+                        className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-indigo-50 text-slate-700 border border-slate-200 hover:border-indigo-300 rounded-lg text-xs font-bold transition-all shadow-2xs"
+                        title="이 학생의 최근 1개월 숙제 히스토리를 확인하고 수정합니다"
+                      >
+                        <History size={13} className="text-indigo-600" />
+                        숙제 히스토리
+                      </button>
+                      <button
+                        type="button"
                         onClick={handleBatchLoadPreviousHomework}
                         className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-black transition-all shadow-2xs"
                         title="이전 수업의 과제를 이 반 전체 학생에게 일괄 불러옵니다"
@@ -1091,7 +1146,16 @@ export default function ClassDetail({
                           className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold transition-all shadow-2xs"
                           title="이 학생 한 명에게만 과제 내용을 적용합니다"
                         >
-                          이 학생만 불러오기
+                          과제 내용 불러오기
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsHomeworkHistoryOpen(true)}
+                          className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-slate-700 border border-slate-300 rounded-lg text-[11px] font-bold transition-all shadow-2xs flex items-center gap-1"
+                          title="이 학생의 최근 1개월 숙제 히스토리를 조회하고 수정합니다"
+                        >
+                          <History size={12} className="text-indigo-600" />
+                          숙제 히스토리
                         </button>
                         <button
                           type="button"
@@ -1195,6 +1259,17 @@ export default function ClassDetail({
         actions={actions}
         onSaveReasons={onUpdateReasons}
         onSaveActions={onUpdateActions}
+      />
+
+      {/* 🌟 [사용자 요청] 숙제 히스토리 모달 (최근 1개월치 숙제 조회, 빠른순 정렬, 숙제완료/미완료/내용수정, 리스트제거) */}
+      <HomeworkHistoryModal
+        isOpen={isHomeworkHistoryOpen}
+        onClose={() => setIsHomeworkHistoryOpen(false)}
+        student={selectedStudent ? { id: selectedStudent.id, name: selectedStudent.name, grade: selectedStudent.grade } : null}
+        currentClass={currentClass}
+        allClasses={allClasses}
+        onUpdateAllClasses={handleUpdateAllClasses}
+        onApplyHomeworkToCurrentClass={handleApplyHomeworkToCurrentClass}
       />
     </div>
   );
