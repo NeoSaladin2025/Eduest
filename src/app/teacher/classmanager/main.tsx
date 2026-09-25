@@ -265,7 +265,8 @@ export default function ClassManagerMain() {
                 student_id: sid,
                 student_name: studentInfo?.name || '',
                 student_grade: studentInfo?.grade || '',
-                status: 'ATTEND',
+                status: 'UNCHECKED',
+                homework_check: 'UNCHECKED',
               };
             }
           });
@@ -292,7 +293,8 @@ export default function ClassManagerMain() {
           student_id: sid,
           student_name: studentInfo?.name || '',
           student_grade: studentInfo?.grade || '',
-          status: 'ATTEND',
+          status: 'UNCHECKED',
+          homework_check: 'UNCHECKED',
         };
       });
 
@@ -360,11 +362,14 @@ export default function ClassManagerMain() {
           student_id: sid,
           student_name: existingRecord?.student_name || studentInfo?.name || '',
           student_grade: existingRecord?.student_grade || studentInfo?.grade || '',
-          status: 'ATTEND',
+          status: 'UNCHECKED',
           absent_reason: '',
           action_notes: '',
           previous_homework: existingRecord?.today_homework || existingRecord?.previous_homework || '',
+          previous_homework_due_date: existingRecord?.today_homework_due_date || '',
+          homework_check: 'UNCHECKED',
           today_homework: '',
+          today_homework_due_date: '',
           updated_at: new Date().toISOString(),
         };
       });
@@ -532,6 +537,7 @@ export default function ClassManagerMain() {
         /* ✅ 수업 상세 화면 */
         <ClassDetail
           classItem={activeClass}
+          allClasses={classes}
           allStudents={allStudents}
           onBack={() => setActiveClassId(null)}
           onUpdateClass={handleUpdateClass}

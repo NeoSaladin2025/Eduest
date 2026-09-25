@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ArrowLeft, 
   Clock, 
@@ -18,15 +18,27 @@ import {
   ChevronRight, 
   ChevronLeft, 
   Share2, 
-  Sparkles,
-  BookOpen,
-  Settings
+  Sparkles, 
+  BookOpen, 
+  Settings,
+  CalendarDays,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
+  ArrowDownLeft
 } from 'lucide-react';
-import { ClassItem, AttendanceStatus, StudentBasicInfo, SuggestionItem } from './types';
+import { 
+  ClassItem, 
+  AttendanceStatus, 
+  HomeworkCheckStatus, 
+  StudentBasicInfo, 
+  SuggestionItem 
+} from './types';
 import SuggestionsManagerModal from './SuggestionsManagerModal';
 
 interface ClassDetailProps {
   classItem: ClassItem;
+  allClasses: ClassItem[];
   allStudents: StudentBasicInfo[];
   onBack: () => void;
   onUpdateClass: (updated: ClassItem) => void;
@@ -38,15 +50,9 @@ interface ClassDetailProps {
   onUpdateActions: (actions: SuggestionItem[]) => void;
 }
 
-const HW_STATUS_SUGGESTIONS = [
-  '숙제 100% 완료 (우수)',
-  '오답 정리 완료',
-  '일부 미흡 (재제출 필요)',
-  '숙제 미제출',
-];
-
 export default function ClassDetail({
   classItem,
+  allClasses,
   allStudents,
   onBack,
   onUpdateClass,
@@ -74,7 +80,7 @@ export default function ClassDetail({
     }
   }, [classItem]);
 
-  // Ensure every student in student_ids has an attendance record initialized
+  // Ensure every student in student_ids has an attendance record initialized (default: UNCHECKED)
   useEffect(() => {
     let changed = false;
     const nextAttendance = { ...(currentClass.students_attendance || {}) };
@@ -86,11 +92,14 @@ export default function ClassDetail({
           student_id: sid,
           student_name: studentInfo?.name || '학생',
           student_grade: studentInfo?.grade || '',
-          status: 'ATTEND',
+          status: 'UNCHECKED', // 🌟 디폴트는 아무것도 선택되지 않음
           absent_reason: '',
           action_notes: '',
           previous_homework: '',
+          previous_homework_due_date: '',
+          homework_check: 'UNCHECKED', // 🌟 숙제 검사 디폴트도 아무것도 선택되지 않음
           today_homework: '',
+          today_homework_due_date: '',
           updated_at: new Date().toISOString(),
         };
         changed = true;
@@ -137,7 +146,6 @@ export default function ClassDetail({
       ];
     }
 
-    // Sort by count descending
     updatedList.sort((a, b) => b.count - a.count);
     onUpdateReasons(updatedList);
   };
@@ -163,7 +171,6 @@ export default function ClassDetail({
       ];
     }
 
-    // Sort by count descending
     updatedList.sort((a, b) => b.count - a.count);
     onUpdateActions(updatedList);
   };
@@ -176,11 +183,14 @@ export default function ClassDetail({
       id: sid,
       name: record?.student_name || info?.name || '이름 미상',
       grade: record?.student_grade || info?.grade || '',
-      status: record?.status || 'ATTEND',
+      status: (record?.status || 'UNCHECKED') as AttendanceStatus,
       absent_reason: record?.absent_reason || '',
       action_notes: record?.action_notes || '',
       previous_homework: record?.previous_homework || '',
+      previous_homework_due_date: record?.previous_homework_due_date || '',
+      homework_check: (record?.homework_check || 'UNCHECKED') as HomeworkCheckStatus,
       today_homework: record?.today_homework || '',
+      today_homework_due_date: record?.today_homework_due_date || '',
     };
   });
 
@@ -191,14 +201,42 @@ export default function ClassDetail({
   const selectedStudent = classStudents.find(s => s.id === selectedStudentId) || classStudents[0];
   const selectedIndex = classStudents.findIndex(s => s.id === selectedStudentId);
 
+  // 🌟 이 학생의 이전 수업 과제 자동 탐색 (이전 날짜 수업의 today_homework)
+  const detectedPreviousHomework = useMemo(() => {
+    if (!selectedStudent) return null;
+    const studentId = selectedStudent.id;
+    const currentClassDate = currentClass.date;
+
+    const previousClasses = (allClasses || [])
+      .filter(c => c.date < currentClassDate && c.student_ids?.includes(studentId))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    for (const pc of previousClasses) {
+      const rec = pc.students_attendance?.[studentId];
+      if (rec?.today_homework && rec.today_homework.trim()) {
+        return {
+          content: rec.today_homework,
+          dueDate: rec.today_homework_due_date || '',
+          sourceDate: pc.date,
+          sourceClassName: pc.name,
+        };
+      }
+    }
+    return null;
+  }, [selectedStudentId, currentClass.date, allClasses]);
+
   // Statistics
   const attendCount = classStudents.filter(s => s.status === 'ATTEND').length;
   const lateCount = classStudents.filter(s => s.status === 'LATE').length;
   const absentCount = classStudents.filter(s => s.status === 'ABSENT').length;
+  const uncheckedCount = classStudents.filter(s => !s.status || s.status === 'UNCHECKED').length;
 
-  // Handle changing attendance status
-  const handleStatusChange = (status: AttendanceStatus) => {
+  // 🌟 [2번 스샷 반영] 출석 상태 토글: 클릭 시 선택, 한번 더 클릭 시 취소(UNCHECKED)
+  const handleToggleAttendance = (targetStatus: 'ATTEND' | 'LATE' | 'ABSENT') => {
     if (!selectedStudent) return;
+    const currentStatus = selectedStudent.status;
+    const nextStatus: AttendanceStatus = currentStatus === targetStatus ? 'UNCHECKED' : targetStatus;
+
     const nextAttendance = {
       ...(currentClass.students_attendance || {}),
       [selectedStudent.id]: {
@@ -207,7 +245,7 @@ export default function ClassDetail({
           student_name: selectedStudent.name,
           student_grade: selectedStudent.grade,
         }),
-        status,
+        status: nextStatus,
         updated_at: new Date().toISOString(),
       },
     };
@@ -219,9 +257,35 @@ export default function ClassDetail({
     });
   };
 
-  // Handle text field updates
+  // 🌟 [3번 스샷 반영] 숙제 검사 토글: 'DONE' (숙제 해옴) / 'NOT_DONE' (숙제 미이행) / 한번 더 클릭 시 취소
+  const handleToggleHomeworkCheck = (targetCheck: 'DONE' | 'NOT_DONE') => {
+    if (!selectedStudent) return;
+    const currentCheck = selectedStudent.homework_check;
+    const nextCheck: HomeworkCheckStatus = currentCheck === targetCheck ? 'UNCHECKED' : targetCheck;
+
+    const nextAttendance = {
+      ...(currentClass.students_attendance || {}),
+      [selectedStudent.id]: {
+        ...(currentClass.students_attendance?.[selectedStudent.id] || {
+          student_id: selectedStudent.id,
+          student_name: selectedStudent.name,
+          student_grade: selectedStudent.grade,
+        }),
+        homework_check: nextCheck,
+        updated_at: new Date().toISOString(),
+      },
+    };
+
+    saveClassState({
+      ...currentClass,
+      students_attendance: nextAttendance,
+      updated_at: new Date().toISOString(),
+    });
+  };
+
+  // Handle generic field change
   const handleFieldChange = (
-    field: 'absent_reason' | 'action_notes' | 'previous_homework' | 'today_homework',
+    field: 'absent_reason' | 'action_notes' | 'previous_homework' | 'previous_homework_due_date' | 'today_homework' | 'today_homework_due_date',
     val: string
   ) => {
     if (!selectedStudent) return;
@@ -232,7 +296,7 @@ export default function ClassDetail({
           student_id: selectedStudent.id,
           student_name: selectedStudent.name,
           student_grade: selectedStudent.grade,
-          status: 'ATTEND',
+          status: 'UNCHECKED',
         }),
         [field]: val,
         updated_at: new Date().toISOString(),
@@ -272,16 +336,19 @@ export default function ClassDetail({
     );
   };
 
-  // Quick Action: Apply today's homework to ALL students in this class
+  // 🌟 [3번 스샷 반영] 오늘 숙제 내용 및 기한일을 이 수업 전체 학생에게 일괄 적용
   const handleCopyTodayHwToAll = () => {
     if (!selectedStudent) return;
     const currentHw = currentClass.students_attendance?.[selectedStudent.id]?.today_homework || '';
-    if (!currentHw.trim()) {
-      alert('복사할 오늘 숙제 내용을 먼저 입력해주세요.');
+    const currentDueDate = currentClass.students_attendance?.[selectedStudent.id]?.today_homework_due_date || '';
+
+    if (!currentHw.trim() && !currentDueDate) {
+      alert('복사할 오늘 숙제 내용 또는 제출 기한일을 먼저 입력해주세요.');
       return;
     }
 
-    if (!confirm(`현재 입력된 오늘 숙제를 이 수업의 모든 학생(${classStudents.length}명)에게 일괄 적용하시겠습니까?`)) {
+    const dueDateNotice = currentDueDate ? ` (제출 기한: ${currentDueDate})` : ' (기한 미설정)';
+    if (!confirm(`현재 입력된 오늘 숙제와 제출 기한${dueDateNotice}을 이 수업의 모든 학생(${classStudents.length}명)에게 일괄 적용하시겠습니까?`)) {
       return;
     }
 
@@ -291,11 +358,12 @@ export default function ClassDetail({
         student_id: sid,
         student_name: allStudents.find(s => s.id === sid)?.name || '',
         student_grade: allStudents.find(s => s.id === sid)?.grade || '',
-        status: 'ATTEND',
+        status: 'UNCHECKED',
       };
       nextAttendance[sid] = {
         ...existing,
         today_homework: currentHw,
+        today_homework_due_date: currentDueDate,
         updated_at: new Date().toISOString(),
       };
     });
@@ -306,7 +374,34 @@ export default function ClassDetail({
         students_attendance: nextAttendance,
         updated_at: new Date().toISOString(),
       },
-      '모든 학생에게 오늘 숙제가 일괄 적용되었습니다! 📢'
+      '모든 학생에게 오늘 숙제 및 기한일이 일괄 적용되었습니다! 📢'
+    );
+  };
+
+  // 이전 수업 숙제를 현재 학생의 최근 숙제로 불러오기
+  const applyDetectedPreviousHomework = () => {
+    if (!detectedPreviousHomework || !selectedStudent) return;
+    const nextAttendance = {
+      ...(currentClass.students_attendance || {}),
+      [selectedStudent.id]: {
+        ...(currentClass.students_attendance?.[selectedStudent.id] || {
+          student_id: selectedStudent.id,
+          student_name: selectedStudent.name,
+          student_grade: selectedStudent.grade,
+        }),
+        previous_homework: detectedPreviousHomework.content,
+        previous_homework_due_date: detectedPreviousHomework.dueDate,
+        updated_at: new Date().toISOString(),
+      },
+    };
+
+    saveClassState(
+      {
+        ...currentClass,
+        students_attendance: nextAttendance,
+        updated_at: new Date().toISOString(),
+      },
+      '이전 수업 과제 내용을 불러왔습니다!'
     );
   };
 
@@ -362,11 +457,16 @@ export default function ClassDetail({
               <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
                 🔴 결석 {absentCount}
               </span>
+              {uncheckedCount > 0 && (
+                <span className="text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                  ⚪ 미체크 {uncheckedCount}
+                </span>
+              )}
             </div>
           </div>
         </div>
 
-        {/* 상단 우측 버튼들 (결석생 보고 버튼은 사용자 요청으로 달력 칸으로만 이동됨) */}
+        {/* 상단 우측 버튼들 */}
         <div className="flex items-center gap-2">
           {toastMessage && (
             <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-200 animate-pulse flex items-center gap-1.5">
@@ -399,10 +499,10 @@ export default function ClassDetail({
       {/* 2. 본문 2컬럼 레이아웃: 왼쪽(학생 목록) + 오른쪽(상세 기록) */}
       <div className="flex-1 flex overflow-hidden p-6 gap-6">
         
-        {/* [왼쪽 컬럼] 학생들 리스트 */}
-        <div className="w-80 md:w-96 flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-shrink-0">
+        {/* 🌟 [1번 스샷 반영] [왼쪽 컬럼] 학생들 리스트 - 전용 눈에 띄는 스크롤바 장착 */}
+        <div className="w-80 md:w-96 flex flex-col bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex-shrink-0 h-full">
           {/* 리스트 헤더 */}
-          <div className="p-4 border-b border-slate-100 bg-slate-50/50 space-y-3">
+          <div className="p-4 border-b border-slate-100 bg-slate-50/50 space-y-3 flex-shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Users size={16} className="text-indigo-600" />
@@ -433,8 +533,14 @@ export default function ClassDetail({
             </div>
           </div>
 
-          {/* 학생 아이템 리스트 */}
-          <div className="flex-1 overflow-y-auto divide-y divide-slate-100 p-2">
+          {/* 🌟 학생 아이템 리스트 (전용 상시 표시 스크롤바) */}
+          <div 
+            className="flex-1 overflow-y-scroll p-2 pr-2.5 space-y-1"
+            style={{
+              scrollbarWidth: 'thin',
+              scrollbarColor: '#818cf8 #f1f5f9',
+            }}
+          >
             {classStudents.length === 0 ? (
               <div className="py-12 text-center text-xs text-slate-400">
                 수업에 등록된 학생이 없습니다.
@@ -455,7 +561,7 @@ export default function ClassDetail({
                     className={`p-3 rounded-xl cursor-pointer transition-all flex items-center justify-between mb-1 ${
                       isSelected
                         ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
-                        : 'bg-white hover:bg-slate-50 text-slate-700'
+                        : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-100 hover:border-slate-200'
                     }`}
                   >
                     <div className="flex items-center gap-3">
@@ -481,7 +587,7 @@ export default function ClassDetail({
                         </div>
                         {/* 결석 사유 미리보기 */}
                         {student.status === 'ABSENT' && (
-                          <p className={`text-[11px] truncate max-w-[140px] mt-0.5 ${
+                          <p className={`text-[11px] truncate max-w-[130px] mt-0.5 ${
                             isSelected ? 'text-rose-200 font-medium' : 'text-rose-600 font-semibold'
                           }`}>
                             ⚠️ {student.absent_reason || '사유 미기입'}
@@ -490,27 +596,52 @@ export default function ClassDetail({
                       </div>
                     </div>
 
-                    {/* 상태 뱃지 */}
-                    <div>
-                      {student.status === 'ATTEND' && (
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                          isSelected ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    {/* 출석 & 숙제 뱃지 */}
+                    <div className="flex flex-col items-end gap-1">
+                      <div>
+                        {student.status === 'ATTEND' && (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
+                            isSelected ? 'bg-emerald-500 text-white' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}>
+                            출석
+                          </span>
+                        )}
+                        {student.status === 'LATE' && (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
+                            isSelected ? 'bg-amber-400 text-amber-950' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                          }`}>
+                            지각
+                          </span>
+                        )}
+                        {student.status === 'ABSENT' && (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
+                            isSelected ? 'bg-rose-500 text-white' : 'bg-rose-50 text-rose-700 border border-rose-200'
+                          }`}>
+                            결석
+                          </span>
+                        )}
+                        {(!student.status || student.status === 'UNCHECKED') && (
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                            isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500 border border-slate-200'
+                          }`}>
+                            미체크
+                          </span>
+                        )}
+                      </div>
+
+                      {/* 숙제 검사 뱃지 */}
+                      {student.homework_check === 'DONE' && (
+                        <span className={`text-[10px] font-black px-1.5 py-0.2 rounded ${
+                          isSelected ? 'bg-white/20 text-white' : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                         }`}>
-                          출석
+                          ✓ 숙제 완료
                         </span>
                       )}
-                      {student.status === 'LATE' && (
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                          isSelected ? 'bg-amber-400 text-amber-950' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      {student.homework_check === 'NOT_DONE' && (
+                        <span className={`text-[10px] font-black px-1.5 py-0.2 rounded ${
+                          isSelected ? 'bg-rose-400 text-white' : 'bg-rose-50 text-rose-600 border border-rose-200'
                         }`}>
-                          지각
-                        </span>
-                      )}
-                      {student.status === 'ABSENT' && (
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                          isSelected ? 'bg-rose-500 text-white' : 'bg-rose-50 text-rose-700 border border-rose-200'
-                        }`}>
-                          결석
+                          ✕ 숙제 미이행
                         </span>
                       )}
                     </div>
@@ -522,11 +653,11 @@ export default function ClassDetail({
         </div>
 
         {/* [오른쪽 컬럼] 선택된 학생 상세 기록 및 과제 일지 */}
-        <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+        <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden h-full">
           {selectedStudent ? (
             <>
               {/* 학생 상세 탑 바 */}
-              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
+              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between flex-shrink-0">
                 <div className="flex items-center gap-3">
                   <div className="w-11 h-11 rounded-2xl bg-indigo-600 text-white font-black text-lg flex items-center justify-center shadow-md shadow-indigo-100">
                     {selectedStudent.name.slice(0, 1)}
@@ -573,7 +704,7 @@ export default function ClassDetail({
               {/* 기록 폼 영역 */}
               <div className="p-6 overflow-y-auto flex-1 space-y-6">
                 
-                {/* 1. 출석 관련 체크 (출석 / 지각 / 결석) */}
+                {/* 🌟 [2번 스샷 반영] 1. 출석 관련 체크 (클릭 시 선택, 한번 더 클릭 시 취소, 디폴트: 미선택) */}
                 <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
@@ -581,53 +712,56 @@ export default function ClassDetail({
                       출석 상태 체크
                     </label>
                     <span className="text-xs text-slate-400 font-medium">
-                      클릭하여 즉시 변경
+                      클릭하여 선택 / 재클릭 시 선택 취소 (기본값: 미선택)
                     </span>
                   </div>
 
-                  {/* 세그먼트 버튼 */}
+                  {/* 세그먼트 토글 버튼 */}
                   <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
-                      onClick={() => handleStatusChange('ATTEND')}
+                      onClick={() => handleToggleAttendance('ATTEND')}
                       className={`py-3 px-4 rounded-xl font-black text-sm flex items-center justify-center gap-2 border transition-all ${
                         selectedStudent.status === 'ATTEND'
                           ? 'bg-emerald-600 text-white border-emerald-600 shadow-md shadow-emerald-200 scale-[1.01]'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-emerald-50/50'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:text-emerald-700'
                       }`}
                     >
                       <UserCheck size={18} />
                       출석
+                      {selectedStudent.status === 'ATTEND' && <span className="text-xs bg-emerald-700/60 px-1.5 py-0.5 rounded">선택됨</span>}
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleStatusChange('LATE')}
+                      onClick={() => handleToggleAttendance('LATE')}
                       className={`py-3 px-4 rounded-xl font-black text-sm flex items-center justify-center gap-2 border transition-all ${
                         selectedStudent.status === 'LATE'
                           ? 'bg-amber-500 text-white border-amber-500 shadow-md shadow-amber-200 scale-[1.01]'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-amber-50/50'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:text-amber-700'
                       }`}
                     >
                       <AlertTriangle size={18} />
                       지각
+                      {selectedStudent.status === 'LATE' && <span className="text-xs bg-amber-600/60 px-1.5 py-0.5 rounded">선택됨</span>}
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => handleStatusChange('ABSENT')}
+                      onClick={() => handleToggleAttendance('ABSENT')}
                       className={`py-3 px-4 rounded-xl font-black text-sm flex items-center justify-center gap-2 border transition-all ${
                         selectedStudent.status === 'ABSENT'
                           ? 'bg-rose-600 text-white border-rose-600 shadow-md shadow-rose-200 scale-[1.01]'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-rose-50/50'
+                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100/80 hover:text-rose-700'
                       }`}
                     >
                       <UserX size={18} />
                       결석
+                      {selectedStudent.status === 'ABSENT' && <span className="text-xs bg-rose-700/60 px-1.5 py-0.5 rounded">선택됨</span>}
                     </button>
                   </div>
 
-                  {/* 결석 (또는 지각)의 경우: 사유와 처리내용 기입 */}
+                  {/* 결석의 경우: 사유와 처리내용 기입 */}
                   {selectedStudent.status === 'ABSENT' && (
                     <div className="pt-4 border-t border-rose-200/60 space-y-4 bg-rose-50/40 p-4 rounded-xl border">
                       <div className="flex items-center gap-2 text-rose-800 font-bold text-xs">
@@ -780,67 +914,130 @@ export default function ClassDetail({
                   )}
                 </div>
 
-                {/* 2. 최근 숙제 내용 */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                      <FileText size={16} className="text-slate-500" />
-                      최근 숙제 검사 및 내용
-                    </label>
-                    <div className="flex flex-wrap gap-1">
-                      {HW_STATUS_SUGGESTIONS.map(hw => (
-                        <button
-                          type="button"
-                          key={hw}
-                          onClick={() => {
-                            const cur = selectedStudent.previous_homework ? `${selectedStudent.previous_homework} / ${hw}` : hw;
-                            handleFieldChange('previous_homework', cur);
-                          }}
-                          className="px-2 py-0.5 text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-md font-bold transition-all"
-                        >
-                          {hw}
-                        </button>
-                      ))}
+                {/* 🌟 [3번 스샷 반영] 2. 최근 숙제 검사 및 내용 (숙제 해옴 / 숙제 미이행 체크) */}
+                <div className="space-y-3 bg-slate-50 p-5 rounded-2xl border border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-3">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <FileText size={16} className="text-indigo-600" />
+                        최근 숙제 검사 및 내용
+                      </label>
+                      {selectedStudent.previous_homework_due_date && (
+                        <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[11px] font-bold">
+                          📅 제출 기한: {selectedStudent.previous_homework_due_date}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 숙제 검사 토글 버튼: [ 숙제 해옴 ] / [ 숙제 미이행 ] */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-500 mr-1">검사 체크:</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleHomeworkCheck('DONE')}
+                        className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 border transition-all ${
+                          selectedStudent.homework_check === 'DONE'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:text-emerald-700'
+                        }`}
+                      >
+                        <CheckCircle2 size={14} />
+                        숙제 해옴
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleHomeworkCheck('NOT_DONE')}
+                        className={`px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 border transition-all ${
+                          selectedStudent.homework_check === 'NOT_DONE'
+                            ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-600 hover:border-rose-300 hover:text-rose-700'
+                        }`}
+                      >
+                        <XCircle size={14} />
+                        숙제 미이행
+                      </button>
                     </div>
                   </div>
+
+                  {/* 💡 이전 수업에서 자동으로 탐색된 숙제 안내 바 */}
+                  {detectedPreviousHomework && (
+                    <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-2 text-indigo-900 font-medium">
+                        <BookOpen size={15} className="text-indigo-600 flex-shrink-0" />
+                        <span>
+                          <strong className="font-bold text-indigo-950">이전 수업({detectedPreviousHomework.sourceDate}) 과제:</strong>{' '}
+                          {detectedPreviousHomework.content}
+                          {detectedPreviousHomework.dueDate && (
+                            <span className="ml-1.5 text-indigo-700 font-bold">
+                              (기한: {detectedPreviousHomework.dueDate})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={applyDetectedPreviousHomework}
+                        className="flex-shrink-0 px-2.5 py-1 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold transition-all shadow-2xs"
+                      >
+                        과제 내용 불러오기
+                      </button>
+                    </div>
+                  )}
+
                   <textarea
                     rows={3}
                     value={selectedStudent.previous_homework}
                     onChange={e => handleFieldChange('previous_homework', e.target.value)}
-                    placeholder="이전 숙제 수행도, 오답 정리 상태, 학생 질의사항 등을 기록하세요."
-                    className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all placeholder:text-slate-400"
+                    placeholder="해당 학생의 최근 숙제 내용 및 검사 메모를 확인하거나 기록하세요."
+                    className="w-full p-4 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all placeholder:text-slate-400"
                   />
                 </div>
 
-                {/* 3. 오늘 숙제 내용 */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                {/* 🌟 [3번 스샷 반영] 3. 오늘 숙제 내용 (제출 기한일 설정 & 일괄 적용) */}
+                <div className="space-y-3 bg-slate-50 p-5 rounded-2xl border border-slate-200">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
                     <label className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                       <BookOpen size={16} className="text-indigo-600" />
-                      오늘 숙제 내용
+                      오늘 숙제 부여
                     </label>
-                    <button
-                      type="button"
-                      onClick={handleCopyTodayHwToAll}
-                      className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 transition-colors"
-                      title="이 학생의 오늘 숙제 내용을 반 전체 학생에게 복사합니다"
-                    >
-                      <Share2 size={13} />
-                      이 수업 전체 학생에게 동일 적용
-                    </button>
+
+                    {/* 제출 기한일 설정 (달력 선택) & 반 전체 일괄 적용 버튼 */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-1.5 bg-white border border-slate-200 px-2.5 py-1 rounded-xl shadow-2xs">
+                        <CalendarDays size={14} className="text-indigo-600" />
+                        <span className="text-[11px] font-bold text-slate-600">제출 기한일:</span>
+                        <input
+                          type="date"
+                          value={selectedStudent.today_homework_due_date || ''}
+                          onChange={e => handleFieldChange('today_homework_due_date', e.target.value)}
+                          className="text-xs font-bold text-slate-800 bg-transparent focus:outline-none cursor-pointer"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleCopyTodayHwToAll}
+                        className="flex items-center gap-1.5 text-xs font-black text-white bg-indigo-600 hover:bg-indigo-700 px-3.5 py-1.5 rounded-xl shadow-sm transition-all"
+                        title="이 학생의 오늘 숙제와 제출 기한을 반 전체 학생에게 일괄 적용합니다"
+                      >
+                        <Share2 size={13} />
+                        반 전체 학생에게 일괄 적용
+                      </button>
+                    </div>
                   </div>
+
                   <textarea
                     rows={3}
                     value={selectedStudent.today_homework}
                     onChange={e => handleFieldChange('today_homework', e.target.value)}
-                    placeholder="오늘 부여한 숙제 범위, 교재 페이지, 제출 기한 등을 입력하세요."
-                    className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all placeholder:text-slate-400"
+                    placeholder="오늘 부여할 숙제 범위, 교재 페이지, 안내 사항 등을 입력하세요."
+                    className="w-full p-4 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all placeholder:text-slate-400"
                   />
                 </div>
               </div>
 
               {/* Footer 저장 바 */}
-              <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs">
+              <div className="px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs flex-shrink-0">
                 <span className="text-slate-500 flex items-center gap-1.5">
                   <Check size={14} className="text-emerald-500" />
                   내용 변경 시 자동으로 저장 및 동기화됩니다.

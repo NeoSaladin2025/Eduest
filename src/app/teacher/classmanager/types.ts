@@ -1,4 +1,5 @@
-export type AttendanceStatus = 'ATTEND' | 'LATE' | 'ABSENT';
+export type AttendanceStatus = 'ATTEND' | 'LATE' | 'ABSENT' | 'UNCHECKED' | null;
+export type HomeworkCheckStatus = 'DONE' | 'NOT_DONE' | 'UNCHECKED' | null;
 
 export interface StudentBasicInfo {
   id: string;
@@ -10,11 +11,14 @@ export interface StudentAttendanceRecord {
   student_id: string;
   student_name: string;
   student_grade: string;
-  status: AttendanceStatus;
+  status?: AttendanceStatus;
   absent_reason?: string;
   action_notes?: string;
   previous_homework?: string;
+  previous_homework_due_date?: string;
+  homework_check?: HomeworkCheckStatus;
   today_homework?: string;
+  today_homework_due_date?: string;
   updated_at?: string;
 }
 
