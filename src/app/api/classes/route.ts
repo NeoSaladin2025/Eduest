@@ -33,21 +33,32 @@ export async function GET() {
 
     const text = await data.text();
     const parsed = JSON.parse(text);
-    return NextResponse.json({ classes: parsed.classes || [] });
+    return NextResponse.json({ 
+      classes: parsed.classes || [],
+      custom_reasons: parsed.custom_reasons || null,
+      custom_actions: parsed.custom_actions || null
+    });
   } catch (error: any) {
     console.error('Classes GET error:', error);
     return NextResponse.json({ classes: [] });
   }
 }
 
-// POST: 수업 목록 저장 / 업데이트
+// POST: 수업 목록 및 사유/조치 저장 / 업데이트
 export async function POST(req: Request) {
   try {
     await ensureBucket();
     const body = await req.json();
     const classes = body.classes || [];
+    const custom_reasons = body.custom_reasons;
+    const custom_actions = body.custom_actions;
 
-    const jsonString = JSON.stringify({ classes, updated_at: new Date().toISOString() }, null, 2);
+    const jsonString = JSON.stringify({ 
+      classes, 
+      custom_reasons,
+      custom_actions,
+      updated_at: new Date().toISOString() 
+    }, null, 2);
 
     const { error } = await supabase.storage
       .from(BUCKET_NAME)

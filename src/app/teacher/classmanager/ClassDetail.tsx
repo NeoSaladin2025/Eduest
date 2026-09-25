@@ -18,11 +18,12 @@ import {
   ChevronRight, 
   ChevronLeft, 
   Share2, 
-  Copy,
   Sparkles,
-  BookOpen
+  BookOpen,
+  Settings
 } from 'lucide-react';
-import { ClassItem, StudentAttendanceRecord, AttendanceStatus, StudentBasicInfo } from './types';
+import { ClassItem, AttendanceStatus, StudentBasicInfo, SuggestionItem } from './types';
+import SuggestionsManagerModal from './SuggestionsManagerModal';
 
 interface ClassDetailProps {
   classItem: ClassItem;
@@ -30,26 +31,12 @@ interface ClassDetailProps {
   onBack: () => void;
   onUpdateClass: (updated: ClassItem) => void;
   onDeleteClass: (classId: string) => void;
-  onOpenAbsenteeReport: (date: string) => void;
   onEditClassInfo: (classItem: ClassItem) => void;
+  reasons: SuggestionItem[];
+  actions: SuggestionItem[];
+  onUpdateReasons: (reasons: SuggestionItem[]) => void;
+  onUpdateActions: (actions: SuggestionItem[]) => void;
 }
-
-const ABSENT_REASONS = [
-  '감기 / 몸살',
-  '병원 진료',
-  '가족 행사',
-  '학교 시험 / 행사',
-  '개인 사정',
-  '무단 결석',
-];
-
-const ACTION_SUGGESTIONS = [
-  '보충 수업 일정 배정',
-  '온라인 강의 녹화본 전달',
-  '학부모 유선 안내 완료',
-  '다음 수업 전 개별 클리닉',
-  '숙제 프린트 별도 발송',
-];
 
 const HW_STATUS_SUGGESTIONS = [
   '숙제 100% 완료 (우수)',
@@ -64,14 +51,20 @@ export default function ClassDetail({
   onBack,
   onUpdateClass,
   onDeleteClass,
-  onOpenAbsenteeReport,
   onEditClassInfo,
+  reasons,
+  actions,
+  onUpdateReasons,
+  onUpdateActions,
 }: ClassDetailProps) {
   const [currentClass, setCurrentClass] = useState<ClassItem>(classItem);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [isSavedToast, setIsSavedToast] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Suggestions Manager Modal state
+  const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+  const [suggestionsModalTab, setSuggestionsModalTab] = useState<'reason' | 'action'>('reason');
 
   // Sync internal state when classItem prop changes
   useEffect(() => {
@@ -120,9 +113,59 @@ export default function ClassDetail({
   const saveClassState = (updated: ClassItem, msg?: string) => {
     setCurrentClass(updated);
     onUpdateClass(updated);
-    setIsSavedToast(true);
-    setTimeout(() => setIsSavedToast(false), 2000);
     if (msg) showNotification(msg);
+  };
+
+  // Auto-learning & frequency-based sorting for absent reasons
+  const registerReasonUsage = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const existingIndex = reasons.findIndex(
+      r => r.text.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+
+    let updatedList: SuggestionItem[];
+    if (existingIndex >= 0) {
+      updatedList = reasons.map((r, idx) =>
+        idx === existingIndex ? { ...r, count: r.count + 1 } : r
+      );
+    } else {
+      updatedList = [
+        ...reasons,
+        { id: crypto.randomUUID(), text: trimmed, count: 1 },
+      ];
+    }
+
+    // Sort by count descending
+    updatedList.sort((a, b) => b.count - a.count);
+    onUpdateReasons(updatedList);
+  };
+
+  // Auto-learning & frequency-based sorting for actions
+  const registerActionUsage = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const existingIndex = actions.findIndex(
+      a => a.text.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+
+    let updatedList: SuggestionItem[];
+    if (existingIndex >= 0) {
+      updatedList = actions.map((a, idx) =>
+        idx === existingIndex ? { ...a, count: a.count + 1 } : a
+      );
+    } else {
+      updatedList = [
+        ...actions,
+        { id: crypto.randomUUID(), text: trimmed, count: 1 },
+      ];
+    }
+
+    // Sort by count descending
+    updatedList.sort((a, b) => b.count - a.count);
+    onUpdateActions(updatedList);
   };
 
   // Student list belonging to this class
@@ -323,7 +366,7 @@ export default function ClassDetail({
           </div>
         </div>
 
-        {/* 상단 우측 버튼들 */}
+        {/* 상단 우측 버튼들 (결석생 보고 버튼은 사용자 요청으로 달력 칸으로만 이동됨) */}
         <div className="flex items-center gap-2">
           {toastMessage && (
             <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-200 animate-pulse flex items-center gap-1.5">
@@ -332,16 +375,8 @@ export default function ClassDetail({
           )}
 
           <button
-            onClick={() => onOpenAbsenteeReport(currentClass.date)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all shadow-xs"
-          >
-            <UserX size={15} />
-            결석생 보고
-          </button>
-
-          <button
             onClick={() => onEditClassInfo(currentClass)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
+            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-black transition-all shadow-xs"
           >
             <Edit3 size={15} />
             수업 정보 수정
@@ -597,58 +632,130 @@ export default function ClassDetail({
                     <div className="pt-4 border-t border-rose-200/60 space-y-4 bg-rose-50/40 p-4 rounded-xl border">
                       <div className="flex items-center gap-2 text-rose-800 font-bold text-xs">
                         <AlertTriangle size={14} className="text-rose-600" />
-                        <span>결석생 관리: 결석 사유 및 조치/처리내용을 상세히 기록해주세요.</span>
+                        <span>결석생 관리: 새로운 사유 및 조치를 입력하면 자주 쓰는 목록에 자동 저장 및 정렬됩니다.</span>
                       </div>
 
-                      {/* 사유 입력 */}
+                      {/* 사유 입력 & 자동 학습 리스트 */}
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                          📌 결석 사유
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-bold text-slate-700">
+                            📌 결석 사유
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSuggestionsModalTab('reason');
+                              setIsSuggestionsModalOpen(true);
+                            }}
+                            className="text-[11px] text-rose-700 hover:text-rose-900 font-bold flex items-center gap-1 hover:underline"
+                          >
+                            <Settings size={12} />
+                            사유 목록 관리/수정
+                          </button>
+                        </div>
+
                         <input
                           type="text"
                           value={selectedStudent.absent_reason}
                           onChange={e => handleFieldChange('absent_reason', e.target.value)}
-                          placeholder="예: 독감으로 인한 병결, 가족 행사 등"
+                          onBlur={e => {
+                            if (e.target.value.trim()) {
+                              registerReasonUsage(e.target.value);
+                            }
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          placeholder="결석 사유를 입력하세요 (입력 시 자동으로 자주 쓰는 목록에 저장됩니다)"
                           className="w-full px-4 py-2.5 bg-white border border-rose-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-500 placeholder:text-slate-400 mb-2"
                         />
-                        {/* 빠른 사유 칩 */}
-                        <div className="flex flex-wrap gap-1.5">
-                          {ABSENT_REASONS.map(r => (
+
+                        {/* 자주 사용된 순서대로 나열된 사유 칩 */}
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <span className="text-[11px] font-bold text-rose-800 mr-1 flex items-center gap-0.5">
+                            <Sparkles size={11} className="text-amber-500" /> 자주 쓰는 사유:
+                          </span>
+                          {reasons.slice(0, 10).map(r => (
                             <button
                               type="button"
-                              key={r}
-                              onClick={() => handleFieldChange('absent_reason', r)}
-                              className="px-2.5 py-1 text-xs bg-white hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg font-medium transition-all"
+                              key={r.id}
+                              onClick={() => {
+                                handleFieldChange('absent_reason', r.text);
+                                registerReasonUsage(r.text);
+                              }}
+                              className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all flex items-center gap-1 ${
+                                selectedStudent.absent_reason === r.text
+                                  ? 'bg-rose-600 text-white shadow-xs'
+                                  : 'bg-white hover:bg-rose-100 text-rose-700 border border-rose-200'
+                              }`}
                             >
-                              + {r}
+                              <span>+ {r.text}</span>
+                              <span className="text-[10px] opacity-70">({r.count})</span>
                             </button>
                           ))}
                         </div>
                       </div>
 
-                      {/* 처리내용 입력 */}
+                      {/* 후속 조치 내용 입력 & 자동 학습 리스트 */}
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                          🛠️ 결석 처리 및 후속 조치 내용
-                        </label>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs font-bold text-slate-700">
+                            🛠️ 결석 처리 및 후속 조치 내용
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSuggestionsModalTab('action');
+                              setIsSuggestionsModalOpen(true);
+                            }}
+                            className="text-[11px] text-indigo-700 hover:text-indigo-900 font-bold flex items-center gap-1 hover:underline"
+                          >
+                            <Settings size={12} />
+                            조치 목록 관리/수정
+                          </button>
+                        </div>
+
                         <input
                           type="text"
                           value={selectedStudent.action_notes}
                           onChange={e => handleFieldChange('action_notes', e.target.value)}
-                          placeholder="예: 다음 주 화요일 5시 보충 일정 잡음, 온라인 강의 링크 전송 완료"
+                          onBlur={e => {
+                            if (e.target.value.trim()) {
+                              registerActionUsage(e.target.value);
+                            }
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          placeholder="처리 및 조치 내용을 입력하세요 (입력 시 자동으로 자주 쓰는 목록에 저장됩니다)"
                           className="w-full px-4 py-2.5 bg-white border border-indigo-200 rounded-xl text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-400 mb-2"
                         />
-                        {/* 빠른 처리내용 칩 */}
-                        <div className="flex flex-wrap gap-1.5">
-                          {ACTION_SUGGESTIONS.map(act => (
+
+                        {/* 자주 사용된 순서대로 나열된 후속 조치 칩 */}
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <span className="text-[11px] font-bold text-indigo-800 mr-1 flex items-center gap-0.5">
+                            <Sparkles size={11} className="text-amber-500" /> 자주 쓰는 조치:
+                          </span>
+                          {actions.slice(0, 10).map(act => (
                             <button
                               type="button"
-                              key={act}
-                              onClick={() => handleFieldChange('action_notes', act)}
-                              className="px-2.5 py-1 text-xs bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg font-medium transition-all"
+                              key={act.id}
+                              onClick={() => {
+                                handleFieldChange('action_notes', act.text);
+                                registerActionUsage(act.text);
+                              }}
+                              className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-all flex items-center gap-1 ${
+                                selectedStudent.action_notes === act.text
+                                  ? 'bg-indigo-600 text-white shadow-xs'
+                                  : 'bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200'
+                              }`}
                             >
-                              + {act}
+                              <span>+ {act.text}</span>
+                              <span className="text-[10px] opacity-70">({act.count})</span>
                             </button>
                           ))}
                         </div>
@@ -759,6 +866,17 @@ export default function ClassDetail({
           )}
         </div>
       </div>
+
+      {/* 사유 / 후속조치 항목 관리 모달 */}
+      <SuggestionsManagerModal
+        isOpen={isSuggestionsModalOpen}
+        onClose={() => setIsSuggestionsModalOpen(false)}
+        initialTab={suggestionsModalTab}
+        reasons={reasons}
+        actions={actions}
+        onSaveReasons={onUpdateReasons}
+        onSaveActions={onUpdateActions}
+      />
     </div>
   );
 }

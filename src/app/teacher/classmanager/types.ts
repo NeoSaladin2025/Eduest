@@ -28,3 +28,10 @@ export interface ClassItem {
   created_at: string;
   updated_at: string;
 }
+
+export interface SuggestionItem {
+  id: string;
+  text: string;
+  count: number;
+}
+
