@@ -405,6 +405,98 @@ export default function ClassDetail({
     );
   };
 
+  // 🌟 [사용자 요청] 반 전체 학생의 이전 수업 과제 내용 일괄 불러오기
+  const handleBatchLoadPreviousHomework = () => {
+    const currentClassDate = currentClass.date;
+    const currentClassName = currentClass.name;
+
+    // 1. Find previous classes before today with same class name or overlapping students
+    const previousClasses = (allClasses || [])
+      .filter(
+        c =>
+          c.date < currentClassDate &&
+          (c.name.trim() === currentClassName.trim() ||
+            c.student_ids?.some(id => currentClass.student_ids.includes(id)))
+      )
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    if (previousClasses.length === 0) {
+      alert('이전 일자에 등록된 수업이 없어 불러올 과제 내역이 없습니다.');
+      return;
+    }
+
+    // 2. Find any general or default homework assigned in the latest previous class
+    let fallbackHwContent = '';
+    let fallbackHwDueDate = '';
+    let sourceDate = '';
+
+    for (const pc of previousClasses) {
+      const records = Object.values(pc.students_attendance || {});
+      const withHw = records.find(r => r.today_homework && r.today_homework.trim());
+      if (withHw) {
+        fallbackHwContent = withHw.today_homework!.trim();
+        fallbackHwDueDate = withHw.today_homework_due_date || '';
+        sourceDate = pc.date;
+        break;
+      }
+    }
+
+    if (!fallbackHwContent) {
+      alert('이전 수업들에 등록된 과제 내용이 없습니다.');
+      return;
+    }
+
+    const dueDateNotice = fallbackHwDueDate ? ` (제출 기한: ${fallbackHwDueDate})` : '';
+    if (
+      !confirm(
+        `이전 수업(${sourceDate}) 과제:\n"${fallbackHwContent}"${dueDateNotice}\n\n이 과제 내용을 반 전체 학생(${classStudents.length}명)의 최근 숙제로 일괄 불러오시겠습니까?`
+      )
+    ) {
+      return;
+    }
+
+    const nextAttendance = { ...(currentClass.students_attendance || {}) };
+    let count = 0;
+
+    currentClass.student_ids.forEach(sid => {
+      let studentHw = fallbackHwContent;
+      let studentDueDate = fallbackHwDueDate;
+
+      for (const pc of previousClasses) {
+        const r = pc.students_attendance?.[sid];
+        if (r?.today_homework && r.today_homework.trim()) {
+          studentHw = r.today_homework.trim();
+          studentDueDate = r.today_homework_due_date || studentDueDate;
+          break;
+        }
+      }
+
+      const existing = nextAttendance[sid] || {
+        student_id: sid,
+        student_name: allStudents.find(s => s.id === sid)?.name || '',
+        student_grade: allStudents.find(s => s.id === sid)?.grade || '',
+        status: 'UNCHECKED',
+      };
+
+      nextAttendance[sid] = {
+        ...existing,
+        previous_homework: studentHw,
+        previous_homework_due_date: studentDueDate,
+        updated_at: new Date().toISOString(),
+      };
+      count++;
+    });
+
+    saveClassState(
+      {
+        ...currentClass,
+        students_attendance: nextAttendance,
+        updated_at: new Date().toISOString(),
+      },
+      `반 전체 학생(${count}명)의 이전 과제 내용을 성공적으로 일괄 불러왔습니다! 📥`
+    );
+  };
+
   // Navigate to previous/next student
   const goToPrevStudent = () => {
     if (selectedIndex > 0) {
@@ -475,8 +567,17 @@ export default function ClassDetail({
           )}
 
           <button
+            onClick={handleBatchLoadPreviousHomework}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-black transition-all shadow-xs"
+            title="이전 수업의 과제를 반 전체 학생에게 일괄 불러옵니다"
+          >
+            <ArrowDownLeft size={15} />
+            과제내용 일괄 불러오기
+          </button>
+
+          <button
             onClick={() => onEditClassInfo(currentClass)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-black transition-all shadow-xs"
+            className="flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-black transition-all shadow-xs"
           >
             <Edit3 size={15} />
             수업 정보 수정
@@ -917,7 +1018,7 @@ export default function ClassDetail({
                 {/* 🌟 [3번 스샷 반영] 2. 최근 숙제 검사 및 내용 (숙제 해옴 / 숙제 미이행 체크) */}
                 <div className="space-y-3 bg-slate-50 p-5 rounded-2xl border border-slate-200">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <label className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                         <FileText size={16} className="text-indigo-600" />
                         최근 숙제 검사 및 내용
@@ -927,6 +1028,15 @@ export default function ClassDetail({
                           📅 제출 기한: {selectedStudent.previous_homework_due_date}
                         </span>
                       )}
+                      <button
+                        type="button"
+                        onClick={handleBatchLoadPreviousHomework}
+                        className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-black transition-all shadow-2xs"
+                        title="이전 수업의 과제를 이 반 전체 학생에게 일괄 불러옵니다"
+                      >
+                        <ArrowDownLeft size={13} />
+                        과제내용 일괄 불러오기
+                      </button>
                     </div>
 
                     {/* 숙제 검사 토글 버튼: [ 숙제 해옴 ] / [ 숙제 미이행 ] */}
@@ -961,7 +1071,7 @@ export default function ClassDetail({
 
                   {/* 💡 이전 수업에서 자동으로 탐색된 숙제 안내 바 */}
                   {detectedPreviousHomework && (
-                    <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 flex items-center justify-between gap-3 text-xs">
+                    <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
                       <div className="flex items-center gap-2 text-indigo-900 font-medium">
                         <BookOpen size={15} className="text-indigo-600 flex-shrink-0" />
                         <span>
@@ -974,13 +1084,25 @@ export default function ClassDetail({
                           )}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={applyDetectedPreviousHomework}
-                        className="flex-shrink-0 px-2.5 py-1 bg-white hover:bg-indigo-600 hover:text-white text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold transition-all shadow-2xs"
-                      >
-                        과제 내용 불러오기
-                      </button>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={applyDetectedPreviousHomework}
+                          className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-300 rounded-lg text-[11px] font-bold transition-all shadow-2xs"
+                          title="이 학생 한 명에게만 과제 내용을 적용합니다"
+                        >
+                          이 학생만 불러오기
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleBatchLoadPreviousHomework}
+                          className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-600 rounded-lg text-[11px] font-bold transition-all shadow-2xs flex items-center gap-1"
+                          title="반 전체 학생에게 이전 수업 과제를 일괄 적용합니다"
+                        >
+                          <ArrowDownLeft size={12} />
+                          과제내용 일괄 불러오기
+                        </button>
+                      </div>
                     </div>
                   )}
 
