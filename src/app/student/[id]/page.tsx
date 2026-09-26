@@ -2,10 +2,13 @@
 
 import React, { useState, useEffect, use } from 'react';
 import { 
-  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap 
+  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen 
 } from 'lucide-react';
 import TestModule from './test/test';
 import { useStudentData } from './useStudentData';
+import StudentHomeworkView from './StudentHomeworkView';
+import StudentReviewExplorer from './StudentReviewExplorer';
+import { StudentReviewData, ReviewItem } from './types';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 
@@ -78,7 +81,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
-  const [mode, setMode] = useState<'test' | 'review' | 'library'>('review');
+  const [mode, setMode] = useState<'test' | 'homework' | 'review' | 'library'>('review');
   const [isTesting, setIsTesting] = useState(false);
   const [currentPath, setCurrentPath] = useState<any[]>([]);
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]);
@@ -89,10 +92,165 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [contentData, setContentData] = useState<string | null>(null);
   const [isContentLoading, setIsContentLoading] = useState(false);
 
+  // 🌟 [사용자 요청] 학생 복습 폴더 및 체크 항목 상태 관리
+  const [reviewData, setReviewData] = useState<StudentReviewData>({ folders: [], items: [] });
+  const [currentActiveFolder, setCurrentActiveFolder] = useState<any>(null);
+
   // 비번 잠금
   const [pwdVerified, setPwdVerified] = useState(false);
   const [pwdInput, setPwdInput] = useState('');
   const [pwdError, setPwdError] = useState(false);
+
+  // 학생 복습 데이터 로드 (Local Cache -> Cloud DB)
+  useEffect(() => {
+    if (!resolvedParams.id) return;
+    const local = localStorage.getItem(`student_review_${resolvedParams.id}`);
+    if (local) {
+      try {
+        setReviewData(JSON.parse(local));
+      } catch (e) {}
+    }
+
+    fetch(`/api/student/review?studentId=${resolvedParams.id}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.reviewData && (data.reviewData.folders?.length > 0 || data.reviewData.items?.length > 0)) {
+          setReviewData(data.reviewData);
+          localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(data.reviewData));
+        }
+      })
+      .catch(err => console.error('Review data fetch error:', err));
+  }, [resolvedParams.id]);
+
+  const saveReviewData = async (newData: StudentReviewData) => {
+    setReviewData(newData);
+    localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(newData));
+
+    try {
+      await fetch('/api/student/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: resolvedParams.id,
+          reviewData: newData,
+        }),
+      });
+    } catch (err) {
+      console.error('Failed to sync review data to cloud:', err);
+    }
+  };
+
+  const isRecordChecked = (recordId: string) => {
+    return reviewData.items.some(item => item.fileId === recordId);
+  };
+
+  // 🌟 [2번 스샷 반영] 개별 문제 체크박스 토글 -> 해당 회차 폴더에 자동 추가/제거
+  const handleToggleRecordReview = (record: any) => {
+    const isChecked = isRecordChecked(record.id);
+    const folderName = currentActiveFolder?.name || '라이브러리 복습';
+
+    if (isChecked) {
+      const nextItems = reviewData.items.filter(item => item.fileId !== record.id);
+      saveReviewData({
+        ...reviewData,
+        items: nextItems,
+      });
+    } else {
+      let folder = reviewData.folders.find(f => f.name === folderName);
+      let nextFolders = [...reviewData.folders];
+      if (!folder) {
+        folder = {
+          id: `folder_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+          name: folderName,
+          createdAt: new Date().toISOString(),
+        };
+        nextFolders.push(folder);
+      }
+
+      const newItem: ReviewItem = {
+        id: `review_${record.id}`,
+        fileId: record.id,
+        name: record.name,
+        folderId: folder.id,
+        folderName: folder.name,
+        solutionUrl: record.solutionUrl || record.id,
+        problemUrl: record.problemUrl || record.id,
+        type: 'html',
+        addedAt: new Date().toISOString(),
+      };
+
+      saveReviewData({
+        folders: nextFolders,
+        items: [...reviewData.items, newItem],
+      });
+    }
+  };
+
+  // 현재 폴더 전체 담기
+  const handleSelectAllInCurrentFolder = () => {
+    const folderName = currentActiveFolder?.name || '라이브러리 복습';
+    let folder = reviewData.folders.find(f => f.name === folderName);
+    let nextFolders = [...reviewData.folders];
+    if (!folder) {
+      folder = {
+        id: `folder_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        name: folderName,
+        createdAt: new Date().toISOString(),
+      };
+      nextFolders.push(folder);
+    }
+
+    const currentFolderItemsMap = new Set(reviewData.items.map(i => i.fileId));
+    const newItemsToAdd: ReviewItem[] = [];
+
+    selectedList.forEach(record => {
+      if (!currentFolderItemsMap.has(record.id)) {
+        newItemsToAdd.push({
+          id: `review_${record.id}`,
+          fileId: record.id,
+          name: record.name,
+          folderId: folder!.id,
+          folderName: folder!.name,
+          solutionUrl: record.solutionUrl || record.id,
+          problemUrl: record.problemUrl || record.id,
+          type: 'html',
+          addedAt: new Date().toISOString(),
+        });
+      }
+    });
+
+    saveReviewData({
+      folders: nextFolders,
+      items: [...reviewData.items, ...newItemsToAdd],
+    });
+  };
+
+  // 현재 폴더 전체 해제
+  const handleDeselectAllInCurrentFolder = () => {
+    const selectedIds = new Set(selectedList.map(r => r.id));
+    const nextItems = reviewData.items.filter(item => !selectedIds.has(item.fileId));
+    saveReviewData({
+      ...reviewData,
+      items: nextItems,
+    });
+  };
+
+  // 🌟 [2번 스샷 반영] 윈도우 탐색기에서 문제 클릭 시 문제 풀이 화면 열기
+  const handleOpenFileForReview = (file: ReviewItem, fileList: ReviewItem[]) => {
+    const mappedList = fileList.map(item => ({
+      id: item.fileId,
+      name: item.name,
+      drive_id: item.fileId,
+      solutionUrl: item.solutionUrl || item.fileId,
+      problemUrl: item.problemUrl || item.fileId,
+    }));
+    const activeRecord = mappedList.find(r => r.id === file.fileId) || mappedList[0];
+    setSelectedList(mappedList);
+    setSelectedRecord(activeRecord);
+    setSelectedTab(file.type === 'image' ? 'problem' : 'solution');
+    setShowReviewer(true);
+    startStealthPrefetch(mappedList, 0, file.type);
+  };
 
   // 라이브러리 초기 진입 및 학년별 필터링
   useEffect(() => {
@@ -134,6 +292,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       return;
     }
     if (folder.files && folder.files.length > 0) {
+      setCurrentActiveFolder(folder);
       const files = folder.files
         .map((f: any) => ({ ...f, id: f.drive_id || f.id, solutionUrl: f.drive_id || f.id }))
         .sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
@@ -269,6 +428,10 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               <button onClick={() => changeMode('test')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test' ? 'bg-rose-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
                 <Zap size={18} fill={mode === 'test' ? "currentColor" : "none"}/> Test
               </button>
+              {/* 🌟 [사용자 요청 1번 스샷] 리뷰 메뉴랑 테스트 사이에 [숙제] 메뉴 추가 */}
+              <button onClick={() => changeMode('homework')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'homework' ? 'bg-amber-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                <BookOpen size={18}/> 숙제
+              </button>
               <button onClick={() => changeMode('review')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'review' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
                 <Database size={18}/> Review
               </button>
@@ -293,24 +456,27 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentName={student?.name} 
                 onStatusChange={(status: boolean) => setIsTesting(status)}
               />
+            ) : mode === 'homework' ? (
+              /* 🌟 [1번 스샷 반영] 부여받은 숙제 확인 화면 (최근 숙제 및 히스토리) */
+              <StudentHomeworkView 
+                studentId={student?.id}
+                studentName={student?.name}
+                studentGrade={student?.grade}
+              />
             ) : mode === 'review' ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
-                {cartridges.length > 0 ? (
-                  cartridges.map(cat => (
-                    <div key={cat} onClick={() => {
-                      const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
-                      setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered, 0, 'image');
-                    }} className="bg-white/5 p-12 rounded-[56px] border border-white/10 hover:bg-indigo-600 transition-all cursor-pointer shadow-3xl group relative overflow-hidden">
-                      <Database size={40} className="text-indigo-500 group-hover:text-white mb-8 transition-colors"/>
-                      <div className="text-4xl font-black mb-3 group-hover:translate-x-2 transition-transform">{cat}</div>
-                      <div className="text-xs font-bold text-slate-500 group-hover:text-indigo-100 uppercase tracking-widest">{allRecords.filter(r => r.name.includes(`[${cat}]`)).length} units</div>
-                      <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>
-                    </div>
-                  ))
-                ) : (
-                  <div className="col-span-full py-10 text-center text-slate-500 font-bold uppercase tracking-widest opacity-50 italic">기록을 불러오고 있습니다...</div>
-                )}
-              </div>
+              /* 🌟 [2번 스샷 반영] 윈도우 탐색기 스타일 복습 관리 화면 */
+              <StudentReviewExplorer
+                studentId={student?.id}
+                reviewData={reviewData}
+                onUpdateReviewData={saveReviewData}
+                onOpenFileForReview={handleOpenFileForReview}
+                gasRecords={allRecords}
+                gasCartridges={cartridges}
+                onOpenGasCartridge={(cat) => {
+                  const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
+                  setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered, 0, 'image');
+                }}
+              />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
                 {!student?.is_unlocked ? (
@@ -365,37 +531,83 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
         {showReviewer && (
           <div className="flex flex-col gap-6 animate-in slide-in-from-bottom-10 duration-1000 pb-10">
-            <div className="flex items-center gap-4 bg-white/5 p-4 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
-              <button onClick={() => {setShowReviewer(false); setContentData(null);}} className="shrink-0 w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-500/20 transition-all">
+            <div className="flex items-center gap-3 bg-white/5 p-4 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
+              <button onClick={() => {setShowReviewer(false); setContentData(null);}} className="shrink-0 w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-500/20 transition-all" title="뒤로가기">
                 <ArrowLeft size={24}/>
               </button>
-              <div className="w-[1px] h-10 bg-white/10 mx-2" />
-              <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x">
+
+              {/* 🌟 [사용자 요청 2번 스샷] 라이브러리 모드일 때 회차 전체 담기 / 해제 컨트롤 */}
+              {mode === 'library' && (
+                <div className="hidden sm:flex items-center gap-1.5 shrink-0 pr-2 border-r border-white/10 text-xs">
+                  <button
+                    onClick={handleSelectAllInCurrentFolder}
+                    className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded-xl font-bold transition-all border border-indigo-500/30 whitespace-nowrap"
+                    title="이 회차의 모든 문제를 복습(Review)에 담기"
+                  >
+                    ✓ 전체 담기
+                  </button>
+                  <button
+                    onClick={handleDeselectAllInCurrentFolder}
+                    className="px-2 py-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-slate-200 rounded-xl font-bold transition-all border border-white/5 whitespace-nowrap"
+                    title="이 회차의 모든 문제 복습 해제"
+                  >
+                    ✕ 해제
+                  </button>
+                </div>
+              )}
+
+              <div className="w-[1px] h-10 bg-white/10 mx-1 hidden sm:block" />
+
+              <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x items-center">
                 {selectedList.map((record, idx) => {
                   const 번Match = record.name.match(/(\d+)번/);
                   const reviewLabel = 번Match ? 번Match[1] : String(idx + 1);
                   const isLibrary = mode === 'library';
                   const libraryLabel = record.name.replace(/\.html?$/i, '');
+                  const isChecked = isRecordChecked(record.id);
+
                   return (
-                    <button
-                      key={record.id}
-                      title={isLibrary ? libraryLabel : undefined}
-                      onClick={() => { 
-                        setSelectedRecord(record); 
-                        if (mode === 'review') setSelectedTab('problem'); 
-                        startStealthPrefetch(selectedList, idx, isLibrary ? 'html' : 'image');
-                      }}
-                      onMouseEnter={() => {
-                        prefetchItem(record, isLibrary ? 'html' : 'image');
-                      }}
-                      className={`shrink-0 rounded-2xl flex items-center justify-center font-black transition-all snap-center ${
-                        isLibrary
-                          ? `max-w-[min(220px,70vw)] px-3 py-2.5 md:px-4 md:py-3 text-xs md:text-sm ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-[1.02]' : 'bg-white/5 text-slate-400 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
-                          : `w-14 h-14 md:w-16 md:h-16 text-lg ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
-                      }`}
-                    >
-                      {isLibrary ? <span className="truncate text-left w-full">{libraryLabel}</span> : reviewLabel}
-                    </button>
+                    <div key={record.id} className="shrink-0 flex flex-col items-center gap-1.5 snap-center">
+                      <button
+                        title={isLibrary ? libraryLabel : undefined}
+                        onClick={() => { 
+                          setSelectedRecord(record); 
+                          if (mode === 'review') setSelectedTab('problem'); 
+                          startStealthPrefetch(selectedList, idx, isLibrary ? 'html' : 'image');
+                        }}
+                        onMouseEnter={() => {
+                          prefetchItem(record, isLibrary ? 'html' : 'image');
+                        }}
+                        className={`rounded-2xl flex items-center justify-center font-black transition-all ${
+                          isLibrary
+                            ? `px-3.5 py-2 md:px-4 md:py-2.5 text-xs md:text-sm min-w-[70px] ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-[1.02]' : 'bg-white/5 text-slate-400 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
+                            : `w-14 h-14 md:w-16 md:h-16 text-lg ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
+                        }`}
+                      >
+                        {isLibrary ? <span className="truncate">{libraryLabel}</span> : reviewLabel}
+                      </button>
+
+                      {/* 🌟 [2번 스샷 반영] 각 파일리스트 하단 체크박스 (체크 시 학생 복습 폴더에 자동 정리) */}
+                      {isLibrary && (
+                        <label 
+                          onClick={(e) => e.stopPropagation()} 
+                          className={`flex items-center gap-1 cursor-pointer select-none px-2 py-0.5 rounded-lg text-[10px] font-black transition-all ${
+                            isChecked
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200 bg-white/5 border border-white/10 hover:border-white/20'
+                          }`}
+                          title="체크 시 이 문제가 복습(Review)에 해당 회차 폴더로 자동 정리됩니다"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => handleToggleRecordReview(record)}
+                            className="w-3.5 h-3.5 rounded border-white/30 text-indigo-600 focus:ring-0 cursor-pointer accent-indigo-600"
+                          />
+                          <span>복습</span>
+                        </label>
+                      )}
+                    </div>
                   );
                 })}
               </div>
