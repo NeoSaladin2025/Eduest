@@ -14,6 +14,7 @@ export interface ReviewFolder {
   id: string;
   name: string;
   createdAt: string;
+  parentId?: string | null;
 }
 
 export interface StudentReviewData {
