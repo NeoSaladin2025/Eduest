@@ -10,7 +10,8 @@ import {
   LayoutDashboard, 
   UserCheck,
   Zap,
-  CalendarDays
+  CalendarDays,
+  SlidersHorizontal
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -20,6 +21,8 @@ import SpecialMain from './special/main';
 import StudentManagerMain from './studentmanager/main'; 
 // ✅ 수업 관리 컴포넌트 추가
 import ClassManagerMain from './classmanager/main';
+// ✅ 학생화면 관리 컴포넌트 추가
+import StudentViewManagerMain from './studentviewmanager/main';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -35,6 +38,7 @@ export default function TeacherAdminPage() {
   const menuItems = [
     { id: 'dashboard', label: '대시보드', icon: <LayoutDashboard size={19} /> },
     { id: 'students', label: '학생 관리', icon: <Users size={19} /> },
+    { id: 'studentview', label: '학생화면 관리', icon: <SlidersHorizontal size={19} /> },
     { id: 'classes', label: '수업관리', icon: <CalendarDays size={19} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={19} /> },
   ];
@@ -121,6 +125,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'students' && (
             <div className="w-full h-full bg-white overflow-y-auto">
               <StudentManagerMain />
+            </div>
+          )}
+
+          {/* ✅ 학생화면 관리 */}
+          {activeMenu === 'studentview' && (
+            <div className="w-full h-full bg-white overflow-y-auto">
+              <StudentViewManagerMain />
             </div>
           )}
 

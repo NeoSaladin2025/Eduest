@@ -9,8 +9,23 @@ import { useStudentData } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
 import { StudentReviewData, ReviewItem } from './types';
+import { supabase } from '@/lib/supabase';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
+
+interface StudentMenuConfig {
+  test: boolean;
+  homework: boolean;
+  review: boolean;
+  library: boolean;
+}
+
+const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
+  test: true,
+  homework: true,
+  review: true,
+  library: true,
+};
 
 /** `extractNumber`와 동일: `N번` 우선, 없으면 이름 안 첫 숫자열 — 없으면 null */
 function primaryNumberFromFolderName(name: string): number | null {
@@ -100,6 +115,70 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [pwdVerified, setPwdVerified] = useState(false);
   const [pwdInput, setPwdInput] = useState('');
   const [pwdError, setPwdError] = useState(false);
+
+  // 🌟 [사용자 요청] 관리자(선생님)의 학생화면관리 설정에 따른 상단 메뉴 제어 상태
+  const [menuConfig, setMenuConfig] = useState<StudentMenuConfig>(DEFAULT_MENU_CONFIG);
+
+  useEffect(() => {
+    // 1. 로컬 캐시 우선 반영 (깜빡임 최소화)
+    const cached = localStorage.getItem('eduest_student_menu_config');
+    if (cached) {
+      try {
+        setMenuConfig(JSON.parse(cached));
+      } catch (e) {}
+    }
+
+    // 2. 서버에서 최신 설정 가져오기
+    fetch('/api/student/menu-config')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.config) {
+          setMenuConfig(data.config);
+          localStorage.setItem('eduest_student_menu_config', JSON.stringify(data.config));
+        }
+      })
+      .catch(err => console.error('Menu config fetch error:', err));
+
+    // 3. Supabase 실시간 변경 감지 (선생님이 설정 변경 시 즉시 학생 화면에 실시간 반영)
+    const channel = supabase
+      .channel('student_menu_config_realtime')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'exam_library',
+        filter: 'drive_id=eq.student_menu_config_data',
+      }, (payload: any) => {
+        if (payload?.new?.file_data) {
+          try {
+            const parsed = JSON.parse(payload.new.file_data);
+            const cfg: StudentMenuConfig = {
+              test: parsed.test ?? true,
+              homework: parsed.homework ?? true,
+              review: parsed.review ?? true,
+              library: parsed.library ?? true,
+            };
+            setMenuConfig(cfg);
+            localStorage.setItem('eduest_student_menu_config', JSON.stringify(cfg));
+          } catch (e) {}
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // 현재 모드가 관리자에 의해 비활성화된 경우, 남아있는 활성 메뉴 중 첫 번째로 자동 이동
+  useEffect(() => {
+    if (!menuConfig[mode]) {
+      const preferredOrder: ('review' | 'homework' | 'test' | 'library')[] = ['review', 'homework', 'test', 'library'];
+      const nextAvailable = preferredOrder.find(m => menuConfig[m]);
+      if (nextAvailable) {
+        setMode(nextAvailable);
+      }
+    }
+  }, [menuConfig, mode]);
 
   // 학생 복습 데이터 로드 (Local Cache -> Cloud DB)
   useEffect(() => {
@@ -425,19 +504,26 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         {!showReviewer && (
           <div className="flex justify-center mb-16 animate-in slide-in-from-top-10 duration-700">
             <div className="bg-white/5 p-1.5 rounded-[32px] border border-white/10 backdrop-blur-3xl flex shadow-3xl">
-              <button onClick={() => changeMode('test')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test' ? 'bg-rose-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                <Zap size={18} fill={mode === 'test' ? "currentColor" : "none"}/> Test
-              </button>
-              {/* 🌟 [사용자 요청 1번 스샷] 리뷰 메뉴랑 테스트 사이에 [숙제] 메뉴 추가 */}
-              <button onClick={() => changeMode('homework')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'homework' ? 'bg-amber-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                <BookOpen size={18}/> 숙제
-              </button>
-              <button onClick={() => changeMode('review')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'review' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                <Database size={18}/> Review
-              </button>
-              <button onClick={() => changeMode('library')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'library' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                <Library size={18}/> Library
-              </button>
+              {menuConfig.test && (
+                <button onClick={() => changeMode('test')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test' ? 'bg-rose-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <Zap size={18} fill={mode === 'test' ? "currentColor" : "none"}/> Test
+                </button>
+              )}
+              {menuConfig.homework && (
+                <button onClick={() => changeMode('homework')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'homework' ? 'bg-amber-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <BookOpen size={18}/> 숙제
+                </button>
+              )}
+              {menuConfig.review && (
+                <button onClick={() => changeMode('review')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'review' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <Database size={18}/> Review
+                </button>
+              )}
+              {menuConfig.library && (
+                <button onClick={() => changeMode('library')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'library' ? 'bg-indigo-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <Library size={18}/> Library
+                </button>
+              )}
             </div>
           </div>
         )}
