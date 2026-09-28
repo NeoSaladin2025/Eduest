@@ -10,6 +10,7 @@ const RECORD_DRIVE_ID = 'student_menu_config_data';
 
 export interface StudentMenuConfig {
   test: boolean;
+  test2: boolean;
   homework: boolean;
   review: boolean;
   library: boolean;
@@ -17,6 +18,7 @@ export interface StudentMenuConfig {
 
 export const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
   test: true,
+  test2: true,
   homework: true,
   review: true,
   library: true,
@@ -38,6 +40,7 @@ export async function GET() {
     const parsed = JSON.parse(data.file_data);
     const config: StudentMenuConfig = {
       test: parsed.test ?? true,
+      test2: parsed.test2 ?? true,
       homework: parsed.homework ?? true,
       review: parsed.review ?? true,
       library: parsed.library ?? true,
@@ -56,6 +59,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const config: StudentMenuConfig = {
       test: body.test ?? true,
+      test2: body.test2 ?? true,
       homework: body.homework ?? true,
       review: body.review ?? true,
       library: body.library ?? true,

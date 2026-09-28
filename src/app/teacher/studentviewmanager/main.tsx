@@ -12,11 +12,13 @@ import {
   Eye,
   AlertCircle,
   Save,
-  Check
+  Check,
+  FileCheck
 } from 'lucide-react';
 
 interface MenuConfig {
   test: boolean;
+  test2: boolean;
   homework: boolean;
   review: boolean;
   library: boolean;
@@ -24,6 +26,7 @@ interface MenuConfig {
 
 const DEFAULT_CONFIG: MenuConfig = {
   test: true,
+  test2: true,
   homework: true,
   review: true,
   library: true,
@@ -110,7 +113,7 @@ export default function StudentViewManagerMain() {
 
   // 전체 켜기
   const handleSelectAll = () => {
-    const allOn: MenuConfig = { test: true, homework: true, review: true, library: true };
+    const allOn: MenuConfig = { test: true, test2: true, homework: true, review: true, library: true };
     setConfig(allOn);
     saveConfig(allOn);
   };
@@ -134,6 +137,17 @@ export default function StudentViewManagerMain() {
       badgeColor: 'bg-rose-100 text-rose-700 border-rose-200',
       previewIcon: <Zap size={18} fill={previewActiveTab === 'test' ? 'currentColor' : 'none'} />,
       previewActiveStyle: 'bg-rose-600 text-white shadow-xl scale-105',
+    },
+    {
+      id: 'test2' as keyof MenuConfig,
+      name: 'TEST2',
+      korLabel: '배정 시험 응시',
+      desc: '선생님이 배정한 맞춤 시험지 풀이, 실시간 자동 채점 및 해설 리포트',
+      icon: <FileCheck size={22} className="text-violet-600" />,
+      activeColor: 'bg-violet-500/10 border-violet-500 text-violet-600',
+      badgeColor: 'bg-violet-100 text-violet-700 border-violet-200',
+      previewIcon: <FileCheck size={18} />,
+      previewActiveStyle: 'bg-violet-600 text-white shadow-xl scale-105',
     },
     {
       id: 'homework' as keyof MenuConfig,
@@ -233,7 +247,7 @@ export default function StudentViewManagerMain() {
             </span>
           </div>
           <div className="text-[11px] font-bold text-slate-400">
-            현재 노출 메뉴: <span className="text-indigo-400 font-black">{activeCount}개</span> / 4개
+            현재 노출 메뉴: <span className="text-indigo-400 font-black">{activeCount}개</span> / {menuDefinitions.length}개
           </div>
         </div>
 

@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect, use } from 'react';
 import { 
-  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen 
+  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck 
 } from 'lucide-react';
 import TestModule from './test/test';
 import { useStudentData } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
+import StudentTest2View from './StudentTest2View';
 import { StudentReviewData, ReviewItem } from './types';
 import { supabase } from '@/lib/supabase';
 
@@ -15,6 +16,7 @@ const GAS_LIBRARY_PROXY = '/api/gas/library';
 
 interface StudentMenuConfig {
   test: boolean;
+  test2: boolean;
   homework: boolean;
   review: boolean;
   library: boolean;
@@ -22,6 +24,7 @@ interface StudentMenuConfig {
 
 const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
   test: true,
+  test2: true,
   homework: true,
   review: true,
   library: true,
@@ -96,7 +99,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
-  const [mode, setMode] = useState<'test' | 'homework' | 'review' | 'library'>('review');
+  const [mode, setMode] = useState<'test' | 'test2' | 'homework' | 'review' | 'library'>('review');
   const [isTesting, setIsTesting] = useState(false);
   const [currentPath, setCurrentPath] = useState<any[]>([]);
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]);
@@ -153,6 +156,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
             const parsed = JSON.parse(payload.new.file_data);
             const cfg: StudentMenuConfig = {
               test: parsed.test ?? true,
+              test2: parsed.test2 ?? true,
               homework: parsed.homework ?? true,
               review: parsed.review ?? true,
               library: parsed.library ?? true,
@@ -172,7 +176,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   // 현재 모드가 관리자에 의해 비활성화된 경우, 남아있는 활성 메뉴 중 첫 번째로 자동 이동
   useEffect(() => {
     if (!menuConfig[mode]) {
-      const preferredOrder: ('review' | 'homework' | 'test' | 'library')[] = ['review', 'homework', 'test', 'library'];
+      const preferredOrder: ('review' | 'homework' | 'test2' | 'test' | 'library')[] = ['review', 'homework', 'test2', 'test', 'library'];
       const nextAvailable = preferredOrder.find(m => menuConfig[m]);
       if (nextAvailable) {
         setMode(nextAvailable);
@@ -509,6 +513,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   <Zap size={18} fill={mode === 'test' ? "currentColor" : "none"}/> Test
                 </button>
               )}
+              {menuConfig.test2 && (
+                <button onClick={() => changeMode('test2')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test2' ? 'bg-violet-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <FileCheck size={18}/> Test2
+                </button>
+              )}
               {menuConfig.homework && (
                 <button onClick={() => changeMode('homework')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'homework' ? 'bg-amber-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
                   <BookOpen size={18}/> 숙제
@@ -541,6 +550,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentId={student?.id} 
                 studentName={student?.name} 
                 onStatusChange={(status: boolean) => setIsTesting(status)}
+              />
+            ) : mode === 'test2' ? (
+              <StudentTest2View
+                studentId={student?.id}
+                studentName={student?.name}
+                studentGrade={student?.grade}
               />
             ) : mode === 'homework' ? (
               /* 🌟 [1번 스샷 반영] 부여받은 숙제 확인 화면 (최근 숙제 및 히스토리) */
