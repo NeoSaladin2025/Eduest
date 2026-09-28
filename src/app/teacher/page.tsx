@@ -12,7 +12,8 @@ import {
   Zap,
   CalendarDays,
   SlidersHorizontal,
-  FileCheck
+  FileCheck,
+  Layers
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -26,6 +27,8 @@ import ClassManagerMain from './classmanager/main';
 import StudentViewManagerMain from './studentviewmanager/main';
 // ✅ 테스트 관리 컴포넌트 추가
 import ExamManagerMain from './exammgr/main';
+// ✅ 테스트자료 관리 컴포넌트 추가
+import TestDataManagerMain from './testdatamgr/main';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -44,6 +47,7 @@ export default function TeacherAdminPage() {
     { id: 'studentview', label: '학생화면 관리', icon: <SlidersHorizontal size={19} /> },
     { id: 'classes', label: '수업관리', icon: <CalendarDays size={19} /> },
     { id: 'exammgr', label: '테스트 관리', icon: <FileCheck size={19} /> },
+    { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={19} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={19} /> },
   ];
 
@@ -157,6 +161,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'exammgr' && (
             <div className="w-full h-full bg-slate-50 overflow-y-auto">
               <ExamManagerMain />
+            </div>
+          )}
+
+          {/* ✅ 테스트자료 관리 (원천DB 선별 및 시험DB 구축) */}
+          {activeMenu === 'testdatamgr' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <TestDataManagerMain />
             </div>
           )}
 

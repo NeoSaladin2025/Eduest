@@ -25,17 +25,21 @@ import {
   AlertCircle, 
   Search,
   ExternalLink,
-  Edit2
+  Edit2,
+  Layers,
+  ArrowRight
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
-import { buildExamLibraryTree, ExamLibraryNode, ExamLibraryRow } from '@/lib/examLibraryTree';
+import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
 
 interface Student {
   id: string;
   name: string;
   grade: string;
 }
+
+const GRADES = ['ALL', '중1', '중2', '중3', '고1', '고2', '고3'];
 
 export default function ExamManagerMain() {
   const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
@@ -45,16 +49,20 @@ export default function ExamManagerMain() {
   const [exams, setExams] = useState<ExamPaper[]>([]);
   // 학생 목록
   const [students, setStudents] = useState<Student[]>([]);
-  // 라이브러리 트리
-  const [libraryRoots, setLibraryRoots] = useState<ExamLibraryNode[]>([]);
-  const [rawLibraryItems, setRawLibraryItems] = useState<ExamLibraryRow[]>([]);
+
+  // 🌟 시험 DB 상태 (테스트자료 관리에서 구축된 카테고리 및 문항들)
+  const [bankGradeFilter, setBankGradeFilter] = useState('고1');
+  const [bankCategories, setBankCategories] = useState<TestCategory[]>([]);
+  const [bankItems, setBankItems] = useState<TestBankItem[]>([]);
+  const [loadingBank, setLoadingBank] = useState(false);
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   // ── 시험지 생성 폼 상태 ──
   const [examTitle, setExamTitle] = useState('');
   const [examGrade, setExamGrade] = useState('고1');
   const [examDuration, setExamDuration] = useState(50);
   
-  // 선택된 라이브러리 파일들 (바구니)
+  // 선택된 문제들 (바구니)
   const [selectedFiles, setSelectedFiles] = useState<{ drive_id: string; name: string; question_image_drive_id?: string | null }[]>([]);
   // 추출된 문제 정보 (이미지 URL, 정답 등)
   const [extractedQuestions, setExtractedQuestions] = useState<ExamQuestion[]>([]);
@@ -64,10 +72,6 @@ export default function ExamManagerMain() {
   // 배정할 학생 IDs
   const [assignedStudentIds, setAssignedStudentIds] = useState<string[]>([]);
   const [studentGradeFilter, setStudentGradeFilter] = useState('ALL');
-
-  // 라이브러리 트리 탐색 상태
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  const [librarySearch, setLibrarySearch] = useState('');
 
   // ── 모달 상태 ──
   // 학생 배정 수정 모달
@@ -83,7 +87,7 @@ export default function ExamManagerMain() {
   // 문제 미리보기 모달
   const [previewQuestion, setPreviewQuestion] = useState<ExamQuestion | null>(null);
 
-  // 1. 초기 데이터 로드 (시험지 목록, 학생 목록, 라이브러리)
+  // 1. 초기 데이터 로드 (시험지 목록, 학생 목록)
   const loadInitialData = async () => {
     try {
       setLoading(true);
@@ -104,19 +108,6 @@ export default function ExamManagerMain() {
       if (studentList) {
         setStudents(studentList);
       }
-
-      // 3) 라이브러리 트리 조회
-      const { data: libItems } = await supabase
-        .from('exam_library')
-        .select('drive_id, parent_id, name, type, grade, question_image_drive_id')
-        .not('drive_id', 'in', '("class_schedule_root_data","student_menu_config_data","test2_exam_papers_data","test2_student_submissions_data")')
-        .order('name', { ascending: true });
-
-      if (libItems) {
-        setRawLibraryItems(libItems as ExamLibraryRow[]);
-        const tree = buildExamLibraryTree(libItems as ExamLibraryRow[]);
-        setLibraryRoots(tree);
-      }
     } catch (e) {
       console.error('Failed to load initial data:', e);
     } finally {
@@ -128,12 +119,45 @@ export default function ExamManagerMain() {
     loadInitialData();
   }, []);
 
-  // 폴더 접기/펼치기 토글
-  const toggleFolder = (folderId: string) => {
-    setExpandedFolders(prev => {
+  // 2. 시험 DB 데이터 로드 (학년 필터 적용)
+  const loadBankForExamCreation = async (grade: string) => {
+    try {
+      setLoadingBank(true);
+      const res = await fetch(`/api/test2/bank?grade=${encodeURIComponent(grade)}`);
+      const data = await res.json();
+      if (data.success) {
+        const catList: TestCategory[] = data.categories || [];
+        setBankCategories(catList);
+        setBankItems(data.items || []);
+
+        // 모든 카테고리 기본 펼치기
+        const initialExpanded = new Set<string>();
+        catList.forEach(c => initialExpanded.add(c.id));
+        setExpandedCategories(initialExpanded);
+      } else {
+        setBankCategories([]);
+        setBankItems([]);
+      }
+    } catch (e) {
+      console.error('Failed to load bank for exam:', e);
+    } finally {
+      setLoadingBank(false);
+    }
+  };
+
+  // 학년 필터 또는 탭 진입 시 시험 DB 로드
+  useEffect(() => {
+    if (activeTab === 'create') {
+      loadBankForExamCreation(bankGradeFilter);
+    }
+  }, [activeTab, bankGradeFilter]);
+
+  // 카테고리 접기/펼치기 토글
+  const toggleCategoryExpand = (catId: string) => {
+    setExpandedCategories(prev => {
       const next = new Set(prev);
-      if (next.has(folderId)) next.delete(folderId);
-      else next.add(folderId);
+      if (next.has(catId)) next.delete(catId);
+      else next.add(catId);
       return next;
     });
   };
@@ -148,26 +172,22 @@ export default function ExamManagerMain() {
         return [...prev, file];
       }
     });
-    // 문제 목록이 바뀌면 재추출 필요 상태로 전환
     setExtractionDone(false);
   };
 
-  // 특정 폴더 안의 모든 HTML 파일 일괄 선택
-  const handleSelectAllInFolder = (node: ExamLibraryNode) => {
-    type FileItem = { drive_id: string; name: string; question_image_drive_id?: string | null };
-    const collectFiles = (n: ExamLibraryNode): FileItem[] => {
-      let list: FileItem[] = n.files.map(f => ({ drive_id: f.drive_id, name: f.name, question_image_drive_id: f.question_image_drive_id ?? null }));
-      n.subFolders.forEach(sf => {
-        list = [...list, ...collectFiles(sf)];
-      });
-      return list;
-    };
-
-    const folderFiles = collectFiles(node);
+  // 특정 카테고리 안의 모든 문제 일괄 선택
+  const handleSelectAllInCategory = (categoryId: string) => {
+    const catItems = bankItems.filter(i => i.category_id === categoryId);
     setSelectedFiles(prev => {
       const currentIds = new Set(prev.map(f => f.drive_id));
-      const newItems = folderFiles.filter(f => !currentIds.has(f.drive_id));
-      return [...prev, ...newItems];
+      const toAdd = catItems
+        .filter(item => !currentIds.has(item.drive_id))
+        .map(item => ({
+          drive_id: item.drive_id,
+          name: item.name,
+          question_image_drive_id: item.question_image_drive_id,
+        }));
+      return [...prev, ...toAdd];
     });
     setExtractionDone(false);
   };
@@ -306,7 +326,6 @@ export default function ExamManagerMain() {
       const data = await res.json();
       if (data.success) {
         alert(`🎉 '${examTitle}' 시험지가 성공적으로 생성되었습니다! (${assignedStudentIds.length}명 배정됨)`);
-        // 폼 초기화
         setExamTitle('');
         setSelectedFiles([]);
         setExtractedQuestions([]);
@@ -413,94 +432,6 @@ export default function ExamManagerMain() {
     return students.filter(s => s.grade.includes(studentGradeFilter));
   }, [students, studentGradeFilter]);
 
-  // 라이브러리 트리 렌더러 (재귀)
-  const renderLibraryTree = (nodes: ExamLibraryNode[], depth = 0) => {
-    return (
-      <div className={`space-y-1 ${depth > 0 ? 'ml-3 pl-2 border-l border-slate-200' : ''}`}>
-        {nodes.map(node => {
-          const isFolder = node.type === 'folder';
-          const isExpanded = expandedFolders.has(node.drive_id);
-          const hasChildren = node.subFolders.length > 0 || node.files.length > 0;
-          const isSelected = selectedFiles.some(f => f.drive_id === node.drive_id);
-
-          if (isFolder) {
-            return (
-              <div key={node.drive_id} className="text-xs">
-                <div 
-                  className="flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-100 group transition-colors cursor-pointer select-none"
-                  onClick={() => toggleFolder(node.drive_id)}
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    {hasChildren ? (
-                      isExpanded ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />
-                    ) : (
-                      <div className="w-3.5" />
-                    )}
-                    {isExpanded ? (
-                      <FolderOpen size={16} className="text-amber-500 shrink-0" />
-                    ) : (
-                      <Folder size={16} className="text-amber-500 shrink-0" />
-                    )}
-                    <span className="font-bold text-slate-700 truncate">{node.name}</span>
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      ({node.subFolders.length > 0 ? `${node.subFolders.length}폴더` : ''} {node.files.length}문제)
-                    </span>
-                  </div>
-
-                  {node.files.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleSelectAllInFolder(node); }}
-                      className="opacity-0 group-hover:opacity-100 px-2 py-0.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0"
-                      title="이 폴더의 모든 문제 담기"
-                    >
-                      + 전체 담기
-                    </button>
-                  )}
-                </div>
-
-                {isExpanded && (
-                  <div className="mt-1">
-                    {node.subFolders.length > 0 && renderLibraryTree(node.subFolders, depth + 1)}
-                    {node.files.length > 0 && (
-                      <div className="ml-5 pl-2 border-l border-slate-200 space-y-1 mt-1">
-                        {node.files.map(fileNode => {
-                          const isFileSelected = selectedFiles.some(f => f.drive_id === fileNode.drive_id);
-                          return (
-                            <div
-                              key={fileNode.drive_id}
-                              onClick={() => toggleSelectFile({
-                                drive_id: fileNode.drive_id,
-                                name: fileNode.name,
-                                question_image_drive_id: fileNode.question_image_drive_id,
-                              })}
-                              className={`flex items-center gap-2 p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
-                                isFileSelected ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200' : 'hover:bg-slate-100 text-slate-600'
-                              }`}
-                            >
-                              {isFileSelected ? (
-                                <CheckSquare size={15} className="text-indigo-600 shrink-0" />
-                              ) : (
-                                <Square size={15} className="text-slate-300 shrink-0" />
-                              )}
-                              <FileText size={14} className={isFileSelected ? 'text-indigo-600' : 'text-slate-400'} />
-                              <span className="truncate flex-1">{fileNode.name}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          }
-          return null;
-        })}
-      </div>
-    );
-  };
-
   return (
     <div className="p-8 max-w-[1600px] mx-auto space-y-8 animate-in fade-in duration-500">
       
@@ -519,7 +450,7 @@ export default function ExamManagerMain() {
             </span>
           </div>
           <p className="text-sm font-medium text-slate-500">
-            라이브러리에서 문제를 골라 맞춤 시험지를 제작하고, 학생들에게 배정하여 풀이 및 자동 채점을 진행할 수 있습니다.
+            [테스트자료 관리]에서 선별·구축된 시험 DB에서 문제를 골라 맞춤 시험지를 제작하고 학생들에게 배정합니다.
           </p>
         </div>
 
@@ -682,7 +613,12 @@ export default function ExamManagerMain() {
                 </label>
                 <select
                   value={examGrade}
-                  onChange={e => setExamGrade(e.target.value)}
+                  onChange={e => {
+                    setExamGrade(e.target.value);
+                    if (e.target.value !== '공통') {
+                      setBankGradeFilter(e.target.value);
+                    }
+                  }}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-violet-500 text-sm font-bold bg-white"
                 >
                   <option value="공통">공통</option>
@@ -711,48 +647,142 @@ export default function ExamManagerMain() {
             </div>
           </div>
 
-          {/* STEP 2: 문제 라이브러리 탐색 & 문제 담기 (2패널) */}
+          {/* STEP 2: 시험 DB 카테고리에서 문항 선택 (2패널) */}
           <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-black text-slate-800 text-base">
                 <span className="w-6 h-6 rounded-full bg-violet-600 text-white flex items-center justify-center text-xs">2</span>
-                <span>문제 라이브러리에서 문항 선택</span>
+                <span>시험 DB에서 문항 선택</span>
                 <span className="text-xs font-normal text-slate-400">
-                  (폴더를 열고 원하는 문제를 클릭하여 담으세요)
+                  ([테스트자료 관리]에서 선별 등록된 카테고리별 시험 문제입니다)
                 </span>
               </div>
 
-              <div className="text-xs font-black text-violet-700 bg-violet-50 border border-violet-200 px-3 py-1.5 rounded-xl">
-                선택된 문제: {selectedFiles.length}개
+              <div className="flex items-center gap-3">
+                {/* 학년 필터 */}
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                  {GRADES.map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setBankGradeFilter(g)}
+                      className={`px-3 py-1 rounded-lg transition-all ${
+                        bankGradeFilter === g ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {g === 'ALL' ? '전체' : g}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="text-xs font-black text-violet-700 bg-violet-50 border border-violet-200 px-3 py-1.5 rounded-xl shrink-0">
+                  선택된 문제: {selectedFiles.length}개
+                </div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-h-[450px]">
               
-              {/* 좌측: 라이브러리 폴더 트리 탐색기 */}
+              {/* 좌측: 시험 DB 카테고리별 문항 목록 */}
               <div className="border border-slate-200 rounded-2xl p-4 flex flex-col bg-slate-50/50">
                 <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-200">
                   <span className="text-xs font-black text-slate-700 flex items-center gap-1.5">
-                    <Folder size={16} className="text-amber-500" />
-                    기출 및 시험 라이브러리 폴더
+                    <Layers size={16} className="text-indigo-600" />
+                    {bankGradeFilter === 'ALL' ? '전체' : bankGradeFilter} 시험 DB 카테고리 ({bankCategories.length}개)
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    전체 {rawLibraryItems.filter(i => i.type === 'file').length}개 문제
+                    전체 {bankItems.length}개 시험문제
                   </span>
                 </div>
 
-                <div className="flex-1 overflow-y-auto max-h-[420px] pr-2 scrollbar-thin">
-                  {libraryRoots.length === 0 ? (
-                    <div className="p-8 text-center text-xs text-slate-400">
-                      라이브러리를 불러오는 중입니다...
+                <div className="flex-1 overflow-y-auto max-h-[420px] pr-2 scrollbar-thin space-y-2">
+                  {loadingBank ? (
+                    <div className="p-8 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
+                      <Loader2 size={24} className="animate-spin text-violet-600" />
+                      <span>시험 DB를 불러오는 중입니다...</span>
+                    </div>
+                  ) : bankCategories.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-slate-400 space-y-3">
+                      <AlertCircle size={32} className="mx-auto text-amber-500 opacity-50" />
+                      <p className="font-bold">{bankGradeFilter === 'ALL' ? '등록된' : `${bankGradeFilter}에 등록된`} 시험자료가 없습니다.</p>
+                      <p className="text-[11px] text-slate-400">
+                        상단의 <strong>[테스트자료 관리]</strong> 메뉴에서 원천 DB 문제를 카테고리에 먼저 담아주세요!
+                      </p>
                     </div>
                   ) : (
-                    renderLibraryTree(libraryRoots)
+                    bankCategories.map(cat => {
+                      const isExpanded = expandedCategories.has(cat.id);
+                      const itemsInCat = bankItems.filter(i => i.category_id === cat.id);
+
+                      return (
+                        <div key={cat.id} className="border border-slate-200 rounded-xl bg-white overflow-hidden shadow-2xs">
+                          {/* 카테고리 헤더 */}
+                          <div
+                            onClick={() => toggleCategoryExpand(cat.id)}
+                            className="flex items-center justify-between p-2.5 hover:bg-slate-50 cursor-pointer select-none transition-colors"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {isExpanded ? <ChevronDown size={14} className="text-slate-400 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 shrink-0" />}
+                              <Folder size={16} className="text-indigo-600 shrink-0" />
+                              <span className="font-black text-xs text-slate-800 truncate">{cat.name}</span>
+                              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded font-bold">
+                                {itemsInCat.length}문제
+                              </span>
+                            </div>
+
+                            {itemsInCat.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleSelectAllInCategory(cat.id); }}
+                                className="px-2 py-0.5 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0 ml-2"
+                                title="이 카테고리의 모든 문제 담기"
+                              >
+                                + 전체 담기
+                              </button>
+                            )}
+                          </div>
+
+                          {/* 카테고리 안의 문제 목록 */}
+                          {isExpanded && itemsInCat.length > 0 && (
+                            <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-1">
+                              {itemsInCat.map(item => {
+                                const isSelected = selectedFiles.some(f => f.drive_id === item.drive_id);
+                                return (
+                                  <div
+                                    key={item.id}
+                                    onClick={() => toggleSelectFile({
+                                      drive_id: item.drive_id,
+                                      name: item.name,
+                                      question_image_drive_id: item.question_image_drive_id,
+                                    })}
+                                    className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors text-xs select-none ${
+                                      isSelected
+                                        ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'
+                                        : 'hover:bg-white text-slate-600'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 truncate">
+                                      {isSelected ? (
+                                        <CheckSquare size={15} className="text-violet-600 shrink-0" />
+                                      ) : (
+                                        <Square size={15} className="text-slate-300 shrink-0" />
+                                      )}
+                                      <FileText size={14} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
+                                      <span className="truncate">{item.name}</span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-400 shrink-0">{item.grade}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
 
-              {/* 우측: 선택된 문제 바구니 (순서 변경 / 삭제 / 추출 트리거) */}
+              {/* 우측: 선택된 시험지 문항 바구니 (순서 변경 / 삭제 / 추출 트리거) */}
               <div className="border border-slate-200 rounded-2xl p-4 flex flex-col bg-white">
                 <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-200">
                   <span className="text-xs font-black text-slate-700 flex items-center gap-1.5">
@@ -773,7 +803,7 @@ export default function ExamManagerMain() {
                 {selectedFiles.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-400 space-y-2">
                     <CheckSquare size={32} className="opacity-30" />
-                    <p className="text-xs font-bold">왼쪽 라이브러리에서 시험에 넣을 문제를 선택해주세요.</p>
+                    <p className="text-xs font-bold">왼쪽 시험 DB 카테고리에서 시험에 넣을 문제를 선택해주세요.</p>
                   </div>
                 ) : (
                   <div className="flex-1 overflow-y-auto max-h-[350px] space-y-2 pr-1 scrollbar-thin">
