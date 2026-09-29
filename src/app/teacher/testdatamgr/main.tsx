@@ -58,6 +58,20 @@ export function parseQuestionNum(fileName: string): number | null {
   return null;
 }
 
+// 폴더명에서 회차 번호 추출 (예: "10차", "1차", "3차(공수2A 중간대비)" -> 10, 1, 3)
+export function parseRoundNumber(folderName?: string | null): number {
+  if (!folderName) return 999999;
+  const chaMatch = folderName.match(/(\d+)\s*차/);
+  if (chaMatch) return parseInt(chaMatch[1], 10);
+  const hoeMatch = folderName.match(/(\d+)\s*회/);
+  if (hoeMatch) return parseInt(hoeMatch[1], 10);
+  const jeMatch = folderName.match(/제\s*(\d+)/);
+  if (jeMatch) return parseInt(jeMatch[1], 10);
+  const generalMatch = folderName.match(/\d+/);
+  if (generalMatch) return parseInt(generalMatch[0], 10);
+  return 999999;
+}
+
 // 문항 번호가 설정된 범위들 중 하나에 해당하는지 검사
 function isNumInRange(num: number, ranges: NumberRange[]): boolean {
   const activeRanges = ranges.filter(r => r.start.trim() !== '' || r.end.trim() !== '');
@@ -124,6 +138,27 @@ export default function TestDataManagerMain() {
       const res = await fetch(`/api/test2/raw-library?grade=${encodeURIComponent(grade)}`);
       const data = await res.json();
       if (data.success && Array.isArray(data.tree)) {
+        // 폴더 및 파일 트리 자연 정렬 (1차 -> 2차 -> ... -> 10차, 1번 -> 2번 ...)
+        const sortNodes = (nodes: ExamLibraryNode[]) => {
+          nodes.sort((a, b) => {
+            const rA = parseRoundNumber(a.name);
+            const rB = parseRoundNumber(b.name);
+            if (rA !== rB) return rA - rB;
+            return a.name.localeCompare(b.name, undefined, { numeric: true });
+          });
+          nodes.forEach(n => {
+            if (n.subFolders?.length > 0) sortNodes(n.subFolders);
+            if (n.files?.length > 0) {
+              n.files.sort((fa, fb) => {
+                const qa = parseQuestionNum(fa.name) ?? 999999;
+                const qb = parseQuestionNum(fb.name) ?? 999999;
+                if (qa !== qb) return qa - qb;
+                return fa.name.localeCompare(fb.name, undefined, { numeric: true });
+              });
+            }
+          });
+        };
+        sortNodes(data.tree);
         setRawTree(data.tree);
         // 최상위 1~2 레벨 폴더들은 기본 펼치기
         const initialExpanded = new Set<string>();
@@ -298,6 +333,16 @@ export default function TestDataManagerMain() {
     };
 
     traverse(rawTree, []);
+    // 회차 오름차순, 문항 번호 오름차순으로 안정 정렬
+    results.sort((a, b) => {
+      const rA = parseRoundNumber(a.folder_name);
+      const rB = parseRoundNumber(b.folder_name);
+      if (rA !== rB) return rA - rB;
+      const qA = a.question_number ?? 999999;
+      const qB = b.question_number ?? 999999;
+      if (qA !== qB) return qA - qB;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
     return results;
   }, [rawTree, selectedFolderIds, numberRanges, selectedGrade]);
 
@@ -536,10 +581,19 @@ export default function TestDataManagerMain() {
     }
   };
 
-  // 현재 선택된 카테고리의 아이템 목록
+  // 현재 선택된 카테고리의 아이템 목록 (회차 오름차순, 문항 번호 오름차순 정렬)
   const currentCategoryItems = useMemo(() => {
     if (!selectedCategoryId) return [];
-    return bankItems.filter(item => item.category_id === selectedCategoryId);
+    const items = bankItems.filter(item => item.category_id === selectedCategoryId);
+    return [...items].sort((a, b) => {
+      const rA = parseRoundNumber(a.folder_name);
+      const rB = parseRoundNumber(b.folder_name);
+      if (rA !== rB) return rA - rB;
+      const qA = a.question_number ?? parseQuestionNum(a.name) ?? 999999;
+      const qB = b.question_number ?? parseQuestionNum(b.name) ?? 999999;
+      if (qA !== qB) return qA - qB;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
   }, [bankItems, selectedCategoryId]);
 
   const activeCategory = useMemo(() => {

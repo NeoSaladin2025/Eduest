@@ -27,7 +27,8 @@ import {
   ExternalLink,
   Edit2,
   Layers,
-  ArrowRight
+  ArrowRight,
+  ArrowUpDown
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -40,6 +41,33 @@ interface Student {
 }
 
 const GRADES = ['ALL', '중1', '중2', '중3', '고1', '고2', '고3'];
+
+// 폴더명에서 회차 번호 추출 (예: "10차", "1차", "3차(공수2A 중간대비)" -> 10, 1, 3)
+export function parseRoundNumber(folderName?: string | null): number {
+  if (!folderName) return 999999;
+  const chaMatch = folderName.match(/(\d+)\s*차/);
+  if (chaMatch) return parseInt(chaMatch[1], 10);
+  const hoeMatch = folderName.match(/(\d+)\s*회/);
+  if (hoeMatch) return parseInt(hoeMatch[1], 10);
+  const jeMatch = folderName.match(/제\s*(\d+)/);
+  if (jeMatch) return parseInt(jeMatch[1], 10);
+  const generalMatch = folderName.match(/\d+/);
+  if (generalMatch) return parseInt(generalMatch[0], 10);
+  return 999999;
+}
+
+// 문항 번호 추출 (예: "0001.html" -> 1)
+export function parseQuestionNumber(file: { question_number?: number | null; name: string }): number {
+  if (typeof file.question_number === 'number' && !isNaN(file.question_number)) {
+    return file.question_number;
+  }
+  const clean = file.name.replace(/\.[^/.]+$/, "");
+  const m = clean.match(/(\d+)(?!.*\d)/);
+  if (m) {
+    return parseInt(m[1], 10);
+  }
+  return 999999;
+}
 
 export default function ExamManagerMain() {
   const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
@@ -72,6 +100,9 @@ export default function ExamManagerMain() {
     question_number?: number | null;
     display_name?: string | null;
   }[]>([]);
+  // 🌟 바구니 정렬 모드: 'manual' (수동) | 'round_asc' (회차 오름차순) | 'round_desc' (회차 내림차순)
+  const [basketSortMode, setBasketSortMode] = useState<'manual' | 'round_asc' | 'round_desc'>('manual');
+
   // 추출된 문제 정보 (이미지 URL, 정답 등)
   const [extractedQuestions, setExtractedQuestions] = useState<ExamQuestion[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
@@ -170,6 +201,51 @@ export default function ExamManagerMain() {
     });
   };
 
+  // 🌟 바구니 정렬 로직 (회차 오름차순, 회차 내림차순)
+  const applyBasketSort = (
+    items: typeof selectedFiles, 
+    mode: 'round_asc' | 'round_desc'
+  ) => {
+    return [...items].sort((a, b) => {
+      const rA = parseRoundNumber(a.folder_name);
+      const rB = parseRoundNumber(b.folder_name);
+
+      if (rA !== rB) {
+        return mode === 'round_asc' ? rA - rB : rB - rA;
+      }
+
+      const qA = parseQuestionNumber(a);
+      const qB = parseQuestionNumber(b);
+      if (qA !== qB) {
+        return qA - qB;
+      }
+
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+  };
+
+  const handleSortBasket = (mode: 'round_asc' | 'round_desc' | 'manual') => {
+    setBasketSortMode(mode);
+    if (mode === 'manual') return;
+
+    setSelectedFiles(prev => {
+      const sorted = applyBasketSort(prev, mode);
+
+      // 이미 추출된 문제가 있다면 동일한 순서로 정렬 동기화
+      if (extractedQuestions.length === sorted.length) {
+        const orderMap = new Map(sorted.map((item, idx) => [item.drive_id, idx]));
+        const sortedQ = [...extractedQuestions].sort((a, b) => {
+          const idxA = orderMap.get(a.drive_id) ?? 0;
+          const idxB = orderMap.get(b.drive_id) ?? 0;
+          return idxA - idxB;
+        });
+        setExtractedQuestions(sortedQ);
+      }
+
+      return sorted;
+    });
+  };
+
   // 문제 바구니에 파일 추가/제거 토글
   const toggleSelectFile = (file: {
     drive_id: string;
@@ -182,11 +258,14 @@ export default function ExamManagerMain() {
   }) => {
     setSelectedFiles(prev => {
       const exists = prev.some(f => f.drive_id === file.drive_id);
-      if (exists) {
-        return prev.filter(f => f.drive_id !== file.drive_id);
-      } else {
-        return [...prev, file];
+      let nextList = exists
+        ? prev.filter(f => f.drive_id !== file.drive_id)
+        : [...prev, file];
+
+      if (basketSortMode !== 'manual') {
+        nextList = applyBasketSort(nextList, basketSortMode);
       }
+      return nextList;
     });
     setExtractionDone(false);
   };
@@ -194,9 +273,20 @@ export default function ExamManagerMain() {
   // 특정 카테고리 안의 모든 문제 일괄 선택
   const handleSelectAllInCategory = (categoryId: string) => {
     const catItems = bankItems.filter(i => i.category_id === categoryId);
+    // 카테고리 내에서도 회차 및 문항 번호 순으로 정렬하여 바구니에 담기
+    const sortedCatItems = [...catItems].sort((a, b) => {
+      const rA = parseRoundNumber(a.folder_name);
+      const rB = parseRoundNumber(b.folder_name);
+      if (rA !== rB) return rA - rB;
+      const qA = parseQuestionNumber(a);
+      const qB = parseQuestionNumber(b);
+      if (qA !== qB) return qA - qB;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+
     setSelectedFiles(prev => {
       const currentIds = new Set(prev.map(f => f.drive_id));
-      const toAdd = catItems
+      const toAdd = sortedCatItems
         .filter(item => !currentIds.has(item.drive_id))
         .map(item => ({
           drive_id: item.drive_id,
@@ -207,7 +297,11 @@ export default function ExamManagerMain() {
           question_number: item.question_number,
           display_name: item.display_name,
         }));
-      return [...prev, ...toAdd];
+      let nextList = [...prev, ...toAdd];
+      if (basketSortMode !== 'manual') {
+        nextList = applyBasketSort(nextList, basketSortMode);
+      }
+      return nextList;
     });
     setExtractionDone(false);
   };
@@ -215,6 +309,7 @@ export default function ExamManagerMain() {
   // 문제 바구니 순서 이동 (위로)
   const moveFileUp = (index: number) => {
     if (index === 0) return;
+    setBasketSortMode('manual');
     const next = [...selectedFiles];
     const temp = next[index - 1];
     next[index - 1] = next[index];
@@ -233,6 +328,7 @@ export default function ExamManagerMain() {
   // 문제 바구니 순서 이동 (아래로)
   const moveFileDown = (index: number) => {
     if (index === selectedFiles.length - 1) return;
+    setBasketSortMode('manual');
     const next = [...selectedFiles];
     const temp = next[index + 1];
     next[index + 1] = next[index];
@@ -762,53 +858,65 @@ export default function ExamManagerMain() {
                           </div>
 
                           {/* 카테고리 안의 문제 목록 */}
-                          {isExpanded && itemsInCat.length > 0 && (
-                            <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-1">
-                              {itemsInCat.map(item => {
-                                const isSelected = selectedFiles.some(f => f.drive_id === item.drive_id);
-                                return (
-                                  <div
-                                    key={item.id}
-                                    onClick={() => toggleSelectFile({
-                                      drive_id: item.drive_id,
-                                      name: item.name,
-                                      question_image_drive_id: item.question_image_drive_id,
-                                      folder_name: item.folder_name,
-                                      folder_path: item.folder_path,
-                                      question_number: item.question_number,
-                                      display_name: item.display_name,
-                                    })}
-                                    className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors text-xs select-none ${
-                                      isSelected
-                                        ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'
-                                        : 'hover:bg-white text-slate-600'
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-2 truncate flex-1 min-w-0">
-                                      {isSelected ? (
-                                        <CheckSquare size={15} className="text-violet-600 shrink-0" />
-                                      ) : (
-                                        <Square size={15} className="text-slate-300 shrink-0" />
-                                      )}
-                                      <FileText size={14} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
-                                      {item.folder_name && (
-                                        <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-black shrink-0">
-                                          {item.folder_name}
-                                        </span>
-                                      )}
-                                      {item.question_number && (
-                                        <span className="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
-                                          {item.question_number}번
-                                        </span>
-                                      )}
-                                      <span className="truncate">{item.name}</span>
+                          {isExpanded && itemsInCat.length > 0 && (() => {
+                            const sortedCatItems = [...itemsInCat].sort((a, b) => {
+                              const rA = parseRoundNumber(a.folder_name);
+                              const rB = parseRoundNumber(b.folder_name);
+                              if (rA !== rB) return rA - rB;
+                              const qA = parseQuestionNumber(a);
+                              const qB = parseQuestionNumber(b);
+                              if (qA !== qB) return qA - qB;
+                              return a.name.localeCompare(b.name, undefined, { numeric: true });
+                            });
+
+                            return (
+                              <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-1">
+                                {sortedCatItems.map(item => {
+                                  const isSelected = selectedFiles.some(f => f.drive_id === item.drive_id);
+                                  return (
+                                    <div
+                                      key={item.id}
+                                      onClick={() => toggleSelectFile({
+                                        drive_id: item.drive_id,
+                                        name: item.name,
+                                        question_image_drive_id: item.question_image_drive_id,
+                                        folder_name: item.folder_name,
+                                        folder_path: item.folder_path,
+                                        question_number: item.question_number,
+                                        display_name: item.display_name,
+                                      })}
+                                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors text-xs select-none ${
+                                        isSelected
+                                          ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'
+                                          : 'hover:bg-white text-slate-600'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2 truncate flex-1 min-w-0">
+                                        {isSelected ? (
+                                          <CheckSquare size={15} className="text-violet-600 shrink-0" />
+                                        ) : (
+                                          <Square size={15} className="text-slate-300 shrink-0" />
+                                        )}
+                                        <FileText size={14} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
+                                        {item.folder_name && (
+                                          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-black shrink-0">
+                                            {item.folder_name}
+                                          </span>
+                                        )}
+                                        {item.question_number && (
+                                          <span className="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
+                                            {item.question_number}번
+                                          </span>
+                                        )}
+                                        <span className="truncate">{item.name}</span>
+                                      </div>
+                                      <span className="text-[10px] text-slate-400 shrink-0 ml-1">{item.grade}</span>
                                     </div>
-                                    <span className="text-[10px] text-slate-400 shrink-0 ml-1">{item.grade}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })
@@ -833,6 +941,59 @@ export default function ExamManagerMain() {
                     </button>
                   )}
                 </div>
+
+                {/* 🌟 바구니 정렬 컨트롤 바: 자동 오름차순, 자동 내림차순, 수동 */}
+                {selectedFiles.length > 0 && (
+                  <div className="flex items-center justify-between bg-slate-50 border border-slate-200 p-2 rounded-xl text-xs gap-2 mb-3 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-slate-500 font-bold text-[11px]">
+                      <ArrowUpDown size={14} className="text-violet-600" />
+                      <span>회차 정렬:</span>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shadow-2xs">
+                      <button
+                        type="button"
+                        onClick={() => handleSortBasket('round_asc')}
+                        className={`px-2.5 py-1 rounded-md font-black text-[11px] transition-all flex items-center gap-1 cursor-pointer ${
+                          basketSortMode === 'round_asc'
+                            ? 'bg-violet-600 text-white shadow-2xs scale-102'
+                            : 'text-slate-600 hover:text-violet-700 hover:bg-slate-50'
+                        }`}
+                        title="낮은 회차부터 높은 회차 순으로 정렬 (1차 → 12차)"
+                      >
+                        <ArrowUp size={12} />
+                        자동 오름차순 (1차→12차)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSortBasket('round_desc')}
+                        className={`px-2.5 py-1 rounded-md font-black text-[11px] transition-all flex items-center gap-1 cursor-pointer ${
+                          basketSortMode === 'round_desc'
+                            ? 'bg-violet-600 text-white shadow-2xs scale-102'
+                            : 'text-slate-600 hover:text-violet-700 hover:bg-slate-50'
+                        }`}
+                        title="높은 회차부터 낮은 회차 순으로 정렬 (12차 → 1차)"
+                      >
+                        <ArrowDown size={12} />
+                        자동 내림차순 (12차→1차)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSortBasket('manual')}
+                        className={`px-2.5 py-1 rounded-md font-black text-[11px] transition-all flex items-center gap-1 cursor-pointer ${
+                          basketSortMode === 'manual'
+                            ? 'bg-slate-800 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                        }`}
+                        title="화살표(↑, ↓)를 눌러 사용자가 직접 순서를 변경하는 수동 모드"
+                      >
+                        수동
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {selectedFiles.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-400 space-y-2">
