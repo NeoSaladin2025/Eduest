@@ -21,27 +21,88 @@ import {
   AlertCircle, 
   Search, 
   BookOpen,
-  Filter
+  Filter,
+  CheckCircle2,
+  RefreshCw
 } from 'lucide-react';
 import { ExamLibraryNode } from '@/lib/examLibraryTree';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
 
 const GRADES = ['중1', '중2', '중3', '고1', '고2', '고3'];
 
+export interface NumberRange {
+  id: string;
+  start: string;
+  end: string;
+}
+
+export interface RawFileSelection {
+  drive_id: string;
+  name: string;
+  grade?: string;
+  question_image_drive_id?: string | null;
+  folder_name?: string;
+  folder_path?: string;
+  question_number?: number | null;
+  display_name?: string;
+}
+
+// 파일명에서 가장 마지막 연속된 숫자를 문항 번호로 파싱 (예: "0001.html" -> 1, "10차_05.html" -> 5)
+export function parseQuestionNum(fileName: string): number | null {
+  const clean = fileName.replace(/\.[^/.]+$/, "");
+  const match = clean.match(/(\d+)(?!.*\d)/);
+  if (match) {
+    const n = parseInt(match[1], 10);
+    return isNaN(n) ? null : n;
+  }
+  return null;
+}
+
+// 문항 번호가 설정된 범위들 중 하나에 해당하는지 검사
+function isNumInRange(num: number, ranges: NumberRange[]): boolean {
+  const activeRanges = ranges.filter(r => r.start.trim() !== '' || r.end.trim() !== '');
+  if (activeRanges.length === 0) return true; // 범위 미지정 시 전체 허용
+
+  return activeRanges.some(r => {
+    const s = r.start.trim() !== '' ? parseInt(r.start.trim(), 10) : null;
+    const e = r.end.trim() !== '' ? parseInt(r.end.trim(), 10) : null;
+
+    if (s !== null && e !== null) {
+      return num >= Math.min(s, e) && num <= Math.max(s, e);
+    }
+    if (s !== null) return num === s;
+    if (e !== null) return num <= e;
+    return false;
+  });
+}
+
 export default function TestDataManagerMain() {
-  const [selectedGrade, setSelectedGrade] = useState('중3');
+  const [selectedGrade, setSelectedGrade] = useState('고1');
 
   // 원천 DB 상태
   const [rawTree, setRawTree] = useState<ExamLibraryNode[]>([]);
   const [loadingRaw, setLoadingRaw] = useState(false);
-  const [selectedRawFiles, setSelectedRawFiles] = useState<{ drive_id: string; name: string; question_image_drive_id?: string | null }[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+
+  // 🌟 폴더 체크박스 다중 선택 상태 (회차 폴더들 다중 선택용)
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
+
+  // 🌟 추출 번호 범위 리스트 상태 (시작번호 ~ 종료번호, +로 추가)
+  const [numberRanges, setNumberRanges] = useState<NumberRange[]>([
+    { id: '1', start: '1', end: '10' },
+  ]);
+
+  // 개별 파일 직접 체크 선택 상태 (기존 방식 지원)
+  const [selectedRawFiles, setSelectedRawFiles] = useState<RawFileSelection[]>([]);
 
   // 시험 DB 상태 (카테고리 & 아이템)
   const [categories, setCategories] = useState<TestCategory[]>([]);
   const [bankItems, setBankItems] = useState<TestBankItem[]>([]);
   const [loadingBank, setLoadingBank] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+
+  // 추출 진행 중 상태
+  const [isExtractingToBank, setIsExtractingToBank] = useState(false);
 
   // 카테고리 모달 상태 (추가 / 수정)
   const [categoryModalMode, setCategoryModalMode] = useState<'create' | 'edit' | null>(null);
@@ -59,13 +120,17 @@ export default function TestDataManagerMain() {
     try {
       setLoadingRaw(true);
       setSelectedRawFiles([]);
+      setSelectedFolderIds(new Set());
       const res = await fetch(`/api/test2/raw-library?grade=${encodeURIComponent(grade)}`);
       const data = await res.json();
       if (data.success && Array.isArray(data.tree)) {
         setRawTree(data.tree);
-        // 기본적으로 최상위 1레벨 폴더들은 펼쳐두기
+        // 최상위 1~2 레벨 폴더들은 기본 펼치기
         const initialExpanded = new Set<string>();
-        data.tree.forEach((node: ExamLibraryNode) => initialExpanded.add(node.drive_id));
+        data.tree.forEach((node: ExamLibraryNode) => {
+          initialExpanded.add(node.drive_id);
+          node.subFolders?.forEach(sf => initialExpanded.add(sf.drive_id));
+        });
         setExpandedFolders(initialExpanded);
       } else {
         setRawTree([]);
@@ -89,7 +154,6 @@ export default function TestDataManagerMain() {
         setCategories(catList);
         setBankItems(data.items || []);
 
-        // 첫 번째 카테고리 자동 선택
         if (catList.length > 0) {
           setSelectedCategoryId((prev) => (catList.some((c: any) => c.id === prev) ? prev : catList[0].id));
         } else {
@@ -119,8 +183,165 @@ export default function TestDataManagerMain() {
     });
   };
 
-  // 원천 DB 개별 파일 선택 토글
-  const toggleRawFile = (file: { drive_id: string; name: string; question_image_drive_id?: string | null }) => {
+  // 🌟 폴더 체크박스 토글 (재귀적으로 하위 폴더도 포함하여 일괄 선택/해제)
+  const toggleFolderSelect = (node: ExamLibraryNode, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+
+    const collectFolderIds = (n: ExamLibraryNode): string[] => {
+      let ids = [n.drive_id];
+      n.subFolders.forEach(sf => {
+        ids = [...ids, ...collectFolderIds(sf)];
+      });
+      return ids;
+    };
+
+    const targetIds = collectFolderIds(node);
+    setSelectedFolderIds(prev => {
+      const next = new Set(prev);
+      const isCurrentlySelected = next.has(node.drive_id);
+      if (isCurrentlySelected) {
+        targetIds.forEach(id => next.delete(id));
+      } else {
+        targetIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  // 전체 폴더 선택
+  const handleSelectAllFolders = () => {
+    const allIds: string[] = [];
+    const collect = (nodes: ExamLibraryNode[]) => {
+      nodes.forEach(n => {
+        allIds.push(n.drive_id);
+        collect(n.subFolders);
+      });
+    };
+    collect(rawTree);
+    setSelectedFolderIds(new Set(allIds));
+  };
+
+  // 전체 폴더 선택 해제
+  const handleDeselectAllFolders = () => {
+    setSelectedFolderIds(new Set());
+  };
+
+  // 🌟 추출 번호 범위 관리 함수들
+  const addNumberRange = () => {
+    setNumberRanges(prev => [
+      ...prev,
+      { id: String(Date.now()), start: '', end: '' }
+    ]);
+  };
+
+  const updateNumberRange = (id: string, field: 'start' | 'end', val: string) => {
+    setNumberRanges(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+  };
+
+  const removeNumberRange = (id: string) => {
+    if (numberRanges.length <= 1) {
+      setNumberRanges([{ id: '1', start: '', end: '' }]);
+    } else {
+      setNumberRanges(prev => prev.filter(r => r.id !== id));
+    }
+  };
+
+  // 🌟 실시간 매칭 문항 수집 (선택된 폴더 + 번호 범위에 매칭되는 문제들)
+  const matchedItemsFromRanges = useMemo(() => {
+    if (selectedFolderIds.size === 0) return [];
+
+    const results: Array<{
+      drive_id: string;
+      name: string;
+      grade: string;
+      question_image_drive_id?: string | null;
+      folder_name: string;
+      folder_path: string;
+      question_number: number;
+      display_name: string;
+    }> = [];
+
+    const seenDriveIds = new Set<string>();
+
+    const traverse = (nodes: ExamLibraryNode[], pathAncestors: string[]) => {
+      for (const node of nodes) {
+        const currentPath = [...pathAncestors, node.name];
+        const isThisFolderSelected = selectedFolderIds.has(node.drive_id);
+
+        // 만약 이 폴더가 체크되어 있다면 직속 파일들 검사
+        if (isThisFolderSelected && node.files && node.files.length > 0) {
+          for (const file of node.files) {
+            if (seenDriveIds.has(file.drive_id)) continue;
+
+            const qNum = parseQuestionNum(file.name);
+            if (qNum !== null && isNumInRange(qNum, numberRanges)) {
+              seenDriveIds.add(file.drive_id);
+              results.push({
+                drive_id: file.drive_id,
+                name: file.name,
+                grade: selectedGrade,
+                question_image_drive_id: file.question_image_drive_id || null,
+                folder_name: node.name,
+                folder_path: currentPath.join(" > "),
+                question_number: qNum,
+                display_name: `[${node.name}] ${qNum}번`,
+              });
+            }
+          }
+        }
+
+        // 하위 폴더 재귀 탐색
+        if (node.subFolders && node.subFolders.length > 0) {
+          traverse(node.subFolders, currentPath);
+        }
+      }
+    };
+
+    traverse(rawTree, []);
+    return results;
+  }, [rawTree, selectedFolderIds, numberRanges, selectedGrade]);
+
+  // 🌟 추출 실행: 선택된 폴더에서 설정한 번호 범위의 문제를 시험 DB 카테고리에 담기
+  const handleExtractAndSaveToBank = async () => {
+    if (!selectedCategoryId) {
+      alert('문제를 담을 시험자료 카테고리를 먼저 선택하거나 생성해주세요.');
+      return;
+    }
+    if (selectedFolderIds.size === 0) {
+      alert('문제를 추출할 폴더(회차)를 왼쪽 트리에서 먼저 체크해주세요.');
+      return;
+    }
+    if (matchedItemsFromRanges.length === 0) {
+      alert('설정한 번호 범위에 매칭되는 문제 파일이 선택된 폴더에 없습니다. 시작/종료 번호를 확인해주세요.');
+      return;
+    }
+
+    try {
+      setIsExtractingToBank(true);
+      const res = await fetch('/api/test2/bank', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          categoryId: selectedCategoryId,
+          items: matchedItemsFromRanges,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`🎉 ${data.message || `${matchedItemsFromRanges.length}개 문제가 성공적으로 등록되었습니다.`}`);
+        await loadTestBank(selectedGrade);
+      } else {
+        alert(data.error || '등록 실패');
+      }
+    } catch (e) {
+      alert('시험자료 등록 중 오류가 발생했습니다.');
+    } finally {
+      setIsExtractingToBank(false);
+    }
+  };
+
+  // 원천 DB 개별 파일 선택 토글 (수동 개별 선택용)
+  const toggleRawFile = (file: RawFileSelection) => {
     setSelectedRawFiles(prev => {
       const exists = prev.some(f => f.drive_id === file.drive_id);
       if (exists) return prev.filter(f => f.drive_id !== file.drive_id);
@@ -128,22 +349,29 @@ export default function TestDataManagerMain() {
     });
   };
 
-  // 폴더 내 모든 파일 일괄 선택
-  const handleSelectAllInFolder = (node: ExamLibraryNode) => {
-    type FileItem = { drive_id: string; name: string; question_image_drive_id?: string | null };
-    const collectFiles = (n: ExamLibraryNode): FileItem[] => {
-      let list: FileItem[] = n.files.map(f => ({
-        drive_id: f.drive_id,
-        name: f.name,
-        question_image_drive_id: f.question_image_drive_id ?? null,
-      }));
+  // 폴더 내 모든 파일 일괄 선택 (수동 바구니 담기용)
+  const handleSelectAllInFolder = (node: ExamLibraryNode, pathAncestors: string[]) => {
+    const collectFiles = (n: ExamLibraryNode, currentP: string[]): RawFileSelection[] => {
+      let list: RawFileSelection[] = n.files.map(f => {
+        const qNum = parseQuestionNum(f.name);
+        return {
+          drive_id: f.drive_id,
+          name: f.name,
+          grade: selectedGrade,
+          question_image_drive_id: f.question_image_drive_id ?? null,
+          folder_name: n.name,
+          folder_path: currentP.join(" > "),
+          question_number: qNum,
+          display_name: `[${n.name}] ${qNum ? `${qNum}번` : f.name}`,
+        };
+      });
       n.subFolders.forEach(sf => {
-        list = [...list, ...collectFiles(sf)];
+        list = [...list, ...collectFiles(sf, [...currentP, sf.name])];
       });
       return list;
     };
 
-    const folderFiles = collectFiles(node);
+    const folderFiles = collectFiles(node, pathAncestors);
     setSelectedRawFiles(prev => {
       const set = new Set(prev.map(f => f.drive_id));
       const toAdd = folderFiles.filter(f => !set.has(f.drive_id));
@@ -151,7 +379,7 @@ export default function TestDataManagerMain() {
     });
   };
 
-  // 3. 카테고리 생성 / 수정 저장
+  // 카테고리 생성 / 수정 저장
   const handleSaveCategory = async () => {
     if (!categoryModalName.trim()) {
       alert('카테고리 이름을 입력해주세요.');
@@ -230,7 +458,7 @@ export default function TestDataManagerMain() {
     }
   };
 
-  // 4. 원천 DB 선택 문제들을 시험 DB 카테고리에 담기 (가져오기)
+  // 개별 체크 선택된 문제들을 시험 DB 카테고리에 담기
   const handleAddSelectedToCategory = async () => {
     if (!selectedCategoryId) {
       alert('문제를 담을 시험자료 카테고리를 먼저 선택하거나 생성해주세요.');
@@ -252,6 +480,10 @@ export default function TestDataManagerMain() {
             name: f.name,
             grade: selectedGrade,
             question_image_drive_id: f.question_image_drive_id,
+            folder_name: f.folder_name,
+            folder_path: f.folder_path,
+            question_number: f.question_number,
+            display_name: f.display_name,
           })),
         }),
       });
@@ -270,7 +502,7 @@ export default function TestDataManagerMain() {
 
   // 시험자료 문항 개별 삭제
   const handleDeleteBankItem = async (item: TestBankItem) => {
-    if (!confirm(`'${item.name}' 문제를 이 카테고리에서 제거하시겠습니까?`)) return;
+    if (!confirm(`'${item.display_name || item.name}' 문제를 이 카테고리에서 제거하시겠습니까?`)) return;
 
     try {
       const res = await fetch(`/api/test2/bank?itemId=${item.id}`, { method: 'DELETE' });
@@ -314,64 +546,114 @@ export default function TestDataManagerMain() {
     return categories.find(c => c.id === selectedCategoryId) || null;
   }, [categories, selectedCategoryId]);
 
-  // 원천 DB 트리 렌더러 (재귀)
-  const renderRawTree = (nodes: ExamLibraryNode[], depth = 0) => {
+  // 🌟 원천 DB 트리 렌더러 (폴더 체크박스 + 회차 정보 연동)
+  const renderRawTree = (nodes: ExamLibraryNode[], depth = 0, parentPath: string[] = []) => {
     return (
       <div className={`space-y-1 ${depth > 0 ? 'ml-3 pl-2.5 border-l border-slate-200' : ''}`}>
         {nodes.map(node => {
           const isFolder = node.type === 'folder';
           const isExpanded = expandedFolders.has(node.drive_id);
-          const hasChildren = node.subFolders.length > 0 || node.files.length > 0;
+          const isFolderSelected = selectedFolderIds.has(node.drive_id);
+          const hasChildren = (node.subFolders && node.subFolders.length > 0) || (node.files && node.files.length > 0);
+          const currentPath = [...parentPath, node.name];
 
           if (isFolder) {
             return (
               <div key={node.drive_id} className="text-xs">
+                {/* 폴더 행 */}
                 <div
-                  className="flex items-center justify-between p-1.5 rounded-xl hover:bg-slate-100 group transition-colors cursor-pointer select-none"
+                  className={`flex items-center justify-between p-1.5 rounded-xl transition-all cursor-pointer select-none group ${
+                    isFolderSelected 
+                      ? 'bg-indigo-50/90 border border-indigo-200/90 shadow-2xs' 
+                      : 'hover:bg-slate-100 border border-transparent'
+                  }`}
                   onClick={() => toggleFolder(node.drive_id)}
                 >
-                  <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                    {/* 펼침 토글 버튼 */}
                     {hasChildren ? (
-                      isExpanded ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />
+                      isExpanded ? (
+                        <ChevronDown size={14} className="text-slate-400 shrink-0" />
+                      ) : (
+                        <ChevronRight size={14} className="text-slate-400 shrink-0" />
+                      )
                     ) : (
-                      <div className="w-3.5" />
+                      <div className="w-3.5 shrink-0" />
                     )}
+
+                    {/* 🌟 폴더 체크박스: 클릭 시 구간 추출 대상에 포함 */}
+                    <div
+                      onClick={(e) => toggleFolderSelect(node, e)}
+                      className="p-1 hover:bg-white/80 rounded-md cursor-pointer transition-colors shrink-0"
+                      title={isFolderSelected ? "폴더 선택 해제" : "폴더 선택 (구간 추출 대상)"}
+                    >
+                      {isFolderSelected ? (
+                        <CheckSquare size={16} className="text-indigo-600 shrink-0" />
+                      ) : (
+                        <Square size={16} className="text-slate-300 hover:text-indigo-500 shrink-0" />
+                      )}
+                    </div>
+
+                    {/* 폴더 아이콘 */}
                     {isExpanded ? (
                       <FolderOpen size={16} className="text-amber-500 shrink-0" />
                     ) : (
                       <Folder size={16} className="text-amber-500 shrink-0" />
                     )}
-                    <span className="font-bold text-slate-700 truncate">{node.name}</span>
-                    <span className="text-[10px] text-slate-400 font-normal">
-                      ({node.subFolders.length > 0 ? `${node.subFolders.length}폴더 ` : ''}{node.files.length}문제)
+
+                    {/* 폴더 이름 */}
+                    <span className={`font-bold truncate ${isFolderSelected ? 'text-indigo-950 font-black' : 'text-slate-700'}`}>
+                      {node.name}
                     </span>
+
+                    {/* 카운트 배지 */}
+                    <span className="text-[10px] text-slate-400 font-normal shrink-0">
+                      ({node.subFolders?.length > 0 ? `${node.subFolders.length}폴더 ` : ''}{node.files?.length || 0}문제)
+                    </span>
+
+                    {isFolderSelected && (
+                      <span className="px-1.5 py-0.2 bg-indigo-600 text-white rounded text-[9px] font-black shrink-0 ml-1">
+                        추출선택
+                      </span>
+                    )}
                   </div>
 
-                  {node.files.length > 0 && (
+                  {/* 폴더 파일 일괄 담기 버튼 */}
+                  {node.files && node.files.length > 0 && (
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); handleSelectAllInFolder(node); }}
-                      className="opacity-0 group-hover:opacity-100 px-2 py-0.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0"
+                      onClick={(e) => { e.stopPropagation(); handleSelectAllInFolder(node, currentPath); }}
+                      className="opacity-0 group-hover:opacity-100 px-2 py-0.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0 ml-2"
+                      title="이 폴더의 모든 문제를 수동 선택 바구니에 담기"
                     >
-                      + 폴더 전체 선택
+                      + 수동 담기
                     </button>
                   )}
                 </div>
 
+                {/* 하위 폴더 및 파일 목록 */}
                 {isExpanded && (
                   <div className="mt-1">
-                    {node.subFolders.length > 0 && renderRawTree(node.subFolders, depth + 1)}
-                    {node.files.length > 0 && (
+                    {node.subFolders && node.subFolders.length > 0 && renderRawTree(node.subFolders, depth + 1, currentPath)}
+                    
+                    {node.files && node.files.length > 0 && (
                       <div className="ml-5 pl-2 border-l border-slate-200 space-y-1 mt-1">
                         {node.files.map(fileNode => {
                           const isSelected = selectedRawFiles.some(f => f.drive_id === fileNode.drive_id);
+                          const qNum = parseQuestionNum(fileNode.name);
+
                           return (
                             <div
                               key={fileNode.drive_id}
                               onClick={() => toggleRawFile({
                                 drive_id: fileNode.drive_id,
                                 name: fileNode.name,
+                                grade: selectedGrade,
                                 question_image_drive_id: fileNode.question_image_drive_id,
+                                folder_name: node.name,
+                                folder_path: currentPath.join(" > "),
+                                question_number: qNum,
+                                display_name: `[${node.name}] ${qNum ? `${qNum}번` : fileNode.name}`,
                               })}
                               className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
                                 isSelected ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200' : 'hover:bg-slate-100 text-slate-600'
@@ -384,13 +666,20 @@ export default function TestDataManagerMain() {
                                   <Square size={15} className="text-slate-300 shrink-0" />
                                 )}
                                 <FileText size={14} className={isSelected ? 'text-indigo-600' : 'text-slate-400'} />
+                                
+                                {qNum && (
+                                  <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 rounded text-[10px] font-black shrink-0">
+                                    {qNum}번
+                                  </span>
+                                )}
+                                
                                 <span className="truncate">{fileNode.name}</span>
                               </div>
 
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleOpenPreview(fileNode.drive_id); }}
-                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors"
+                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors shrink-0"
                                 title="문제 미리보기"
                               >
                                 <Eye size={13} />
@@ -412,12 +701,12 @@ export default function TestDataManagerMain() {
   };
 
   return (
-    <div className="p-8 max-w-[1600px] mx-auto space-y-8 animate-in fade-in duration-500">
+    <div className="p-6 md:p-8 max-w-[1600px] mx-auto space-y-6 animate-in fade-in duration-500">
       
-      {/* 1. 상단 타이틀 헤더 */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-6">
+      {/* 1. 상단 타이틀 헤더 & 학년 선택 탭 */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <div className="flex items-center gap-3 mb-2">
+          <div className="flex items-center gap-3 mb-1">
             <div className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center font-black shadow-lg shadow-indigo-200">
               <Layers size={22} />
             </div>
@@ -428,7 +717,7 @@ export default function TestDataManagerMain() {
               원천 DB 선별 & 시험 DB 구축 센터
             </span>
           </div>
-          <p className="text-sm font-medium text-slate-500">
+          <p className="text-xs md:text-sm font-medium text-slate-500">
             구글 드라이브에서 동기화된 우리 DB 전체(원천 DB)에서 <strong>실제 시험에 사용할 문제들만 선별</strong>하여 카테고리별 시험 DB로 구축합니다.
           </p>
         </div>
@@ -451,33 +740,179 @@ export default function TestDataManagerMain() {
         </div>
       </div>
 
-      {/* 2. 메인 2분할 레이아웃: 좌측(원천 DB) + 중앙 액션 + 우측(시험 DB) */}
+      {/* 🌟 2. [신규 핵심 기능] 문항 번호 구간 일괄 추출기 바 */}
+      <div className="bg-gradient-to-r from-indigo-50/80 via-white to-purple-50/80 border-2 border-indigo-200/80 rounded-3xl p-5 md:p-6 shadow-xs space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-indigo-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-200 shrink-0">
+              <Sparkles size={18} />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+                <span>문항 번호 구간 일괄 추출기</span>
+                <span className="text-[11px] px-2.5 py-0.5 bg-indigo-100 text-indigo-800 rounded-full font-bold">
+                  회차 메타데이터 자동 연동
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">
+                좌측에서 회차 폴더(예: <strong>1차~11차</strong>)들을 체크하고, <strong>추출할 번호 구간</strong>을 설정한 뒤 추출 버튼을 누르면 시험 DB에 회차 정보와 함께 쏙 들어갑니다!
+              </p>
+            </div>
+          </div>
+
+          {/* 선택 현황 요약 배지들 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 shadow-2xs flex items-center gap-1.5">
+              <Folder size={14} className="text-indigo-600" />
+              <span>체크된 폴더:</span>
+              <strong className="text-indigo-600 font-black">{selectedFolderIds.size}개</strong>
+            </span>
+            <span className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 shadow-2xs flex items-center gap-1.5">
+              <FileCheckIcon size={14} className="text-violet-600" />
+              <span>추출 예상 문항:</span>
+              <strong className="text-violet-600 font-black">{matchedItemsFromRanges.length}문제</strong>
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1">
+          {/* 번호 구간 설정 컨트롤 */}
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black text-slate-700 flex items-center gap-1.5">
+                <Filter size={14} className="text-indigo-600" />
+                <span>추출 번호 리스트 (시작번호 ~ 종료번호)</span>
+              </label>
+              <span className="text-[11px] text-slate-400">
+                * 구간을 여러 개 추가하여 불연속 번호(예: 1~5번, 10~15번)도 일괄 추출 가능합니다.
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {numberRanges.map((range, idx) => (
+                <div
+                  key={range.id}
+                  className="flex items-center gap-1.5 bg-white border border-indigo-200 px-3 py-1.5 rounded-2xl shadow-2xs group"
+                >
+                  <span className="text-[11px] font-bold text-slate-400">구간 {idx + 1}:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="시작"
+                    value={range.start}
+                    onChange={e => updateNumberRange(range.id, 'start', e.target.value)}
+                    className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
+                  />
+                  <span className="text-xs font-black text-slate-400">~</span>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="종료"
+                    value={range.end}
+                    onChange={e => updateNumberRange(range.id, 'end', e.target.value)}
+                    className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
+                  />
+                  <span className="text-xs font-bold text-slate-600">번</span>
+
+                  <button
+                    type="button"
+                    onClick={() => removeNumberRange(range.id)}
+                    className="ml-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-colors"
+                    title="이 구간 삭제"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+
+              <button
+                type="button"
+                onClick={addNumberRange}
+                className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-dashed border-indigo-300 rounded-2xl text-xs font-black transition-all flex items-center gap-1 shadow-2xs"
+              >
+                <Plus size={14} strokeWidth={3} />
+                구간 추가
+              </button>
+            </div>
+          </div>
+
+          {/* 대상 카테고리 정보 및 추출 실행 버튼 */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            <div className="text-xs text-slate-600 bg-white border border-slate-200 px-4 py-2 rounded-2xl shadow-2xs">
+              <div className="text-[10px] text-slate-400 font-bold">대상 시험 DB 카테고리</div>
+              <div className="font-black text-indigo-600 truncate max-w-[220px]">
+                {activeCategory ? activeCategory.name : '(우측에서 카테고리 선택 필요)'}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleExtractAndSaveToBank}
+              disabled={isExtractingToBank || !activeCategory || selectedFolderIds.size === 0 || matchedItemsFromRanges.length === 0}
+              className="px-6 py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 disabled:opacity-40 disabled:hover:from-indigo-600 text-white rounded-2xl text-xs font-black transition-all shadow-lg shadow-indigo-200 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+            >
+              {isExtractingToBank ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  <span>시험 DB로 추출 등록 중...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={16} />
+                  <span>
+                    {selectedFolderIds.size > 0
+                      ? `${selectedFolderIds.size}개 폴더에서 ${matchedItemsFromRanges.length}개 문제 추출 담기`
+                      : '왼쪽 폴더를 체크해주세요'}
+                  </span>
+                  <ArrowRight size={16} />
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. 메인 2분할 레이아웃: 좌측(원천 DB) + 중앙 액션 + 우측(시험 DB) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
         {/* ── 좌측: 원천 DB 탐색기 (우리 DB 전체) ── */}
         <div className="lg:col-span-6 bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4 min-h-[650px] flex flex-col">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-wrap gap-2">
             <div>
               <h3 className="font-black text-slate-800 text-base flex items-center gap-2">
                 <FolderOpen size={18} className="text-amber-500" />
                 <span>{selectedGrade} 원천 DB 라이브러리</span>
               </h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                동기화된 전체 폴더 및 문제 파일 목록 (체크하여 우측 시험 DB로 담기)
+                폴더 체크박스를 선택하면 상단의 [구간 일괄 추출기]로 한번에 담을 수 있습니다.
               </p>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-xs font-black text-indigo-600 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-xl">
-                선택됨: {selectedRawFiles.length}개
-              </span>
-              {selectedRawFiles.length > 0 && (
+              {/* 폴더 전체 선택/해제 */}
+              <button
+                type="button"
+                onClick={handleSelectAllFolders}
+                className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition-colors"
+                title="모든 폴더 체크"
+              >
+                전체 폴더 선택
+              </button>
+
+              {selectedFolderIds.size > 0 && (
                 <button
-                  onClick={() => setSelectedRawFiles([])}
-                  className="text-xs text-slate-400 hover:text-rose-500 font-bold"
+                  type="button"
+                  onClick={handleDeselectAllFolders}
+                  className="px-2.5 py-1 text-xs text-rose-500 hover:bg-rose-50 font-bold rounded-xl transition-colors"
                 >
-                  선택 해제
+                  선택 해제 ({selectedFolderIds.size})
                 </button>
+              )}
+
+              {selectedRawFiles.length > 0 && (
+                <span className="text-xs font-black text-indigo-600 bg-indigo-50 border border-indigo-200 px-3 py-1 rounded-xl">
+                  수동 선택: {selectedRawFiles.length}개
+                </span>
               )}
             </div>
           </div>
@@ -533,7 +968,7 @@ export default function TestDataManagerMain() {
             <div className="bg-indigo-50/50 border border-dashed border-indigo-200 rounded-2xl p-6 text-center space-y-2">
               <p className="text-xs font-black text-indigo-700">생성된 시험 카테고리가 없습니다.</p>
               <p className="text-[11px] text-slate-500">
-                [+ 카테고리 추가] 버튼을 눌러 카테고리(예: '1학기 기말 기출')를 먼저 만들어주세요.
+                [+ 카테고리 추가] 버튼을 눌러 카테고리(예: '공수2A - 중간대비 모음')를 먼저 만들어주세요.
               </p>
             </div>
           ) : (
@@ -583,72 +1018,118 @@ export default function TestDataManagerMain() {
             </div>
           )}
 
-          {/* 중앙 담기 액션 바 (원천 DB에서 선택한 문제 담기) */}
-          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="text-xs text-slate-600">
-              현재 선택된 카테고리:{' '}
-              <strong className="text-indigo-600 font-black">
-                {activeCategory ? activeCategory.name : '(카테고리 없음)'}
-              </strong>
+          {/* 중앙 담기 액션 바 (수동으로 개별 선택한 문제 담기) */}
+          {selectedRawFiles.length > 0 && (
+            <div className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in">
+              <div className="text-xs text-indigo-900">
+                수동 선택된 문제: <strong className="font-black text-indigo-700">{selectedRawFiles.length}개</strong>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedRawFiles([])}
+                  className="px-3 py-2 text-xs font-bold text-slate-500 hover:text-rose-600"
+                >
+                  비우기
+                </button>
+                <button
+                  onClick={handleAddSelectedToCategory}
+                  disabled={!activeCategory}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <span>수동 선택 문제 담기</span>
+                  <ArrowRight size={14} />
+                </button>
+              </div>
             </div>
+          )}
 
-            <button
-              onClick={handleAddSelectedToCategory}
-              disabled={!activeCategory || selectedRawFiles.length === 0}
-              className="w-full sm:w-auto px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 shadow-sm"
-            >
-              <span>선택한 {selectedRawFiles.length}개 문제 시험자료로 담기</span>
-              <ArrowRight size={15} />
-            </button>
-          </div>
-
-          {/* 선택된 카테고리에 등록된 시험 문제 리스트 */}
+          {/* 🌟 선택된 카테고리에 등록된 시험 문제 리스트 (회차 정보 및 문항 번호 강조 표시) */}
           <div className="flex-1 flex flex-col space-y-3">
             <div className="flex items-center justify-between text-xs text-slate-500 font-bold px-1">
-              <span>등록된 문제 ({currentCategoryItems.length}개)</span>
-              <span>* 여기서 구축된 문제가 [테스트 관리] 시험지 제작 시 라이브러리에 뜹니다</span>
+              <span className="flex items-center gap-1.5">
+                <span>등록된 문제 ({currentCategoryItems.length}개)</span>
+                {activeCategory && <span className="text-indigo-600 font-black">[{activeCategory.name}]</span>}
+              </span>
+              <span className="text-[11px] text-slate-400">* [테스트 관리] 시험지 제작 시 라이브러리에 연동됩니다</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto max-h-[380px] space-y-2 pr-1 scrollbar-thin">
+            <div className="flex-1 overflow-y-auto max-h-[420px] space-y-2 pr-1 scrollbar-thin">
               {currentCategoryItems.length === 0 ? (
                 <div className="py-20 text-center text-xs text-slate-400 space-y-2">
                   <CheckSquare size={28} className="mx-auto opacity-30" />
                   <p>이 카테고리에 등록된 시험 문제가 없습니다.</p>
                   <p className="text-[11px] text-slate-400">
-                    왼쪽 원천 DB에서 문제를 선택한 후 상단의 [시험자료로 담기]를 눌러주세요.
+                    상단의 <strong>[문항 번호 구간 일괄 추출기]</strong>를 사용하여 문제를 채워주세요.
                   </p>
                 </div>
               ) : (
-                currentCategoryItems.map((item, idx) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center justify-between p-3 rounded-2xl border border-slate-200 bg-slate-50/70 hover:bg-slate-100 transition-colors text-xs"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="w-5 h-5 rounded-md bg-indigo-600 text-white font-black flex items-center justify-center text-[10px] shrink-0">
-                        {idx + 1}
-                      </span>
-                      <span className="font-bold text-slate-800 truncate">{item.name}</span>
-                    </div>
+                currentCategoryItems.map((item, idx) => {
+                  const fallbackNum = parseQuestionNum(item.name);
+                  const displayNum = item.question_number ?? fallbackNum;
 
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => handleOpenPreview(item.drive_id)}
-                        className="px-2 py-1 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1"
-                      >
-                        <Eye size={12} />
-                        보기
-                      </button>
-                      <button
-                        onClick={() => handleDeleteBankItem(item)}
-                        className="p-1 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors ml-1"
-                        title="제거"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between p-3 rounded-2xl border border-slate-200 bg-white hover:bg-indigo-50/40 transition-colors text-xs shadow-2xs group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        {/* 번호 인덱스 */}
+                        <span className="w-6 h-6 rounded-lg bg-slate-100 text-slate-600 font-black flex items-center justify-center text-[11px] shrink-0 border border-slate-200">
+                          {idx + 1}
+                        </span>
+
+                        {/* 🌟 회차 정보 배지 (가장 중요!) */}
+                        {item.folder_name ? (
+                          <span className="px-2.5 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-black shrink-0 flex items-center gap-1 shadow-2xs">
+                            <Folder size={12} className="text-indigo-600" />
+                            <span>{item.folder_name}</span>
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-400 rounded-md text-[10px] shrink-0">
+                            회차 미지정
+                          </span>
+                        )}
+
+                        {/* 🌟 문제 번호 배지 */}
+                        {displayNum ? (
+                          <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
+                            {displayNum}번
+                          </span>
+                        ) : null}
+
+                        {/* 파일명 */}
+                        <span className="font-bold text-slate-700 truncate">
+                          {item.name}
+                        </span>
+
+                        {/* 상위 경로 보조 표시 (툴팁) */}
+                        {item.folder_path && (
+                          <span className="text-[10px] text-slate-400 truncate hidden xl:inline" title={item.folder_path}>
+                            ({item.folder_path})
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 ml-2">
+                        <button
+                          onClick={() => handleOpenPreview(item.drive_id)}
+                          className="px-2.5 py-1.5 bg-slate-50 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
+                        >
+                          <Eye size={12} />
+                          보기
+                        </button>
+                        <button
+                          onClick={() => handleDeleteBankItem(item)}
+                          className="p-1.5 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-xl transition-colors ml-0.5"
+                          title="카테고리에서 제거"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -657,7 +1138,7 @@ export default function TestDataManagerMain() {
 
       </div>
 
-      {/* 3. 카테고리 추가 / 수정 모달 */}
+      {/* 4. 카테고리 추가 / 수정 모달 */}
       {categoryModalMode && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95">
@@ -695,7 +1176,7 @@ export default function TestDataManagerMain() {
                   value={categoryModalName}
                   onChange={e => setCategoryModalName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleSaveCategory()}
-                  placeholder="예: 1학기 기말 기출 모음, 단원평가 등"
+                  placeholder="예: 공수2A - 중간대비 모음, 단원평가 등"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-indigo-600 font-bold text-slate-800 text-sm"
                   autoFocus
                 />
@@ -722,7 +1203,7 @@ export default function TestDataManagerMain() {
         </div>
       )}
 
-      {/* 4. 문제 미리보기 모달 */}
+      {/* 5. 문제 미리보기 모달 */}
       {previewFileId && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#0f172a] border border-white/10 rounded-[32px] w-full max-w-4xl h-[85vh] flex flex-col shadow-3xl overflow-hidden">
@@ -750,5 +1231,26 @@ export default function TestDataManagerMain() {
       )}
 
     </div>
+  );
+}
+
+// 아이콘 헬퍼
+function FileCheckIcon({ size = 16, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg 
+      width={size} 
+      height={size} 
+      viewBox="0 0 24 24" 
+      fill="none" 
+      stroke="currentColor" 
+      strokeWidth="2" 
+      strokeLinecap="round" 
+      strokeLinejoin="round" 
+      className={className}
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <path d="m9 15 2 2 4-4"/>
+    </svg>
   );
 }

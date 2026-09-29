@@ -22,6 +22,10 @@ export interface TestBankItem {
   grade: string;
   drive_id: string;
   name: string;
+  folder_name?: string | null;
+  folder_path?: string | null;
+  question_number?: number | null;
+  display_name?: string | null;
   question_image_drive_id?: string | null;
   added_at: string;
 }
@@ -240,6 +244,10 @@ export async function PUT(req: NextRequest) {
           grade: item.grade || category.grade,
           drive_id: item.drive_id,
           name: item.name,
+          folder_name: item.folder_name || null,
+          folder_path: item.folder_path || null,
+          question_number: typeof item.question_number === 'number' ? item.question_number : null,
+          display_name: item.display_name || null,
           question_image_drive_id: item.question_image_drive_id || null,
           added_at: new Date().toISOString(),
         });

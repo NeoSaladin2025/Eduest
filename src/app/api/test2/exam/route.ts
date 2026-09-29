@@ -17,6 +17,9 @@ export interface ExamQuestion {
   raw_answer: string;
   solution_drive_id: string;
   points?: number;
+  folder_name?: string | null;
+  question_number?: number | null;
+  display_name?: string | null;
 }
 
 export interface ExamPaper {

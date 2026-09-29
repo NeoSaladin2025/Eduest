@@ -63,7 +63,15 @@ export default function ExamManagerMain() {
   const [examDuration, setExamDuration] = useState(50);
   
   // 선택된 문제들 (바구니)
-  const [selectedFiles, setSelectedFiles] = useState<{ drive_id: string; name: string; question_image_drive_id?: string | null }[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<{
+    drive_id: string;
+    name: string;
+    question_image_drive_id?: string | null;
+    folder_name?: string | null;
+    folder_path?: string | null;
+    question_number?: number | null;
+    display_name?: string | null;
+  }[]>([]);
   // 추출된 문제 정보 (이미지 URL, 정답 등)
   const [extractedQuestions, setExtractedQuestions] = useState<ExamQuestion[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
@@ -163,7 +171,15 @@ export default function ExamManagerMain() {
   };
 
   // 문제 바구니에 파일 추가/제거 토글
-  const toggleSelectFile = (file: { drive_id: string; name: string; question_image_drive_id?: string | null }) => {
+  const toggleSelectFile = (file: {
+    drive_id: string;
+    name: string;
+    question_image_drive_id?: string | null;
+    folder_name?: string | null;
+    folder_path?: string | null;
+    question_number?: number | null;
+    display_name?: string | null;
+  }) => {
     setSelectedFiles(prev => {
       const exists = prev.some(f => f.drive_id === file.drive_id);
       if (exists) {
@@ -186,6 +202,10 @@ export default function ExamManagerMain() {
           drive_id: item.drive_id,
           name: item.name,
           question_image_drive_id: item.question_image_drive_id,
+          folder_name: item.folder_name,
+          folder_path: item.folder_path,
+          question_number: item.question_number,
+          display_name: item.display_name,
         }));
       return [...prev, ...toAdd];
     });
@@ -753,6 +773,10 @@ export default function ExamManagerMain() {
                                       drive_id: item.drive_id,
                                       name: item.name,
                                       question_image_drive_id: item.question_image_drive_id,
+                                      folder_name: item.folder_name,
+                                      folder_path: item.folder_path,
+                                      question_number: item.question_number,
+                                      display_name: item.display_name,
                                     })}
                                     className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors text-xs select-none ${
                                       isSelected
@@ -760,16 +784,26 @@ export default function ExamManagerMain() {
                                         : 'hover:bg-white text-slate-600'
                                     }`}
                                   >
-                                    <div className="flex items-center gap-2 truncate">
+                                    <div className="flex items-center gap-2 truncate flex-1 min-w-0">
                                       {isSelected ? (
                                         <CheckSquare size={15} className="text-violet-600 shrink-0" />
                                       ) : (
                                         <Square size={15} className="text-slate-300 shrink-0" />
                                       )}
                                       <FileText size={14} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
+                                      {item.folder_name && (
+                                        <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-black shrink-0">
+                                          {item.folder_name}
+                                        </span>
+                                      )}
+                                      {item.question_number && (
+                                        <span className="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
+                                          {item.question_number}번
+                                        </span>
+                                      )}
                                       <span className="truncate">{item.name}</span>
                                     </div>
-                                    <span className="text-[10px] text-slate-400 shrink-0">{item.grade}</span>
+                                    <span className="text-[10px] text-slate-400 shrink-0 ml-1">{item.grade}</span>
                                   </div>
                                 );
                               })}
@@ -812,10 +846,20 @@ export default function ExamManagerMain() {
                         key={file.drive_id}
                         className="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 transition-colors text-xs"
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
                           <span className="w-5 h-5 rounded-md bg-violet-600 text-white font-black flex items-center justify-center text-[10px] shrink-0">
                             {idx + 1}
                           </span>
+                          {file.folder_name && (
+                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-black shrink-0">
+                              {file.folder_name}
+                            </span>
+                          )}
+                          {file.question_number && (
+                            <span className="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
+                              {file.question_number}번
+                            </span>
+                          )}
                           <span className="font-bold text-slate-800 truncate">{file.name}</span>
                         </div>
 
@@ -924,8 +968,18 @@ export default function ExamManagerMain() {
                         )}
                       </div>
 
-                      <div className="text-[11px] text-slate-500 truncate" title={q.name}>
-                        {q.name}
+                      <div className="text-[11px] text-slate-500 truncate flex items-center gap-1.5" title={q.name}>
+                        {q.folder_name && (
+                          <span className="px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shrink-0">
+                            {q.folder_name}
+                          </span>
+                        )}
+                        {q.question_number && (
+                          <span className="px-1 py-0.2 bg-violet-100 text-violet-800 rounded text-[9px] font-bold shrink-0">
+                            {q.question_number}번
+                          </span>
+                        )}
+                        <span className="truncate">{q.name}</span>
                       </div>
 
                       {/* 정답 입력/수정란 */}

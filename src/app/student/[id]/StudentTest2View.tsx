@@ -381,8 +381,13 @@ export default function StudentTest2View({
                 
                 {/* 좌측/중앙: 문제 이미지 뷰어 (크고 선명하게) */}
                 <div className="lg:col-span-8 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl min-h-[500px] flex flex-col justify-center items-center relative overflow-hidden">
-                  <div className="absolute top-5 left-6 text-xs font-black text-slate-500 uppercase tracking-widest">
-                    QUESTION {currentQuestionIndex + 1}
+                  <div className="absolute top-5 left-6 text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <span>QUESTION {currentQuestionIndex + 1}</span>
+                    {question.folder_name && (
+                      <span className="px-2 py-0.5 rounded-lg bg-violet-500/20 text-violet-300 font-bold text-[11px] normal-case">
+                        [{question.folder_name}] {question.question_number ? `${question.question_number}번` : ''}
+                      </span>
+                    )}
                   </div>
 
                   {question.image_url ? (
@@ -611,6 +616,11 @@ export default function StudentTest2View({
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-black text-white text-base">문항 {idx + 1}</span>
+                          {q.folder_name && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-white/10 text-violet-300">
+                              [{q.folder_name}] {q.question_number ? `${q.question_number}번` : ''}
+                            </span>
+                          )}
                           <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
                             isCorrect
                               ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
