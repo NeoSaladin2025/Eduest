@@ -4,7 +4,6 @@ import React, { useState, useEffect, use } from 'react';
 import { 
   Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck 
 } from 'lucide-react';
-import TestModule from './test/test';
 import { useStudentData } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
@@ -99,7 +98,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
-  const [mode, setMode] = useState<'test' | 'test2' | 'homework' | 'review' | 'library'>('review');
+  const [mode, setMode] = useState<'test' | 'homework' | 'review' | 'library'>('review');
   const [isTesting, setIsTesting] = useState(false);
   const [currentPath, setCurrentPath] = useState<any[]>([]);
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]);
@@ -175,9 +174,16 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
   // 현재 모드가 관리자에 의해 비활성화된 경우, 남아있는 활성 메뉴 중 첫 번째로 자동 이동
   useEffect(() => {
-    if (!menuConfig[mode]) {
-      const preferredOrder: ('review' | 'homework' | 'test2' | 'test' | 'library')[] = ['review', 'homework', 'test2', 'test', 'library'];
+    const isTestActive = menuConfig.test || menuConfig.test2;
+    if (mode === 'test' && !isTestActive) {
+      const preferredOrder: ('review' | 'homework' | 'library')[] = ['review', 'homework', 'library'];
       const nextAvailable = preferredOrder.find(m => menuConfig[m]);
+      if (nextAvailable) {
+        setMode(nextAvailable);
+      }
+    } else if (mode !== 'test' && !menuConfig[mode]) {
+      const preferredOrder: ('review' | 'homework' | 'test' | 'library')[] = ['review', 'homework', 'test', 'library'];
+      const nextAvailable = preferredOrder.find(m => m === 'test' ? isTestActive : menuConfig[m]);
       if (nextAvailable) {
         setMode(nextAvailable);
       }
@@ -508,14 +514,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         {!showReviewer && (
           <div className="flex justify-center mb-16 animate-in slide-in-from-top-10 duration-700">
             <div className="bg-white/5 p-1.5 rounded-[32px] border border-white/10 backdrop-blur-3xl flex shadow-3xl">
-              {menuConfig.test && (
-                <button onClick={() => changeMode('test')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test' ? 'bg-rose-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                  <Zap size={18} fill={mode === 'test' ? "currentColor" : "none"}/> Test
-                </button>
-              )}
-              {menuConfig.test2 && (
-                <button onClick={() => changeMode('test2')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test2' ? 'bg-violet-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
-                  <FileCheck size={18}/> Test2
+              {(menuConfig.test || menuConfig.test2) && (
+                <button onClick={() => changeMode('test')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'test' ? 'bg-violet-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <FileCheck size={18}/> Test
                 </button>
               )}
               {menuConfig.homework && (
@@ -546,12 +547,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
             </div>
 
             {mode === 'test' ? (
-              <TestModule 
-                studentId={student?.id} 
-                studentName={student?.name} 
-                onStatusChange={(status: boolean) => setIsTesting(status)}
-              />
-            ) : mode === 'test2' ? (
               <StudentTest2View
                 studentId={student?.id}
                 studentName={student?.name}

@@ -125,7 +125,7 @@ export default function TeacherAdminPage() {
           {/* ✅ 대시보드 */}
           {activeMenu === 'dashboard' && (
             <div className="p-8 max-w-[1600px] mx-auto overflow-y-auto h-full">
-              <DashboardMain />
+              <DashboardMain onNavigate={(menu: string) => setActiveMenu(menu)} />
             </div>
           )}
 

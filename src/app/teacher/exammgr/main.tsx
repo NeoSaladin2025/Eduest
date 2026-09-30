@@ -1225,7 +1225,7 @@ export default function ExamManagerMain() {
                 <span className="w-6 h-6 rounded-full bg-violet-600 text-white flex items-center justify-center text-xs">3</span>
                 <span>시험지 배정할 학생 선택</span>
                 <span className="text-xs font-normal text-slate-400">
-                  (배정된 학생의 TEST2 메뉴에 나타납니다)
+                  (배정된 학생의 TEST 메뉴에 나타납니다)
                 </span>
               </div>
 

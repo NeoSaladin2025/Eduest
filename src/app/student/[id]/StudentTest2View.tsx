@@ -106,6 +106,26 @@ export default function StudentTest2View({
       if (bundleData.success) {
         setBundleList(bundleData.bundles || []);
       }
+
+      // 🌟 [미응시 대기 상태 보장] 목록 화면에 머무를 때는 DB의 과거 유령 상태를 IDLE로 안전하게 초기화
+      supabase
+        .from('students')
+        .select('test_status')
+        .eq('id', studentId)
+        .single()
+        .then(({ data }) => {
+          if (data && (data.test_status === 'TESTING' || data.test_status === 'AWAY')) {
+            supabase
+              .from('students')
+              .update({
+                test_status: 'IDLE',
+                test_remaining_sec: 0,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', studentId)
+              .then();
+          }
+        });
     } catch (e) {
       console.error('Failed to load assigned data:', e);
     } finally {

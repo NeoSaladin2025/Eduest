@@ -13,14 +13,19 @@ import {
   ShieldAlert,
   Users,
   ArrowUpRight,
-  Sparkles
+  Sparkles,
+  FileCheck
 } from 'lucide-react';
 import Link from 'next/link';
 
 /** 브라우저→GAS 직접 호출은 CORS 차단 → 서버 프록시 (`GAS_LIBRARY_WEBAPP_URL`로 타깃 덮어쓰기 가능) */
 const GAS_LIBRARY_PROXY = "/api/gas/library";
 
-export default function DashboardMain() {
+interface DashboardMainProps {
+  onNavigate?: (menu: string) => void;
+}
+
+export default function DashboardMain({ onNavigate }: DashboardMainProps) {
   const [adminName, setAdminName] = useState('');
   const [syncStatus, setSyncStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [syncMessage, setSyncMessage] = useState('');
@@ -202,31 +207,34 @@ export default function DashboardMain() {
           </div>
         </div>
 
-        {/* 🔥 2. 실시간 시험 관리 진입 카드 */}
-        <Link href="/teacher/dashboard/testmanage" className="group">
-          <div className="p-10 h-full rounded-[45px] bg-gradient-to-br from-rose-500 to-rose-600 text-white shadow-xl shadow-rose-200/50 relative overflow-hidden transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer">
+        {/* 🌟 2. 테스트 관리 & 실시간 모니터링 센터 진입 카드 */}
+        <div 
+          onClick={() => onNavigate ? onNavigate('exammgr') : window.location.href = '/teacher'} 
+          className="group cursor-pointer"
+        >
+          <div className="p-10 h-full rounded-[45px] bg-gradient-to-br from-violet-600 to-indigo-700 text-white shadow-xl shadow-indigo-200/50 relative overflow-hidden transition-all hover:scale-[1.02] active:scale-[0.98]">
             <div className="absolute top-0 right-0 w-64 h-64 bg-white/20 blur-[80px] -mr-20 -mt-20"></div>
             
             <div className="relative z-10 h-full flex flex-col justify-between">
               <div>
                 <div className="w-16 h-16 bg-white/20 backdrop-blur-md text-white rounded-3xl flex items-center justify-center mb-8 shadow-xl">
-                  <ShieldAlert size={32} />
+                  <FileCheck size={32} />
                 </div>
                 
-                <h3 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-white">Live Proctoring</h3>
-                <p className="text-rose-100 font-medium leading-relaxed mb-8 text-sm md:text-base">
-                  현재 시험 중인 학생들을 실시간으로 감시합니다. <br/>
-                  <span className="text-white font-bold underline decoration-rose-300">이탈 발생 시 즉시 빨간색 경고등이 점등됩니다.</span>
+                <h3 className="text-2xl font-black italic mb-2 tracking-tighter uppercase text-white">Test & Proctoring</h3>
+                <p className="text-indigo-100 font-medium leading-relaxed mb-8 text-sm md:text-base">
+                  맞춤 시험지를 제작하고 시험지 묶음(카트리지)을 배정합니다. <br/>
+                  <span className="text-white font-bold underline decoration-violet-300">실시간 학생 진도 및 부정행위 이탈을 감독합니다.</span>
                 </p>
               </div>
 
               <div className="flex items-center justify-between bg-black/10 p-4 rounded-2xl backdrop-blur-sm border border-white/10 group-hover:bg-black/20 transition-colors mt-auto">
-                <span className="font-black text-sm uppercase tracking-widest">시험 관리 페이지 입장</span>
+                <span className="font-black text-sm uppercase tracking-widest">테스트 관리 센터 입장</span>
                 <ArrowUpRight size={20} />
               </div>
             </div>
           </div>
-        </Link>
+        </div>
       </div>
 
       {/* 📊 하단 상태 정보 영역 */}

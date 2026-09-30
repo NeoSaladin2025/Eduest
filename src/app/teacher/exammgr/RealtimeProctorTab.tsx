@@ -21,7 +21,9 @@ import {
   BookOpen, 
   Layers,
   ChevronRight,
-  FileCheck
+  FileCheck,
+  X,
+  Trash2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -45,11 +47,27 @@ interface RealtimeProctorTabProps {
 }
 
 export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabProps) {
-  // 모니터링 활성화 여부
-  const [isMonitoring, setIsMonitoring] = useState(false);
+  // 🌟 [세션 영구 보존] 모니터링 활성화 여부
+  const [isMonitoring, setIsMonitoring] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('eduest_proctor_is_active') === 'true';
+    }
+    return false;
+  });
 
-  // 모니터링 대상 학생 ID 목록
-  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  // 🌟 [세션 영구 보존] 모니터링 대상 학생 ID 목록
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('eduest_proctor_selected_ids');
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
+
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [searchName, setSearchName] = useState('');
 
@@ -61,6 +79,14 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
 
   const prevStatusesRef = useRef<Record<string, string>>({});
   const isInitializedRef = useRef(false);
+
+  // 🌟 상태 변경 시 localStorage 동기화
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('eduest_proctor_is_active', String(isMonitoring));
+      localStorage.setItem('eduest_proctor_selected_ids', JSON.stringify(selectedStudentIds));
+    }
+  }, [isMonitoring, selectedStudentIds]);
 
   // 🔊 경보음 재생 (Web Audio API)
   const playAlertSound = useCallback((type: 'AWAY' | 'FINISHED') => {
@@ -139,16 +165,15 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
 
     fetchStudentsData();
 
-    // 1초마다 현재 시각 갱신 (남은 시간 실시간 렌더링용)
+    // 1초마다 현재 시각 갱신
     const clock = setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => clearInterval(clock);
   }, []);
 
-  // 📡 Supabase Realtime 채널 구독 (Broadcast + Postgres Changes)
+  // 📡 Supabase Realtime 채널 구독
   useEffect(() => {
     const channel = supabase
       .channel('proctoring_room')
-      // 1) 학생의 실시간 브로드캐스트 패킷 (회차/문항/상태 0.1초 반응)
       .on('broadcast', { event: 'proctor_sync' }, (payload: any) => {
         const p = payload.payload;
         if (!p || !p.student_id) return;
@@ -157,7 +182,6 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
           const existing = prev[p.student_id] || { id: p.student_id, name: p.student_name, grade: p.student_grade };
           const prevStatus = prevStatusesRef.current[p.student_id];
 
-          // 이탈 감지 시 경보
           if (p.test_status === 'AWAY' && prevStatus !== 'AWAY') {
             playAlertSound('AWAY');
             setRecentAwayStudentName(p.student_name || existing.name);
@@ -182,7 +206,6 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
           };
         });
       })
-      // 2) Postgres DB 테이블 변경 감지 (백업 및 DB 직접 업데이트 대응)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
         const student = payload.new;
         if (!student || !student.id) return;
@@ -234,7 +257,6 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
   // 🔓 선생님의 핵심 액션: [화면 잠금 해제 & 시험 계속 승인]
   const handleUnlockStudent = async (studentId: string) => {
     try {
-      // 1) DB 상태 TESTING으로 갱신
       await supabase
         .from('students')
         .update({
@@ -243,7 +265,6 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
         })
         .eq('id', studentId);
 
-      // 2) Realtime 채널로 즉시 잠금 해제 브로드캐스트 발송
       const channel = supabase.channel('proctoring_room');
       await channel.send({
         type: 'broadcast',
@@ -251,7 +272,6 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
         payload: { studentId },
       });
 
-      // 로컬 상태 즉시 반영
       setLiveStudentsMap(prev => {
         if (!prev[studentId]) return prev;
         return {
@@ -288,15 +308,72 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
     }
   };
 
+  // 🌟 [사용자 요청] 모니터링 해제 (전체 초기화)
+  const handleResetMonitoring = () => {
+    if (confirm('현재 모니터링을 종료하고 학생 선택 목록을 초기화하시겠습니까?')) {
+      setIsMonitoring(false);
+      setSelectedStudentIds([]);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('eduest_proctor_is_active');
+        localStorage.removeItem('eduest_proctor_selected_ids');
+      }
+    }
+  };
+
+  // 🌟 [사용자 요청] 개별 학생 모니터링 제외 (클릭미스 대응)
+  const handleRemoveStudentFromMonitoring = (studentId: string, studentName: string) => {
+    if (confirm(`'${studentName}' 학생을 모니터링 목록에서 제외하시겠습니까?`)) {
+      setSelectedStudentIds(prev => prev.filter(id => id !== studentId));
+    }
+  };
+
+  // 🌟 [사용자 요청] 학생 상태 비상 리셋 (꼬인 학생 '시험 전(IDLE)' 상태로 초기화)
+  const handleResetStudentStatus = async (studentId: string, studentName: string) => {
+    if (!confirm(`'${studentName}' 학생의 시험 상태를 '시험 전 (대기)' 상태로 초기화하시겠습니까?`)) {
+      return;
+    }
+
+    try {
+      await supabase
+        .from('students')
+        .update({
+          test_status: 'IDLE',
+          test_remaining_sec: 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', studentId);
+
+      setLiveStudentsMap(prev => {
+        if (!prev[studentId]) return prev;
+        return {
+          ...prev,
+          [studentId]: {
+            ...prev[studentId],
+            test_status: 'IDLE',
+            test_remaining_sec: 0,
+            current_exam_title: undefined,
+            current_bundle_title: undefined,
+            current_round: undefined,
+            current_question_idx: undefined,
+          },
+        };
+      });
+
+      prevStatusesRef.current[studentId] = 'IDLE';
+      alert(`'${studentName}' 학생의 상태가 '시험 전 (대기)'으로 초기화되었습니다.`);
+    } catch (e) {
+      console.error('Failed to reset student status:', e);
+      alert('상태 초기화 중 오류가 발생했습니다.');
+    }
+  };
+
   // 실시간 남은 시간 계산
   const getCalculatedRemainingTime = (s: Student) => {
     if (s.test_remaining_sec === undefined || s.test_remaining_sec === null) return 0;
     if (s.test_status === 'IDLE' || s.test_status === 'FINISHED') return 0;
-    // AWAY나 PAUSED일 때는 멈춘 시간 그대로
     if (s.test_status !== 'TESTING') {
       return s.test_remaining_sec;
     }
-    // TESTING 중일 때는 마지막 동기화 이후 경과한 시간만큼 차감
     if (!s.updated_at) return s.test_remaining_sec;
     const syncTime = new Date(s.updated_at).getTime();
     const elapsed = Math.floor((currentTime - syncTime) / 1000);
@@ -317,12 +394,12 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
     .map(id => liveStudentsMap[id] || allStudents.find(s => s.id === id))
     .filter(Boolean) as Student[];
 
-  // 상태 통계 카운터
+  // 🌟 실제 시험 정보가 있는 학생만 TESTING으로 인정하는 방어 로직 적용
   const counts = {
     total: monitoringStudents.length,
-    testing: monitoringStudents.filter(s => s.test_status === 'TESTING').length,
+    testing: monitoringStudents.filter(s => s.test_status === 'TESTING' && Boolean(s.current_exam_title || s.current_bundle_title)).length,
     away: monitoringStudents.filter(s => s.test_status === 'AWAY').length,
-    idle: monitoringStudents.filter(s => !s.test_status || s.test_status === 'IDLE').length,
+    idle: monitoringStudents.filter(s => !s.test_status || s.test_status === 'IDLE' || (s.test_status === 'TESTING' && !s.current_exam_title && !s.current_bundle_title)).length,
     finished: monitoringStudents.filter(s => s.test_status === 'FINISHED').length,
   };
 
@@ -355,7 +432,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
         </div>
 
         {/* 툴바 컨트롤 */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <button
             onClick={() => setSoundEnabled(prev => !prev)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
@@ -379,13 +456,26 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
           </button>
 
           {isMonitoring && (
-            <button
-              onClick={() => setIsMonitoring(false)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black bg-slate-800 hover:bg-slate-900 text-white transition-colors"
-            >
-              <Users size={15} />
-              <span>학생 다시 선택</span>
-            </button>
+            <>
+              <button
+                onClick={() => setIsMonitoring(false)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-black bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                title="학생 추가/제외 편집"
+              >
+                <Users size={15} />
+                <span>학생 추가/수정</span>
+              </button>
+
+              {/* 🌟 [사용자 요청] 모니터링 해제 (초기화) 버튼 */}
+              <button
+                onClick={handleResetMonitoring}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors shadow-xs"
+                title="모니터링 전체 해제 및 초기화"
+              >
+                <RotateCcw size={15} />
+                <span>모니터링 해제 (초기화)</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -400,7 +490,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
               Step 1. 모니터링할 학생을 선택하세요
             </h3>
             <p className="text-xs text-slate-400">
-              선택한 학생들의 시험 응시 화면 진도와 이탈 여부를 실시간 집중 감독합니다.
+              선택한 학생들의 시험 응시 화면 진도와 이탈 여부를 실시간 집중 감독합니다. (다른 화면으로 이동해도 선택 내역이 유지됩니다)
             </p>
           </div>
 
@@ -455,7 +545,8 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
             {filteredAllStudents.map(student => {
               const isSelected = selectedStudentIds.includes(student.id);
               const live = liveStudentsMap[student.id] || student;
-              const isTesting = live.test_status === 'TESTING';
+              const hasActiveExam = Boolean(live.current_exam_title || live.current_bundle_title);
+              const isTesting = live.test_status === 'TESTING' && hasActiveExam;
               const isAway = live.test_status === 'AWAY';
 
               return (
@@ -609,8 +700,11 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
             {monitoringStudents.map(student => {
               const live = liveStudentsMap[student.id] || student;
               const status = live.test_status || 'IDLE';
+              
+              // 🌟 [핵심 방어 로직] 실제 시험 정보(current_exam_title)가 없으면 TESTING이더라도 시험 전(대기)으로 안전 처리!
+              const hasActiveExam = Boolean(live.current_exam_title || live.current_bundle_title);
               const isAway = status === 'AWAY';
-              const isTesting = status === 'TESTING';
+              const isTesting = status === 'TESTING' && hasActiveExam;
               const isFinished = status === 'FINISHED';
               const remainingSec = getCalculatedRemainingTime(live);
 
@@ -628,7 +722,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                   }`}
                 >
                   <div className="space-y-4">
-                    {/* 상단: 이름, 학년, 상태 뱃지 */}
+                    {/* 상단: 이름, 학년, 상태 뱃지, 개별 제외 버튼 */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span className="text-base font-black text-slate-800">
@@ -639,27 +733,39 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                         </span>
                       </div>
 
-                      {/* 상태 배지 */}
-                      {isAway ? (
-                        <span className="flex items-center gap-1 text-xs font-black text-rose-600 bg-rose-100 px-3 py-1 rounded-full border border-rose-200 animate-pulse">
-                          <ShieldAlert size={14} />
-                          화면 이탈 (잠김)
-                        </span>
-                      ) : isTesting ? (
-                        <span className="flex items-center gap-1.5 text-xs font-black text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                          응시 중
-                        </span>
-                      ) : isFinished ? (
-                        <span className="flex items-center gap-1 text-xs font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
-                          <CheckCircle2 size={14} />
-                          시험 완료
-                        </span>
-                      ) : (
-                        <span className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
-                          시험 전 (대기)
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {/* 상태 배지 */}
+                        {isAway ? (
+                          <span className="flex items-center gap-1 text-xs font-black text-rose-600 bg-rose-100 px-3 py-1 rounded-full border border-rose-200 animate-pulse">
+                            <ShieldAlert size={14} />
+                            화면 이탈 (잠김)
+                          </span>
+                        ) : isTesting ? (
+                          <span className="flex items-center gap-1.5 text-xs font-black text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                            응시 중
+                          </span>
+                        ) : isFinished ? (
+                          <span className="flex items-center gap-1 text-xs font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
+                            <CheckCircle2 size={14} />
+                            시험 완료
+                          </span>
+                        ) : (
+                          <span className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
+                            시험 전 (대기)
+                          </span>
+                        )}
+
+                        {/* 🌟 [사용자 요청] 개별 학생 모니터링 제외 버튼 (클릭미스 시 제거) */}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStudentFromMonitoring(student.id, student.name)}
+                          className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-400 hover:text-rose-600 flex items-center justify-center transition-colors ml-1"
+                          title="이 학생 모니터링에서 제외"
+                        >
+                          <X size={15} />
+                        </button>
+                      </div>
                     </div>
 
                     {/* 중간 1: 시험지 및 묶음 회차 정보 */}
@@ -673,7 +779,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                         </span>
                       </div>
 
-                      {/* 🌟 회차 및 문항 번호 진도 표시 (요구사항 핵심!) */}
+                      {/* 진도 표시: 실제 시험 중이거나 이탈 상태일 때만 */}
                       {isTesting || isAway ? (
                         <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100">
                           <div className="flex items-center gap-1.5">
@@ -725,9 +831,9 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                   </div>
 
                   {/* ─────────────────────────────────────────────────────────
-                      하단 액션: 이탈 시 [🔓 잠금 해제 승인] 버튼
+                      하단 액션: [잠금 해제] 또는 [상태 리셋] 버튼
                   ───────────────────────────────────────────────────────── */}
-                  <div className="pt-4 mt-4 border-t border-slate-100">
+                  <div className="pt-4 mt-4 border-t border-slate-100 space-y-2">
                     {isAway ? (
                       <button
                         onClick={() => handleUnlockStudent(student.id)}
@@ -737,16 +843,44 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                         <span>화면 잠금 해제 (시험 계속 승인)</span>
                       </button>
                     ) : isTesting ? (
-                      <div className="text-center text-[11px] text-emerald-600 font-bold py-1">
-                        ✓ 정상 응시 진행 중 (자동 감독 중)
+                      <div className="flex items-center justify-between">
+                        <div className="text-[11px] text-emerald-600 font-bold py-1">
+                          ✓ 정상 응시 진행 중 (자동 감독 중)
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleResetStudentStatus(student.id, student.name)}
+                          className="text-[11px] text-slate-400 hover:text-rose-600 underline"
+                          title="상태를 대기로 리셋"
+                        >
+                          대기로 리셋
+                        </button>
                       </div>
                     ) : isFinished ? (
-                      <div className="text-center text-[11px] text-blue-600 font-bold py-1">
-                        ✓ 시험 완료됨
+                      <div className="flex items-center justify-between">
+                        <div className="text-[11px] text-blue-600 font-bold py-1">
+                          ✓ 시험 완료됨
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleResetStudentStatus(student.id, student.name)}
+                          className="text-[11px] text-slate-400 hover:text-rose-600 underline"
+                          title="상태를 대기로 리셋"
+                        >
+                          대기로 리셋
+                        </button>
                       </div>
                     ) : (
-                      <div className="text-center text-[11px] text-slate-400 font-medium py-1">
-                        입장 대기 중
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 py-1">
+                        <span>입장 대기 중</span>
+                        <button
+                          type="button"
+                          onClick={() => handleResetStudentStatus(student.id, student.name)}
+                          className="hover:text-violet-600 underline"
+                          title="상태 초기화 확인"
+                        >
+                          상태 동기화
+                        </button>
                       </div>
                     )}
                   </div>
