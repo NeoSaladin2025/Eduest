@@ -26,6 +26,7 @@ export interface StudentSubmission {
       correct_answer: string;
       raw_answer: string;
       solution_drive_id: string;
+      time_spent_sec?: number;
     };
   };
 }
@@ -107,7 +108,7 @@ function checkAnswerMatch(userAns: string, correctAns: string, rawAns: string): 
   const cCorrect = cleanAnswerString(correctAns);
   const cRaw = cleanAnswerString(rawAns);
 
-  if (!cUser) return false;
+  if (!cUser || cUser === "모름" || cUser === "unknown") return false;
   if (cUser === cCorrect) return true;
   if (cUser === cRaw) return true;
 
@@ -215,7 +216,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, answers } = body; // answers: { [qId]: user_answer }
+    const { studentId, examId, answers, questionTimes } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }
 
     if (!studentId || !examId) {
       return NextResponse.json(
@@ -247,6 +248,7 @@ export async function POST(req: NextRequest) {
         correct_answer: q.answer,
         raw_answer: q.raw_answer,
         solution_drive_id: q.solution_drive_id,
+        time_spent_sec: questionTimes?.[q.id] ? Number(questionTimes[q.id]) : 0,
       };
     });
 
@@ -275,6 +277,20 @@ export async function POST(req: NextRequest) {
     }
 
     await saveSubmissions(allSubmissions);
+
+    // 학생 상태 DB 동기화: 시험 완료 상태로 변경
+    try {
+      await supabase
+        .from("students")
+        .update({
+          test_status: "FINISHED",
+          test_remaining_sec: 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", studentId);
+    } catch (e) {
+      console.warn("Failed to update student test_status in DB:", e);
+    }
 
     return NextResponse.json({
       success: true,

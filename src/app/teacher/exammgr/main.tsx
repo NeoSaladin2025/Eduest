@@ -28,11 +28,14 @@ import {
   Edit2,
   Layers,
   ArrowRight,
-  ArrowUpDown
+  ArrowUpDown,
+  ShieldAlert
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
+import ExamBundleTab from './ExamBundleTab';
+import RealtimeProctorTab from './RealtimeProctorTab';
 
 interface Student {
   id: string;
@@ -70,7 +73,7 @@ export function parseQuestionNumber(file: { question_number?: number | null; nam
 }
 
 export default function ExamManagerMain() {
-  const [activeTab, setActiveTab] = useState<'list' | 'create'>('list');
+  const [activeTab, setActiveTab] = useState<'list' | 'create' | 'bundle' | 'proctor'>('list');
   const [loading, setLoading] = useState(true);
 
   // 시험지 목록
@@ -554,7 +557,7 @@ export default function ExamManagerMain() {
       {/* 1. 상단 타이틀 헤더 & 탭 스위처 */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-6">
         <div>
-          <div className="flex items-center gap-3 mb-2">
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
             <div className="w-10 h-10 bg-violet-600 text-white rounded-xl flex items-center justify-center font-black shadow-lg shadow-violet-200">
               <FileCheck size={22} />
             </div>
@@ -564,6 +567,20 @@ export default function ExamManagerMain() {
             <span className="text-xs px-2.5 py-1 bg-violet-50 text-violet-700 border border-violet-200 rounded-full font-bold">
               시험지 제작 및 배정 센터
             </span>
+
+            {/* 🌟 [사용자 요청] 왼쪽위 테스트관리(시험지 제작 및 배정센터) 글자 옆 [실시간 모니터링] 메뉴 */}
+            <button
+              onClick={() => setActiveTab('proctor')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black transition-all shadow-sm ${
+                activeTab === 'proctor'
+                  ? 'bg-rose-600 text-white shadow-rose-200 ring-2 ring-rose-400 scale-105'
+                  : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 hover:scale-105'
+              }`}
+            >
+              <ShieldAlert size={14} className={activeTab === 'proctor' ? 'animate-bounce' : 'text-rose-500'} />
+              <span>실시간 모니터링</span>
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+            </button>
           </div>
           <p className="text-sm font-medium text-slate-500">
             [테스트자료 관리]에서 선별·구축된 시험 DB에서 문제를 골라 맞춤 시험지를 제작하고 학생들에게 배정합니다.
@@ -571,10 +588,10 @@ export default function ExamManagerMain() {
         </div>
 
         {/* 탭 전환 버튼 */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-2xl">
+        <div className="flex items-center gap-1.5 bg-slate-100 p-1.5 rounded-2xl flex-wrap">
           <button
             onClick={() => setActiveTab('list')}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
               activeTab === 'list'
                 ? 'bg-white text-violet-700 shadow-sm scale-[1.02]'
                 : 'text-slate-500 hover:text-slate-800'
@@ -584,8 +601,19 @@ export default function ExamManagerMain() {
             시험지 목록 ({exams.length})
           </button>
           <button
+            onClick={() => setActiveTab('bundle')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+              activeTab === 'bundle'
+                ? 'bg-white text-violet-700 shadow-sm scale-[1.02]'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Layers size={16} />
+            시험지 묶음 [카트리지]
+          </button>
+          <button
             onClick={() => setActiveTab('create')}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
               activeTab === 'create'
                 ? 'bg-violet-600 text-white shadow-md shadow-violet-200 scale-[1.02]'
                 : 'text-slate-500 hover:text-slate-800'
@@ -593,6 +621,17 @@ export default function ExamManagerMain() {
           >
             <Plus size={16} strokeWidth={3} />
             새 시험지 만들기
+          </button>
+          <button
+            onClick={() => setActiveTab('proctor')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
+              activeTab === 'proctor'
+                ? 'bg-rose-600 text-white shadow-md shadow-rose-200 scale-[1.02]'
+                : 'text-rose-600 hover:text-rose-700 hover:bg-rose-50'
+            }`}
+          >
+            <ShieldAlert size={16} />
+            실시간 모니터링
           </button>
         </div>
       </div>
@@ -698,7 +737,17 @@ export default function ExamManagerMain() {
         </div>
       )}
 
-      {/* 3. 탭 2: 새 시험지 만들기 */}
+      {/* 🌟 탭 2: 시험지 묶음 [카트리지] */}
+      {activeTab === 'bundle' && (
+        <ExamBundleTab exams={exams} students={students} />
+      )}
+
+      {/* 🌟 탭 3: 실시간 모니터링 센터 */}
+      {activeTab === 'proctor' && (
+        <RealtimeProctorTab allStudents={students} />
+      )}
+
+      {/* 3. 탭 4: 새 시험지 만들기 */}
       {activeTab === 'create' && (
         <div className="space-y-8 animate-in fade-in duration-300">
           

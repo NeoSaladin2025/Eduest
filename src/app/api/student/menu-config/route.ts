@@ -16,7 +16,7 @@ export interface StudentMenuConfig {
   library: boolean;
 }
 
-export const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
+const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
   test: true,
   test2: true,
   homework: true,
