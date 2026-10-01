@@ -133,6 +133,12 @@ export default function ExamManagerMain() {
   const [creatingWrongExam, setCreatingWrongExam] = useState<string | null>(null);
   const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
 
+  // 🌟 [사용자 요청] 시험지 목록 필터링 상태 (검색어, 학년 필터, 시험지 종류 필터)
+  const [examSearchInput, setExamSearchInput] = useState('');
+  const [appliedExamSearch, setAppliedExamSearch] = useState('');
+  const [examListGradeFilter, setExamListGradeFilter] = useState('ALL');
+  const [examListTypeFilter, setExamListTypeFilter] = useState<'ALL' | 'NORMAL' | 'WRONG'>('ALL');
+
   // 문제 미리보기 모달
   const [previewQuestion, setPreviewQuestion] = useState<ExamQuestion | null>(null);
 
@@ -622,6 +628,46 @@ export default function ExamManagerMain() {
     return students.filter(s => s.grade.includes(studentGradeFilter));
   }, [students, studentGradeFilter]);
 
+  // 🌟 [사용자 요청] 필터링된 시험지 목록 (텍스트 검색 + 학년 필터 + 시험지 종류 필터)
+  const filteredExams = useMemo(() => {
+    return exams.filter(exam => {
+      // 1. 텍스트 검색어 필터 (시험지 이름 매칭)
+      if (appliedExamSearch.trim()) {
+        const query = appliedExamSearch.trim().toLowerCase();
+        if (!exam.title.toLowerCase().includes(query)) {
+          return false;
+        }
+      }
+
+      // 2. 학년 필터
+      if (examListGradeFilter !== 'ALL') {
+        if (exam.grade !== examListGradeFilter) {
+          return false;
+        }
+      }
+
+      // 3. 시험지 종류 필터 (전체 / 일반 / 오답)
+      const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
+      if (examListTypeFilter === 'NORMAL' && isWrong) return false;
+      if (examListTypeFilter === 'WRONG' && !isWrong) return false;
+
+      return true;
+    });
+  }, [exams, appliedExamSearch, examListGradeFilter, examListTypeFilter]);
+
+  // 돋보기 버튼 클릭 또는 Enter 검색 실행
+  const handleExecuteSearch = () => {
+    setAppliedExamSearch(examSearchInput);
+  };
+
+  // 필터 초기화
+  const handleResetExamFilters = () => {
+    setExamSearchInput('');
+    setAppliedExamSearch('');
+    setExamListGradeFilter('ALL');
+    setExamListTypeFilter('ALL');
+  };
+
   return (
     <div className="p-8 max-w-[1600px] mx-auto space-y-8 animate-in fade-in duration-500">
       
@@ -710,6 +756,123 @@ export default function ExamManagerMain() {
       {/* 2. 탭 1: 시험지 목록 */}
       {activeTab === 'list' && (
         <div className="space-y-6">
+          {/* 🌟 [사용자 요청] 시험지 목록 상단 필터링 바 (학년별 필터 + 텍스트 검색 및 돋보기 + 종류 필터) */}
+          {exams.length > 0 && (
+            <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                {/* 왼쪽: 학년별 필터 버튼 칩 */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-black text-slate-500 mr-1">학년:</span>
+                  {['ALL', '고1', '고2', '고3', '중1', '중2', '중3'].map(grade => {
+                    const isSelected = examListGradeFilter === grade;
+                    return (
+                      <button
+                        key={grade}
+                        onClick={() => setExamListGradeFilter(grade)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                          isSelected
+                            ? 'bg-violet-600 text-white shadow-md shadow-violet-200 scale-105'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {grade === 'ALL' ? '전체 학년' : grade}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 오른쪽: 텍스트 검색 입력창 및 돋보기 버튼 */}
+                <div className="flex items-center gap-2 max-w-md w-full lg:w-auto">
+                  <div className="relative flex-1 lg:w-72">
+                    <input
+                      type="text"
+                      value={examSearchInput}
+                      onChange={e => setExamSearchInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          handleExecuteSearch();
+                        }
+                      }}
+                      placeholder="시험지 이름 입력..."
+                      className="w-full pl-3.5 pr-8 py-2 text-xs font-bold rounded-xl border border-slate-200 focus:outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100 transition-all bg-slate-50 focus:bg-white"
+                    />
+                    {examSearchInput && (
+                      <button
+                        onClick={() => {
+                          setExamSearchInput('');
+                          setAppliedExamSearch('');
+                        }}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleExecuteSearch}
+                    className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-black shadow-md shadow-violet-200 transition-all flex items-center gap-1.5 shrink-0"
+                    title="시험지 이름으로 검색"
+                  >
+                    <Search size={14} />
+                    <span>검색</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 하단 서브 필터: 시험지 유형 (전체 / 일반 시험지 / 오답 시험지) 및 필터 초기화 */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2 text-xs">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-bold text-slate-400 mr-1">분류:</span>
+                  <button
+                    onClick={() => setExamListTypeFilter('ALL')}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                      examListTypeFilter === 'ALL'
+                        ? 'bg-slate-800 text-white shadow-2xs'
+                        : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    전체 ({exams.length})
+                  </button>
+                  <button
+                    onClick={() => setExamListTypeFilter('NORMAL')}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                      examListTypeFilter === 'NORMAL'
+                        ? 'bg-violet-600 text-white shadow-2xs'
+                        : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    단일 시험지 ({exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length})
+                  </button>
+                  <button
+                    onClick={() => setExamListTypeFilter('WRONG')}
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                      examListTypeFilter === 'WRONG'
+                        ? 'bg-rose-600 text-white shadow-2xs'
+                        : 'text-slate-500 hover:bg-slate-100'
+                    }`}
+                  >
+                    오답 시험지 ({exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length})
+                  </button>
+                </div>
+
+                {(appliedExamSearch || examListGradeFilter !== 'ALL' || examListTypeFilter !== 'ALL') && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-500 font-bold">
+                      검색 결과: <strong className="text-violet-600">{filteredExams.length}</strong>개
+                    </span>
+                    <button
+                      onClick={handleResetExamFilters}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1"
+                    >
+                      <RotateCcw size={11} />
+                      <span>필터 초기화</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {exams.length === 0 ? (
             <div className="bg-white rounded-3xl border border-dashed border-slate-300 p-16 text-center space-y-4 shadow-xs">
               <div className="w-16 h-16 bg-violet-50 text-violet-600 rounded-2xl flex items-center justify-center mx-auto">
@@ -728,21 +891,57 @@ export default function ExamManagerMain() {
                 + 새 시험지 만들기
               </button>
             </div>
+          ) : filteredExams.length === 0 ? (
+            <div className="bg-white rounded-3xl border border-dashed border-slate-200 p-16 text-center space-y-4 shadow-xs">
+              <div className="w-16 h-16 bg-slate-50 text-slate-400 rounded-2xl flex items-center justify-center mx-auto">
+                <Search size={32} />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-lg font-black text-slate-700">검색 조건에 맞는 시험지가 없습니다</h3>
+                <p className="text-xs text-slate-400">
+                  입력한 검색어 또는 선택한 필터 조건에 일치하는 시험지가 없습니다.
+                </p>
+              </div>
+              <button
+                onClick={handleResetExamFilters}
+                className="mt-2 px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1.5"
+              >
+                <RotateCcw size={13} />
+                <span>필터 초기화</span>
+              </button>
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {exams.map(exam => {
+              {filteredExams.map(exam => {
                 const assignedCount = exam.assigned_student_ids ? exam.assigned_student_ids.length : 0;
+                const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
                 return (
                   <div
                     key={exam.id}
-                    className="bg-white rounded-3xl border border-slate-200 hover:border-violet-400 p-6 shadow-xs hover:shadow-xl transition-all flex flex-col justify-between group relative overflow-hidden"
+                    className={`bg-white rounded-3xl border p-6 shadow-xs hover:shadow-xl transition-all flex flex-col justify-between group relative overflow-hidden ${
+                      isWrong
+                        ? 'border-rose-200 hover:border-rose-400'
+                        : 'border-slate-200 hover:border-violet-400'
+                    }`}
                   >
                     <div className="space-y-4">
                       {/* 카드 상단 배지 */}
                       <div className="flex items-center justify-between">
-                        <span className="px-3 py-1 bg-violet-50 text-violet-700 border border-violet-200 text-[11px] font-black rounded-lg">
-                          {exam.grade}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`px-3 py-1 border text-[11px] font-black rounded-lg ${
+                            isWrong
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : 'bg-violet-50 text-violet-700 border border-violet-200'
+                          }`}>
+                            {exam.grade}
+                          </span>
+                          {isWrong && (
+                            <span className="px-2.5 py-0.5 bg-rose-500 text-white text-[10px] font-black rounded-md flex items-center gap-1">
+                              <RotateCcw size={10} />
+                              오답 클리닉
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold">
                           <Clock size={14} />
                           <span>{exam.duration_min}분</span>
@@ -751,7 +950,11 @@ export default function ExamManagerMain() {
 
                       {/* 시험지 타이틀 */}
                       <div>
-                        <h3 className="text-xl font-black text-slate-800 group-hover:text-violet-700 transition-colors line-clamp-1">
+                        <h3 className={`text-xl font-black transition-colors line-clamp-1 ${
+                          isWrong
+                            ? 'text-slate-800 group-hover:text-rose-600'
+                            : 'text-slate-800 group-hover:text-violet-700'
+                        }`}>
                           {exam.title}
                         </h3>
                         <p className="text-xs text-slate-400 font-medium mt-1">
@@ -765,7 +968,7 @@ export default function ExamManagerMain() {
                           <Users size={16} className="text-slate-400" />
                           <span className="text-xs font-bold text-slate-600">배정된 학생</span>
                         </div>
-                        <span className="text-sm font-black text-violet-700">
+                        <span className={`text-sm font-black ${isWrong ? 'text-rose-600' : 'text-violet-700'}`}>
                           {assignedCount}명
                         </span>
                       </div>
