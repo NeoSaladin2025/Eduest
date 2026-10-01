@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   FileCheck, 
   Clock, 
@@ -21,27 +21,33 @@ import {
   HelpCircle,
   Lock,
   Layers,
-  PlayCircle
+  PlayCircle,
+  Star
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { supabase } from '@/lib/supabase';
+import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 
 interface StudentTest2ViewProps {
   studentId: string;
   studentName?: string;
   studentGrade?: string;
+  reviewData?: StudentReviewData;
+  onUpdateReviewData?: (data: StudentReviewData) => void;
 }
 
 export default function StudentTest2View({
   studentId,
   studentName,
   studentGrade,
+  reviewData,
+  onUpdateReviewData,
 }: StudentTest2ViewProps) {
   // 모드: 목록('list') | 응시 중('taking') | 결과/채점 보기('result')
   const [viewMode, setViewMode] = useState<'list' | 'taking' | 'result'>('list');
-  const [listTab, setListTab] = useState<'single' | 'bundle'>('single');
+  const [listTab, setListTab] = useState<'single' | 'bundle' | 'wrong'>('single');
   const [loading, setLoading] = useState(true);
 
   // 배정된 단일 시험지 및 묶음 시험지 목록
@@ -73,6 +79,117 @@ export default function StudentTest2View({
   const [solutionModalFileId, setSolutionModalFileId] = useState<string | null>(null);
   const [solutionHtml, setSolutionHtml] = useState<string | null>(null);
   const [solutionLoading, setSolutionLoading] = useState(false);
+
+  // 복습 토스트 메시지
+  const [reviewToast, setReviewToast] = useState<string | null>(null);
+  const showReviewToast = (msg: string) => {
+    setReviewToast(msg);
+    setTimeout(() => setReviewToast(null), 3000);
+  };
+
+  // 복습 데이터 로컬 상태 (prop 없을 시 fallback)
+  const [localReviewData, setLocalReviewData] = useState<StudentReviewData>(
+    reviewData || { folders: [], items: [] }
+  );
+
+  useEffect(() => {
+    if (reviewData) {
+      setLocalReviewData(reviewData);
+    } else if (studentId) {
+      fetch(`/api/student/review?studentId=${studentId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.reviewData) {
+            setLocalReviewData(data.reviewData);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [reviewData, studentId]);
+
+  const currentReviewData = reviewData || localReviewData;
+
+  // 단일 시험지와 오답 시험지 분류
+  const wrongExams = useMemo(() => {
+    return examList.filter(e => e.is_wrong_review || e.title.startsWith('[오답]'));
+  }, [examList]);
+
+  const singleExams = useMemo(() => {
+    return examList.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]')));
+  }, [examList]);
+
+  // 문항이 현재 복습에 담겨있는지 확인
+  const isQuestionInReview = (qId: string) => {
+    if (!currentExam) return false;
+    const targetFileId = `exam_${currentExam.id}_q_${qId}`;
+    return (currentReviewData.items || []).some(
+      item => item.id === targetFileId || item.fileId === targetFileId
+    );
+  };
+
+  // 문항 복습 토글 (체크 / 해제)
+  const handleToggleQuestionReview = async (q: ExamQuestion, idx: number) => {
+    if (!currentExam) return;
+    const targetFileId = `exam_${currentExam.id}_q_${q.id}`;
+    const alreadyIn = isQuestionInReview(q.id);
+
+    let nextFolders = [...(currentReviewData.folders || [])];
+    let nextItems = [...(currentReviewData.items || [])];
+
+    if (alreadyIn) {
+      nextItems = nextItems.filter(item => item.id !== targetFileId && item.fileId !== targetFileId);
+      showReviewToast(`'${currentExam.title} ${idx + 1}번' 문제가 복습에서 제외되었습니다.`);
+    } else {
+      const folderName = currentExam.title;
+      let targetFolder = nextFolders.find(f => f.name === folderName);
+      if (!targetFolder) {
+        targetFolder = {
+          id: `folder_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          name: folderName,
+          createdAt: new Date().toISOString(),
+          parentId: null,
+        };
+        nextFolders.push(targetFolder);
+      }
+
+      const newItem: ReviewItem = {
+        id: targetFileId,
+        fileId: targetFileId,
+        name: `${currentExam.title} ${idx + 1}번`,
+        folderId: targetFolder.id,
+        folderName: targetFolder.name,
+        problemUrl: q.image_url,
+        solutionUrl: q.solution_drive_id || q.drive_id,
+        type: 'image',
+        addedAt: new Date().toISOString(),
+      };
+      nextItems.push(newItem);
+      showReviewToast(`⭐ '${currentExam.title} ${idx + 1}번' 문제가 내 복습 홈에 담겼습니다! 📁`);
+    }
+
+    const updated: StudentReviewData = {
+      folders: nextFolders,
+      items: nextItems,
+    };
+
+    setLocalReviewData(updated);
+    if (onUpdateReviewData) {
+      onUpdateReviewData(updated);
+    }
+
+    try {
+      await fetch('/api/student/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          reviewData: updated,
+        }),
+      });
+    } catch (e) {
+      console.error('Failed to sync review:', e);
+    }
+  };
 
   // 실시간 채널 ref
   const channelRef = useRef<any>(null);
@@ -568,7 +685,7 @@ export default function StudentTest2View({
               선생님이 배정한 단일 시험지 및 카트리지(묶음) 시험지 목록입니다.
             </p>
 
-            {/* 탭 전환 (단일 시험지 vs 카트리지 묶음) */}
+            {/* 탭 전환 (단일 시험지 vs 카트리지 묶음 vs 오답 시험지) */}
             <div className="flex justify-center pt-2">
               <div className="bg-white/5 p-1 rounded-2xl border border-white/10 flex gap-1">
                 <button
@@ -580,7 +697,7 @@ export default function StudentTest2View({
                   }`}
                 >
                   <FileCheck size={16} />
-                  단일 시험지 ({examList.length})
+                  단일 시험지 ({singleExams.length})
                 </button>
                 <button
                   onClick={() => setListTab('bundle')}
@@ -593,13 +710,24 @@ export default function StudentTest2View({
                   <Layers size={16} />
                   시험지 묶음 카트리지 ({bundleList.length})
                 </button>
+                <button
+                  onClick={() => setListTab('wrong')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+                    listTab === 'wrong'
+                      ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <RotateCcw size={16} />
+                  오답 시험지 ({wrongExams.length})
+                </button>
               </div>
             </div>
           </div>
 
           {/* 탭 1: 단일 시험지 목록 */}
           {listTab === 'single' && (
-            examList.length === 0 ? (
+            singleExams.length === 0 ? (
               <div className="bg-white/5 border border-dashed border-white/10 rounded-[40px] p-16 text-center space-y-4 max-w-xl mx-auto">
                 <div className="w-16 h-16 bg-violet-500/20 text-violet-400 rounded-3xl flex items-center justify-center mx-auto">
                   <FileCheck size={32} />
@@ -613,7 +741,7 @@ export default function StudentTest2View({
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {examList.map(exam => {
+                {singleExams.map((exam: any) => {
                   const isSubmitted = exam.is_submitted;
                   return (
                     <div
@@ -770,6 +898,96 @@ export default function StudentTest2View({
                     </div>
                   </div>
                 ))}
+              </div>
+            )
+          )}
+
+          {/* 탭 3: 오답 시험지 목록 */}
+          {listTab === 'wrong' && (
+            wrongExams.length === 0 ? (
+              <div className="bg-white/5 border border-dashed border-rose-500/20 rounded-[40px] p-16 text-center space-y-4 max-w-xl mx-auto">
+                <div className="w-16 h-16 bg-rose-500/20 text-rose-400 rounded-3xl flex items-center justify-center mx-auto">
+                  <RotateCcw size={32} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-xl font-black text-white">배정된 오답 시험지가 없습니다</h3>
+                  <p className="text-xs text-slate-500 font-bold">
+                    선생님이 시험 응시 후 오답 처리를 진행하면, 틀린 문제들만 모아 이곳에 오답 시험지가 배정됩니다!
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {wrongExams.map((exam: any) => {
+                  const isSubmitted = exam.is_submitted;
+                  return (
+                    <div
+                      key={exam.id}
+                      className="bg-white/5 border border-rose-500/30 hover:border-rose-500/60 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="px-3 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-black rounded-full flex items-center gap-1.5">
+                            <RotateCcw size={12} />
+                            오답 클리닉
+                          </span>
+                          {isSubmitted ? (
+                            <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                              <CheckCircle2 size={13} />
+                              제출 완료 ({exam.submission?.score}점)
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 text-xs font-bold text-rose-400 bg-rose-500/10 px-2.5 py-0.5 rounded-full border border-rose-500/20">
+                              <Clock size={13} />
+                              미응시
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <h3 className="text-2xl font-black text-white group-hover:text-rose-400 transition-colors line-clamp-2 leading-tight">
+                            {exam.title}
+                          </h3>
+                          <p className="text-xs text-slate-500 font-bold mt-2">
+                            오답 문항 총 {exam.question_count}문제 • 제한시간 {exam.duration_min}분
+                          </p>
+                        </div>
+
+                        {isSubmitted && exam.submission && (
+                          <div className="bg-white/5 rounded-2xl p-3 flex items-center justify-between border border-white/5 text-xs">
+                            <span className="text-slate-400 font-bold">오답 재채점 결과</span>
+                            <span className="text-emerald-400 font-black text-sm">
+                              {exam.submission.correct_count} / {exam.submission.total_questions} 정답 ({exam.submission.score}점)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-6 mt-4 border-t border-white/10">
+                        <button
+                          onClick={() => handleStartExam(exam.id)}
+                          className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
+                            isSubmitted
+                              ? 'bg-white/10 hover:bg-white/20 text-white'
+                              : 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30'
+                          }`}
+                        >
+                          {isSubmitted ? (
+                            <>
+                              <Eye size={16} />
+                              <span>채점 결과 & 해설 보기</span>
+                            </>
+                          ) : (
+                            <>
+                              <RotateCcw size={16} />
+                              <span>오답 다시 풀기</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )
           )}
@@ -1142,7 +1360,7 @@ export default function StudentTest2View({
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-3 text-xs">
+                      <div className="flex items-center gap-2.5 text-xs">
                         <span className="text-slate-400 font-mono">⏱️ {spentSec}초 소요</span>
                         {q.solution_drive_id && (
                           <button
@@ -1153,6 +1371,22 @@ export default function StudentTest2View({
                             <span>해설 보기</span>
                           </button>
                         )}
+                        <button
+                          onClick={() => handleToggleQuestionReview(q, idx)}
+                          className={`px-3 py-1.5 rounded-xl font-black text-[11px] transition-all flex items-center gap-1.5 ${
+                            isQuestionInReview(q.id)
+                              ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
+                              : 'bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white border border-white/10'
+                          }`}
+                          title={isQuestionInReview(q.id) ? '클릭 시 복습에서 제거' : '체크 시 내 복습 홈에 자동 추가'}
+                        >
+                          <Star
+                            size={13}
+                            fill={isQuestionInReview(q.id) ? 'currentColor' : 'none'}
+                            className={isQuestionInReview(q.id) ? 'text-slate-950' : 'text-amber-400'}
+                          />
+                          <span>{isQuestionInReview(q.id) ? '복습 담김' : '복습 체크'}</span>
+                        </button>
                       </div>
                     </div>
 
@@ -1185,6 +1419,14 @@ export default function StudentTest2View({
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 🌟 복습 토스트 메시지 */}
+      {reviewToast && (
+        <div className="fixed bottom-6 right-6 z-[60] bg-slate-900 border border-amber-400/40 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-2.5 animate-in slide-in-from-bottom-5">
+          <Star size={16} className="text-amber-400 fill-amber-400 shrink-0" />
+          <span className="text-xs font-bold">{reviewToast}</span>
         </div>
       )}
 

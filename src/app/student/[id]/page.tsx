@@ -432,6 +432,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       const fileId = selectedTab === 'solution' ? selectedRecord.solutionUrl : (selectedTab === 'problem' ? selectedRecord.problemUrl : selectedRecord.id);
       const type = selectedTab === 'solution' ? 'html' : 'image';
 
+      if (fileId && (fileId.startsWith('http') || fileId.startsWith('data:'))) {
+        setContentData(fileId);
+        setIsContentLoading(false);
+        return;
+      }
+
       try {
         const d = await fetchFileContent(fileId, type);
         if (!isCancelled) {
@@ -551,6 +557,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentId={student?.id}
                 studentName={student?.name}
                 studentGrade={student?.grade}
+                reviewData={reviewData}
+                onUpdateReviewData={saveReviewData}
               />
             ) : mode === 'homework' ? (
               /* 🌟 [1번 스샷 반영] 부여받은 숙제 확인 화면 (최근 숙제 및 히스토리) */

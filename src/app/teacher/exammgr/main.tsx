@@ -29,7 +29,9 @@ import {
   Layers,
   ArrowRight,
   ArrowUpDown,
-  ShieldAlert
+  ShieldAlert,
+  RotateCcw,
+  BookOpen
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -125,6 +127,11 @@ export default function ExamManagerMain() {
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
   const [examSubmissions, setExamSubmissions] = useState<any[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
+
+  // 🌟 학생별 응시 상세 모달 (문항별 맞음/틀림/모름 및 소요시간)
+  const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any } | null>(null);
+  const [creatingWrongExam, setCreatingWrongExam] = useState<string | null>(null);
+  const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
 
   // 문제 미리보기 모달
   const [previewQuestion, setPreviewQuestion] = useState<ExamQuestion | null>(null);
@@ -542,6 +549,70 @@ export default function ExamManagerMain() {
       setExamSubmissions([]);
     } finally {
       setLoadingResults(false);
+    }
+  };
+
+  // 🌟 학생 응시 상세 결과 보기
+  const handleOpenStudentDetail = (st: Student | undefined, sub: any) => {
+    if (!st || !sub) return;
+    setDetailStudent({ student: st, submission: sub });
+  };
+
+  // 🌟 오답 처리 (틀린 문제들만 모아 학생 맞춤 오답 시험지 생성 및 배정)
+  const handleCreateWrongExam = async (st: Student | undefined, sub: any) => {
+    if (!st || !sub || !resultsModalExam) return;
+
+    // 틀린 문항 필터링 (정답이 아니거나 '모름'인 문항)
+    const wrongQuestions = (resultsModalExam.questions || []).filter(q => {
+      const ans = sub.answers?.[q.id];
+      if (!ans) return true;
+      if (!ans.is_correct) return true;
+      const u = String(ans.user_answer || '').trim();
+      if (u === '모름' || u === 'unknown') return true;
+      return false;
+    });
+
+    if (wrongQuestions.length === 0) {
+      alert(`🎉 '${st.name}' 학생은 모든 문제를 맞혔거나 틀린 문항이 없습니다!`);
+      return;
+    }
+
+    const wrongTitle = `[오답] ${resultsModalExam.title} (${st.name})`;
+    const confirmCreate = confirm(
+      `'${st.name}' 학생의 틀린 문항 총 ${wrongQuestions.length}문항으로 맞춤 오답 시험지를 생성하시겠습니까?\n\n생성될 시험지: "${wrongTitle}"\n배정 대상: ${st.name}`
+    );
+    if (!confirmCreate) return;
+
+    try {
+      setCreatingWrongExam(st.id);
+      const res = await fetch('/api/test2/exam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: wrongTitle,
+          grade: resultsModalExam.grade,
+          duration_min: Math.max(10, wrongQuestions.length * 3),
+          questions: wrongQuestions,
+          assigned_student_ids: [st.id],
+          is_wrong_review: true,
+          parent_exam_id: resultsModalExam.id,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        alert(
+          `🎉 '${st.name}' 학생의 오답 시험지(${wrongQuestions.length}문항)가 성공적으로 생성 및 배정되었습니다!\n학생 화면의 [오답 시험지] 탭에서 확인 및 응시할 수 있습니다.`
+        );
+        loadInitialData();
+      } else {
+        alert(`오답 시험지 생성 실패: ${data.error}`);
+      }
+    } catch (e: any) {
+      console.error('Failed to create wrong exam:', e);
+      alert('오답 시험지 생성 중 오류가 발생했습니다.');
+    } finally {
+      setCreatingWrongExam(null);
     }
   };
 
@@ -1428,7 +1499,32 @@ export default function ExamManagerMain() {
                       const sub = examSubmissions.find(s => s.student_id === studentId);
                       return (
                         <tr key={studentId} className="hover:bg-slate-50/80">
-                          <td className="p-3 font-bold text-slate-800">{st?.name || '미등록 학생'}</td>
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-800">{st?.name || '미등록 학생'}</span>
+                              {sub && (
+                                <div className="flex items-center gap-1.5 ml-1">
+                                  <button
+                                    onClick={() => handleOpenStudentDetail(st, sub)}
+                                    className="px-2.5 py-1 bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1"
+                                    title="문항별 맞음/틀림/모름 및 풀이 소요시간 상세 보기"
+                                  >
+                                    <Search size={12} />
+                                    <span>상세보기</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleCreateWrongExam(st, sub)}
+                                    disabled={creatingWrongExam === st?.id}
+                                    className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 disabled:opacity-50"
+                                    title="학생이 틀린 문제만 모아 오답 시험지 생성 및 배정"
+                                  >
+                                    <RotateCcw size={12} className={creatingWrongExam === st?.id ? 'animate-spin' : ''} />
+                                    <span>{creatingWrongExam === st?.id ? '생성 중...' : '오답 처리'}</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
                           <td className="p-3 text-slate-500">{st?.grade || '-'}</td>
                           <td className="p-3">
                             {sub ? (
@@ -1465,6 +1561,208 @@ export default function ExamManagerMain() {
               >
                 닫기
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5-1. 학생별 응시 상세 결과 모달 (맞음/틀림/모름 및 문항별 소요시간) */}
+      {detailStudent && resultsModalExam && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95 overflow-hidden">
+            {/* 헤더 */}
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-0.5 bg-violet-100 text-violet-700 font-black rounded text-xs">
+                    {detailStudent.student.grade}
+                  </span>
+                  <h3 className="text-xl font-black text-slate-800">
+                    {detailStudent.student.name} 학생의 응시 상세 결과
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500">
+                  시험지: <strong className="text-slate-700 font-bold">{resultsModalExam.title}</strong> • 제출 시각: {new Date(detailStudent.submission.submitted_at).toLocaleString()}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCreateWrongExam(detailStudent.student, detailStudent.submission)}
+                  disabled={creatingWrongExam === detailStudent.student.id}
+                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/20 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <RotateCcw size={14} className={creatingWrongExam === detailStudent.student.id ? 'animate-spin' : ''} />
+                  <span>{creatingWrongExam === detailStudent.student.id ? '생성 중...' : '오답 시험지 생성'}</span>
+                </button>
+                <button
+                  onClick={() => setDetailStudent(null)}
+                  className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* 요약 바 */}
+            <div className="grid grid-cols-4 gap-3 p-4 bg-slate-50 border-b border-slate-200 text-center">
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+                <span className="text-[11px] font-bold text-slate-400 block">총 문항</span>
+                <span className="text-base font-black text-slate-800">{detailStudent.submission.total_questions}문항</span>
+              </div>
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+                <span className="text-[11px] font-bold text-slate-400 block">점수</span>
+                <span className="text-base font-black text-violet-600">{detailStudent.submission.score}점</span>
+              </div>
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+                <span className="text-[11px] font-bold text-slate-400 block">정답 개수</span>
+                <span className="text-base font-black text-emerald-600">
+                  {detailStudent.submission.correct_count} / {detailStudent.submission.total_questions}
+                </span>
+              </div>
+              <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+                <span className="text-[11px] font-bold text-slate-400 block">오답 / 모름</span>
+                <span className="text-base font-black text-rose-500">
+                  {detailStudent.submission.total_questions - detailStudent.submission.correct_count}문항
+                </span>
+              </div>
+            </div>
+
+            {/* 문항별 상세 그리드 */}
+            <div className="flex-1 p-6 overflow-y-auto space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {(resultsModalExam.questions || []).map((q, idx) => {
+                  const ansInfo = detailStudent.submission.answers?.[q.id];
+                  const isCorrect = ansInfo?.is_correct ?? false;
+                  const userAns = ansInfo?.user_answer || '(미입력)';
+                  const isUnknown = userAns === '모름' || userAns === 'unknown';
+                  const correctAns = ansInfo?.correct_answer || q.answer || '';
+                  const spentSec = ansInfo?.time_spent_sec ?? 0;
+
+                  return (
+                    <div
+                      key={q.id}
+                      className={`p-4 rounded-2xl border transition-all ${
+                        isCorrect
+                          ? 'bg-emerald-50/40 border-emerald-200'
+                          : isUnknown
+                          ? 'bg-amber-50/40 border-amber-200'
+                          : 'bg-rose-50/40 border-rose-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`w-7 h-7 rounded-lg font-black text-xs flex items-center justify-center text-white ${
+                              isCorrect
+                                ? 'bg-emerald-500'
+                                : isUnknown
+                                ? 'bg-amber-500'
+                                : 'bg-rose-500'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span
+                            className={`text-xs font-black px-2 py-0.5 rounded-full ${
+                              isCorrect
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : isUnknown
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {isCorrect ? '맞음' : isUnknown ? '모름' : '틀림'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-mono text-slate-500 font-bold bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                            ⏱️ {spentSec}초 소요
+                          </span>
+                          {q.solution_drive_id && (
+                            <button
+                              onClick={() => setTeacherSolutionModalDriveId(q.solution_drive_id)}
+                              className="px-2.5 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 font-black text-[11px] rounded-lg transition-colors flex items-center gap-1"
+                            >
+                              <BookOpen size={12} />
+                              <span>해설</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {q.image_url && (
+                        <div
+                          className="bg-white p-2 rounded-xl border border-slate-100 mb-3 max-h-36 overflow-hidden flex justify-center cursor-pointer hover:border-violet-300 transition-colors"
+                          onClick={() => setPreviewQuestion(q)}
+                          title="클릭하여 문제 크게 보기"
+                        >
+                          <img
+                            src={q.image_url}
+                            alt={`문제 ${idx + 1}번`}
+                            className="max-h-32 object-contain"
+                          />
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="p-2 rounded-xl bg-white border border-slate-200">
+                          <span className="text-slate-400 block text-[10px] font-bold">학생 답안</span>
+                          <span
+                            className={`font-black text-sm ${
+                              isCorrect ? 'text-emerald-600' : isUnknown ? 'text-amber-600' : 'text-rose-600'
+                            }`}
+                          >
+                            {userAns}
+                          </span>
+                        </div>
+                        <div className="p-2 rounded-xl bg-white border border-slate-200">
+                          <span className="text-slate-400 block text-[10px] font-bold">정답</span>
+                          <span className="font-black text-sm text-slate-800">
+                            {correctAns}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 flex justify-end bg-slate-50">
+              <button
+                onClick={() => setDetailStudent(null)}
+                className="px-5 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5-2. 선생님용 해설 iframe 모달 */}
+      {teacherSolutionModalDriveId && (
+        <div className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full h-[85vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BookOpen size={18} className="text-violet-600" />
+                <h3 className="text-base font-black text-slate-800">문제 정답 및 상세 해설</h3>
+              </div>
+              <button
+                onClick={() => setTeacherSolutionModalDriveId(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 bg-white p-2">
+              <iframe
+                src={`/api/student/file-content?fileId=${encodeURIComponent(teacherSolutionModalDriveId)}&type=html`}
+                className="w-full h-full border-0 rounded-2xl"
+                title="문제 해설"
+              />
             </div>
           </div>
         </div>
