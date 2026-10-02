@@ -53,10 +53,8 @@ export default function ReviewTestModal({
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
 
-  // 타임어택 제한시간 (문항당 3분 = 180초 기본 부여)
-  const defaultTotalSec = Math.max(180, items.length * 180);
-  const [timeLeft, setTimeLeft] = useState<number>(defaultTotalSec);
-  const [totalSpentSec, setTotalSpentSec] = useState<number>(0);
+  // 🌟 달리기초 스톱워치 (카운트업 경과 시간, 100ms 단위 실시간 계측)
+  const [elapsedMs, setElapsedMs] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
 
@@ -72,32 +70,22 @@ export default function ReviewTestModal({
   // DB 저장 완료 메시지
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
 
-  // ── 1. 타이머 & 문제별 소요시간 실시간 계측 ──────────────────────
+  // ── 1. 🏃 달리기초 스톱워치 & 문제별 소요시간 실시간 계측 ──────────────────────
   useEffect(() => {
     if (viewMode !== 'taking') return;
 
     const interval = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          // 타임오버 시 자동 제출
-          clearInterval(interval);
-          handleSubmitTest();
-          return 0;
-        }
-        return prev - 1;
-      });
+      setElapsedMs(prev => prev + 100);
 
-      setTotalSpentSec(prev => prev + 1);
-
-      // 현재 문제의 누적 소요시간 갱신
+      // 현재 문제의 누적 소요시간 갱신 (초 단위 정수)
       const currItem = items[currentIndex];
       if (currItem) {
         setQuestionSpentTimes(prev => ({
           ...prev,
-          [currItem.id]: (prev[currItem.id] || 0) + 1,
+          [currItem.id]: (prev[currItem.id] || 0) + 0.1,
         }));
       }
-    }, 1000);
+    }, 100);
 
     return () => clearInterval(interval);
   }, [viewMode, currentIndex, items]);
@@ -109,15 +97,20 @@ export default function ReviewTestModal({
     setCurrentIndex(newIdx);
   };
 
-  // 시간 포맷팅 헬퍼 (HH:MM:SS or MM:SS)
+  // 🏃 달리기초 포맷팅 헬퍼 (MM:SS.s - 분:초.0.1초)
+  const formatStopwatch = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = totalSec % 60;
+    const tenths = Math.floor((ms % 1000) / 100);
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
+  };
+
+  // 일반 시간 포맷팅 헬퍼 (초 단위 -> MM:SS)
   const formatTime = (totalSec: number) => {
     if (totalSec <= 0) return '00:00';
-    const hours = Math.floor(totalSec / 3600);
-    const minutes = Math.floor((totalSec % 3600) / 60);
-    const seconds = totalSec % 60;
-    if (hours > 0) {
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-    }
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = Math.floor(totalSec % 60);
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   };
 
@@ -166,45 +159,43 @@ export default function ReviewTestModal({
         totalScore += point;
       }
 
-      const spentSec = questionSpentTimes[item.id] || 0;
-      
-      // 이전 풀이 시간 (lastSpentSec)과의 차이 (음수면 단축: 예 28초 - 42초 = -14초)
-      const prevSpent = item.lastSpentSec;
+      const spentSec = Math.round(questionSpentTimes[item.id] || 0);
+
+      // 🌟 [사용자 요청] 오답은 기록에 의미가 없으므로 정답인 경우에만 랩타임/기록 등록!
       let diffFromPrev: number | undefined = undefined;
-      if (prevSpent !== undefined && prevSpent > 0) {
-        diffFromPrev = spentSec - prevSpent;
+      let isNewRecord = false;
+      let newBestSpentSec = item.bestSpentSec;
+      let top3Records: ReviewLapRecord[] = [];
+
+      // 기존 정답 랩타임만 필터링 (과거 오답 기록이 섞여있더라도 정답만 보존)
+      const existingCorrectLaps = (item.timeRecords || []).filter(l => l.isCorrect);
+
+      if (isCorrect) {
+        // 정답인 경우: 이전 정답 풀이 시간(lastSpentSec)과의 차이 계산
+        const prevSpent = item.lastSpentSec;
+        if (prevSpent !== undefined && prevSpent > 0 && item.lastIsCorrect) {
+          diffFromPrev = spentSec - prevSpent;
+        }
+
+        const prevBest = item.bestSpentSec;
+        isNewRecord = prevBest === undefined || spentSec < prevBest;
+        newBestSpentSec = Math.min(spentSec, prevBest ?? spentSec);
+
+        const newLap: ReviewLapRecord = {
+          id: `lap_${Date.now()}_${idx}`,
+          spentSec,
+          isCorrect: true,
+          recordedAt: new Date().toISOString(),
+          userAnswer: userAns,
+          diffFromPrev,
+        };
+
+        const allCorrectLaps = [newLap, ...existingCorrectLaps].sort((a, b) => a.spentSec - b.spentSec);
+        top3Records = allCorrectLaps.slice(0, 3);
+      } else {
+        // 오답인 경우: 새로운 랩타임 등록하지 않고 기존 정답 랭킹만 전달
+        top3Records = existingCorrectLaps.sort((a, b) => a.spentSec - b.spentSec).slice(0, 3);
       }
-
-      // 이전 역대 최고 기록 (bestSpentSec)
-      const prevBest = item.bestSpentSec;
-      const isNewRecord = isCorrect && (prevBest === undefined || spentSec < prevBest);
-
-      // 기존 랩타임 기록 불러오기
-      const existingLaps = item.timeRecords ? [...item.timeRecords] : (
-        item.lastSpentSec !== undefined ? [{
-          id: `legacy_${item.id}`,
-          spentSec: item.lastSpentSec,
-          isCorrect: item.lastIsCorrect ?? false,
-          recordedAt: item.lastTestedAt || new Date().toISOString(),
-          userAnswer: item.lastUserAnswer,
-        }] : []
-      );
-
-      const newLap: ReviewLapRecord = {
-        id: `lap_${Date.now()}_${idx}`,
-        spentSec,
-        isCorrect,
-        recordedAt: new Date().toISOString(),
-        userAnswer: userAns,
-        diffFromPrev,
-      };
-
-      const allLaps = [newLap, ...existingLaps];
-      const correctOnly = allLaps.filter(l => l.isCorrect).sort((a, b) => a.spentSec - b.spentSec);
-      const top3 = (correctOnly.length > 0 ? correctOnly : allLaps.sort((a, b) => a.spentSec - b.spentSec)).slice(0, 3);
-      const newBestSpentSec = isCorrect
-        ? Math.min(spentSec, prevBest ?? spentSec)
-        : prevBest;
 
       resultItems.push({
         itemId: item.id,
@@ -218,9 +209,11 @@ export default function ReviewTestModal({
         diffFromPrev,
         isNewRecord,
         bestSpentSec: newBestSpentSec,
-        topRecords: top3,
+        topRecords: top3Records,
       });
     });
+
+    const totalSpentSec = Math.round(elapsedMs / 1000);
 
     const newHistoryRecord: ReviewTestHistory = {
       id: `review_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -236,44 +229,42 @@ export default function ReviewTestModal({
 
     setTestResult(newHistoryRecord);
 
-    // ── 3. DB 영구 동기화: reviewData 갱신 (누적 랩타임 & 최고기록 반영) ──
+    // ── 3. DB 영구 동기화: reviewData 갱신 (오답은 기록에서 제외, 정답만 랩타임 누적) ──
     const resultMap = new Map(resultItems.map(r => [r.itemId, r]));
 
     const updatedItems = reviewData.items.map(item => {
       const res = resultMap.get(item.id);
       if (res) {
-        const existingLaps = item.timeRecords ? [...item.timeRecords] : (
-          item.lastSpentSec !== undefined ? [{
-            id: `legacy_${item.id}`,
-            spentSec: item.lastSpentSec,
-            isCorrect: item.lastIsCorrect ?? false,
-            recordedAt: item.lastTestedAt || new Date().toISOString(),
-            userAnswer: item.lastUserAnswer,
-          }] : []
-        );
+        // 기존 기록 중 정답만 보존
+        const existingCorrectLaps = (item.timeRecords || []).filter(l => l.isCorrect);
 
-        const newLap: ReviewLapRecord = {
-          id: `lap_${Date.now()}_${item.id}`,
-          spentSec: res.spentSec,
-          isCorrect: res.isCorrect,
-          recordedAt: newHistoryRecord.testedAt,
-          userAnswer: res.userAnswer,
-          diffFromPrev: res.diffFromPrev,
-        };
+        let nextLaps = existingCorrectLaps;
+        let nextBest = item.bestSpentSec;
+        let nextLastSpent = item.lastSpentSec;
 
-        const updatedLaps = [newLap, ...existingLaps];
-        const newBest = res.isCorrect
-          ? Math.min(res.spentSec, item.bestSpentSec ?? res.spentSec)
-          : item.bestSpentSec;
+        if (res.isCorrect) {
+          // 정답일 때만 랩타임 누적 & 소요시간/최고기록 갱신!
+          const newLap: ReviewLapRecord = {
+            id: `lap_${Date.now()}_${item.id}`,
+            spentSec: res.spentSec,
+            isCorrect: true,
+            recordedAt: newHistoryRecord.testedAt,
+            userAnswer: res.userAnswer,
+            diffFromPrev: res.diffFromPrev,
+          };
+          nextLaps = [newLap, ...existingCorrectLaps];
+          nextBest = Math.min(res.spentSec, item.bestSpentSec ?? res.spentSec);
+          nextLastSpent = res.spentSec;
+        }
 
         return {
           ...item,
           lastTestedAt: newHistoryRecord.testedAt,
           lastIsCorrect: res.isCorrect,
           lastUserAnswer: res.userAnswer,
-          lastSpentSec: res.spentSec,
-          bestSpentSec: newBest,
-          timeRecords: updatedLaps,
+          lastSpentSec: nextLastSpent,
+          bestSpentSec: nextBest,
+          timeRecords: nextLaps,
         };
       }
       return item;
@@ -314,8 +305,7 @@ export default function ReviewTestModal({
   const handleRestartTest = () => {
     setUserAnswers({});
     setQuestionSpentTimes({});
-    setTimeLeft(defaultTotalSec);
-    setTotalSpentSec(0);
+    setElapsedMs(0);
     setCurrentIndex(0);
     setTestResult(null);
     setDbSavedMessage(null);
@@ -366,16 +356,16 @@ export default function ReviewTestModal({
                 </div>
               </div>
 
-              {/* 실시간 타임어택 제한시간 카운트다운 타이머 */}
-              <div className={`px-4 py-2 rounded-2xl flex items-center gap-2.5 border font-mono font-black text-xs md:text-sm shadow-lg transition-all ${
-                timeLeft < 180 
-                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' 
-                  : 'bg-white/5 text-white border-white/10'
-              }`}>
-                <Clock size={16} className={timeLeft < 180 ? 'text-rose-400' : 'text-violet-400'} />
+              {/* 🏃 달리기초 실시간 스톱워치 타이머 */}
+              <div className="px-4 md:px-5 py-2 rounded-2xl flex items-center gap-3 border border-emerald-500/40 bg-emerald-500/10 font-mono font-black shadow-lg shadow-emerald-500/20">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                 <div className="flex flex-col text-left">
-                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-sans">남은 제한시간</span>
-                  <span className="tracking-widest">{formatTime(timeLeft)}</span>
+                  <span className="text-[9px] uppercase tracking-wider text-emerald-400 font-sans font-black flex items-center gap-1">
+                    <Zap size={10} className="text-amber-400" /> 달리기초
+                  </span>
+                  <span className="tracking-widest text-sm md:text-base text-emerald-300 font-black">
+                    {formatStopwatch(elapsedMs)}
+                  </span>
                 </div>
               </div>
 
@@ -442,7 +432,7 @@ export default function ReviewTestModal({
                       )}
                       <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px] bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
                         <Clock size={13} className="text-violet-400" />
-                        <span>소요시간: <strong className="text-white font-bold">{currentSpentSec}초</strong></span>
+                        <span>소요시간: <strong className="text-white font-bold">{Math.floor(currentSpentSec)}초</strong></span>
                       </div>
                     </div>
                   </div>
@@ -726,19 +716,27 @@ export default function ReviewTestModal({
                           </div>
 
                           <div className="text-right">
-                            <span className="text-xs text-white font-mono font-black bg-white/10 px-2 py-1 rounded-lg border border-white/10">
-                              ⏱️ {res.spentSec}초
-                            </span>
-                            {res.bestSpentSec !== undefined && (
-                              <span className="block text-[9px] text-amber-300 font-mono mt-0.5">
-                                BEST: {res.bestSpentSec}초
+                            {isCorrect ? (
+                              <>
+                                <span className="text-xs text-white font-mono font-black bg-white/10 px-2 py-1 rounded-lg border border-white/10">
+                                  ⏱️ {res.spentSec}초
+                                </span>
+                                {res.bestSpentSec !== undefined && (
+                                  <span className="block text-[9px] text-amber-300 font-mono mt-0.5">
+                                    BEST: {res.bestSpentSec}초
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-[10px] text-slate-500 font-mono bg-white/5 px-2 py-1 rounded-lg">
+                                기록 미반영
                               </span>
                             )}
                           </div>
                         </div>
 
-                        {/* 🌟 NEW RECORD 또는 시간 단축 피드백 배너 */}
-                        {res.isNewRecord ? (
+                        {/* 🌟 NEW RECORD 또는 시간 단축 피드백 배너 (오답은 제외!) */}
+                        {isCorrect && res.isNewRecord ? (
                           <div className="p-2.5 rounded-xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-400/50 shadow-md flex items-center justify-between">
                             <span className="text-xs font-black text-amber-300 flex items-center gap-1.5 font-mono animate-pulse">
                               <Trophy size={14} className="text-amber-400 animate-bounce" />
@@ -750,7 +748,7 @@ export default function ReviewTestModal({
                               </span>
                             )}
                           </div>
-                        ) : res.diffFromPrev !== undefined ? (
+                        ) : isCorrect && res.diffFromPrev !== undefined ? (
                           <div className={`p-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between border ${
                             res.diffFromPrev < 0
                               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
@@ -765,6 +763,11 @@ export default function ReviewTestModal({
                                 ? `⚡ ${Math.abs(res.diffFromPrev)}초 단축 성공!`
                                 : `+${res.diffFromPrev}초`}
                             </span>
+                          </div>
+                        ) : !isCorrect ? (
+                          <div className="p-2 rounded-xl text-[11px] font-mono font-bold bg-rose-500/10 border border-rose-500/20 text-rose-300/80 flex items-center gap-1.5">
+                            <AlertCircle size={13} className="text-rose-400 shrink-0" />
+                            <span>오답은 기록에 반영되지 않습니다 (정답 시 랩타임 등록)</span>
                           </div>
                         ) : null}
 

@@ -972,10 +972,17 @@ export default function StudentReviewExplorer({
                           <div className="space-y-1.5">
                             {/* 소요시간 및 BEST 기록 칩 바 */}
                             <div className="flex items-center justify-between text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-black/40 border border-white/5">
-                              <span className="text-slate-400 flex items-center gap-1">
-                                <Clock size={11} className="text-violet-400" />
-                                <span>소요: <strong className="text-white">{file.lastSpentSec ?? 0}초</strong></span>
-                              </span>
+                              {file.lastIsCorrect ? (
+                                <span className="text-slate-300 flex items-center gap-1">
+                                  <Clock size={11} className="text-violet-400" />
+                                  <span>기록: <strong className="text-white">{file.lastSpentSec ?? 0}초</strong></span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-500 flex items-center gap-1 font-sans">
+                                  <Clock size={11} className="text-slate-600" />
+                                  <span>기록: <strong className="text-rose-400/80">오답 미반영</strong></span>
+                                </span>
+                              )}
                               
                               <div className="flex items-center gap-1.5">
                                 {file.bestSpentSec !== undefined && (
@@ -1012,8 +1019,8 @@ export default function StudentReviewExplorer({
                                 </span>
                               )}
                               
-                              {/* 시간 단축 피드백 */}
-                              {file.timeRecords && file.timeRecords[0]?.diffFromPrev !== undefined && file.timeRecords[0].diffFromPrev < 0 ? (
+                              {/* 시간 단축 피드백 (정답일 때만 유효) */}
+                              {file.lastIsCorrect && file.timeRecords && file.timeRecords[0]?.diffFromPrev !== undefined && file.timeRecords[0].diffFromPrev < 0 ? (
                                 <span className="text-emerald-300 font-mono font-black animate-pulse flex items-center gap-0.5">
                                   <Flame size={11} className="text-emerald-400" />
                                   ⚡ {Math.abs(file.timeRecords[0].diffFromPrev)}초 단축!

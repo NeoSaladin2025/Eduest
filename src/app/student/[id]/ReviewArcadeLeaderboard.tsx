@@ -29,26 +29,20 @@ export default function ReviewArcadeLeaderboard({
   onStartTest,
   inline = false,
 }: ReviewArcadeLeaderboardProps) {
-  // 타임랩 기록 중 정답인 것만 추출하여 가장 빠른 순서대로 정렬
-  // 만약 기존 데이터에 timeRecords가 없더라도 lastSpentSec가 있으면 기본 1회차 기록으로 자동 구성!
+  // 타임랩 기록 중 정답인 것만 엄격하게 추출하여 가장 빠른 순서대로 정렬 (오답은 절대 기록에 미반영)
   const allRecords: ReviewLapRecord[] = React.useMemo(() => {
     let recs = [...(item.timeRecords || [])];
-    if (recs.length === 0 && item.lastSpentSec !== undefined) {
+    if (recs.length === 0 && item.lastSpentSec !== undefined && item.lastIsCorrect) {
       recs.push({
         id: `legacy_${item.id}`,
         spentSec: item.lastSpentSec,
-        isCorrect: item.lastIsCorrect ?? false,
+        isCorrect: true,
         recordedAt: item.lastTestedAt || new Date().toISOString(),
         userAnswer: item.lastUserAnswer,
       });
     }
-    // 정답 기록을 최우선으로, 그 다음 시간 빠른 순으로 정렬
-    const correctOnly = recs.filter(r => r.isCorrect).sort((a, b) => a.spentSec - b.spentSec);
-    // 만약 정답 기록이 없으면 일반 기록이라도 시간순 정렬
-    if (correctOnly.length === 0) {
-      return recs.sort((a, b) => a.spentSec - b.spentSec);
-    }
-    return correctOnly;
+    // 정답 기록만 엄격하게 필터링하여 시간 빠른 순으로 정렬
+    return recs.filter(r => r.isCorrect).sort((a, b) => a.spentSec - b.spentSec);
   }, [item]);
 
   const top3 = allRecords.slice(0, 3);
