@@ -162,6 +162,11 @@ export default function StudentTest2View({
         solutionUrl: q.solution_drive_id || q.drive_id,
         type: 'image',
         addedAt: new Date().toISOString(),
+        answer: String(q.answer ?? '').trim(),
+        raw_answer: String(q.raw_answer ?? '').trim(),
+        points: q.points || 4,
+        questionNumber: idx + 1,
+        examTitle: currentExam.title,
       };
       nextItems.push(newItem);
       showReviewToast(`⭐ '${currentExam.title} ${idx + 1}번' 문제가 내 복습 홈에 담겼습니다! 📁`);

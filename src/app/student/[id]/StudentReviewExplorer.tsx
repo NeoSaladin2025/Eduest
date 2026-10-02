@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Folder, 
   FolderOpen, 
@@ -20,9 +20,15 @@ import {
   BookOpen,
   Database,
   GripVertical,
-  Layers
+  Layers,
+  Zap,
+  CheckCircle2,
+  XCircle,
+  Clock
 } from 'lucide-react';
 import { ReviewFolder, ReviewItem, StudentReviewData } from './types';
+import ReviewTestModal from './ReviewTestModal';
+import ReviewSolutionModal from './ReviewSolutionModal';
 
 interface StudentReviewExplorerProps {
   studentId: string;
@@ -73,10 +79,120 @@ export default function StudentReviewExplorer({
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // 복습 테스트 모달 상태
+  const [testModalState, setTestModalState] = useState<{
+    items: ReviewItem[];
+    title: string;
+    folderId?: string | null;
+  } | null>(null);
+
+  // 해설 보기 모달 상태
+  const [solutionModalState, setSolutionModalState] = useState<{
+    items: ReviewItem[];
+    initialIndex: number;
+  } | null>(null);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2500);
   };
+
+  // 문제 풀기(테스트) 모달 열기 핸들러
+  const handleStartTest = (itemsToTest: ReviewItem[], customTitle?: string, folderId?: string | null) => {
+    if (!itemsToTest || itemsToTest.length === 0) {
+      alert('풀어볼 문제가 없습니다.');
+      return;
+    }
+    setTestModalState({
+      items: itemsToTest,
+      title: customTitle || (itemsToTest.length === 1 ? itemsToTest[0].name : '복습 테스트'),
+      folderId: folderId ?? currentFolderId,
+    });
+  };
+
+  // 해설 보기 모달 열기 핸들러
+  const handleOpenSolution = (itemsToView: ReviewItem[], initialIndex = 0) => {
+    if (!itemsToView || itemsToView.length === 0) {
+      alert('해설을 볼 문제가 없습니다.');
+      return;
+    }
+    setSolutionModalState({
+      items: itemsToView,
+      initialIndex: Math.max(0, Math.min(itemsToView.length - 1, initialIndex)),
+    });
+  };
+
+  // 🌟 DB에서 기존 문항 누락 데이터(answer, solutionUrl) 자동 보강 및 Supabase DB 저장
+  useEffect(() => {
+    const needsEnrichment = reviewData.items.some(
+      i => i.type === 'image' && (!i.answer || !i.solutionUrl)
+    );
+    if (!needsEnrichment) return;
+
+    fetch('/api/test2/exam')
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success || !Array.isArray(data.exams)) return;
+        const exams: any[] = data.exams;
+
+        let hasChanged = false;
+        const enrichedItems = reviewData.items.map(item => {
+          if (item.type !== 'image') return item;
+          if (item.answer && item.solutionUrl) return item;
+
+          let matchedQ: any = null;
+          // 1. fileId 패턴 매칭: exam_{examId}_q_{qId}
+          const match = item.fileId.match(/exam_([^_]+)_q_([^_]+)/);
+          if (match) {
+            const [, examId, qId] = match;
+            const targetExam = exams.find(e => e.id === examId);
+            if (targetExam) {
+              matchedQ = targetExam.questions.find((q: any) => q.id === qId);
+            }
+          }
+
+          // 2. 이름 및 폴더 매칭 fallback
+          if (!matchedQ) {
+            for (const ex of exams) {
+              if (item.folderName && (ex.title.includes(item.folderName) || item.folderName.includes(ex.title))) {
+                const numMatch = item.name.match(/(\d+)번/);
+                if (numMatch) {
+                  const qNum = parseInt(numMatch[1], 10);
+                  matchedQ = ex.questions[qNum - 1] || ex.questions.find((q: any) => q.name.includes(`${qNum}번`));
+                  if (matchedQ) break;
+                }
+              }
+            }
+          }
+
+          if (matchedQ) {
+            hasChanged = true;
+            return {
+              ...item,
+              answer: String(matchedQ.answer ?? item.answer ?? '').trim(),
+              raw_answer: String(matchedQ.raw_answer ?? item.raw_answer ?? '').trim(),
+              solutionUrl: matchedQ.solution_drive_id || matchedQ.drive_id || item.solutionUrl,
+              problemUrl: matchedQ.image_url || item.problemUrl,
+              points: matchedQ.points || item.points || 4,
+            };
+          }
+
+          return item;
+        });
+
+        if (hasChanged) {
+          const nextData = { ...reviewData, items: enrichedItems };
+          onUpdateReviewData(nextData);
+          // DB에도 자동 동기화 저장
+          fetch('/api/student/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studentId, reviewData: nextData }),
+          }).catch(console.error);
+        }
+      })
+      .catch(console.error);
+  }, [studentId, reviewData.items]);
 
   // Toggle tree expand/collapse
   const toggleExpand = (folderId: string) => {
@@ -664,13 +780,24 @@ export default function StudentReviewExplorer({
                 </button>
 
                 {currentFiles.length > 0 && (
-                  <button
-                    onClick={() => onOpenFileForReview(currentFiles[0], currentFiles)}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-xs font-black transition-all shadow-md shadow-emerald-600/30"
-                  >
-                    <Play size={15} fill="currentColor" />
-                    이 폴더 전체 학습 ({currentFiles.length}문항)
-                  </button>
+                  <>
+                    <button
+                      onClick={() => handleStartTest(currentFiles, currentFolder?.name || '폴더 전체')}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-violet-600 hover:bg-violet-500 text-white rounded-2xl text-xs font-black transition-all shadow-md shadow-violet-600/30"
+                      title="이 폴더의 모든 문제를 묶어서 실전 타임어택 시험을 봅니다"
+                    >
+                      <Zap size={15} className="text-amber-300" />
+                      이 폴더 문제풀기 ({currentFiles.length}문항)
+                    </button>
+                    <button
+                      onClick={() => handleOpenSolution(currentFiles, 0)}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded-2xl text-xs font-black transition-all border border-indigo-500/30 shadow-md"
+                      title="이 폴더의 모든 문제 해설을 순차적으로 열람합니다"
+                    >
+                      <BookOpen size={15} />
+                      전체 해설보기
+                    </button>
+                  </>
                 )}
               </div>
 
@@ -788,24 +915,23 @@ export default function StudentReviewExplorer({
                         draggable
                         onDragStart={(e) => handleDragStart(e, 'file', file.id, file.name, file.folderId)}
                         onDragEnd={handleDragEnd}
-                        onClick={() => onOpenFileForReview(file, filteredFiles)}
-                        className={`group bg-white/5 hover:bg-white/[0.09] border rounded-2xl p-4.5 cursor-pointer transition-all shadow-lg flex flex-col justify-between space-y-3 select-none ${
+                        className={`group bg-white/5 hover:bg-white/[0.09] border rounded-2xl p-4 transition-all shadow-lg flex flex-col justify-between space-y-3 select-none ${
                           isBeingDragged
                             ? 'opacity-40 border-dashed border-indigo-400'
                             : 'border-white/10 hover:border-indigo-500 hover:scale-[1.01]'
                         }`}
-                        title="클릭하여 문제 풀이 보기 | 다른 폴더로 드래그앤드롭하여 이동 가능"
+                        title="다른 폴더로 드래그앤드롭하여 이동 가능"
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 font-black text-xs flex items-center justify-center">
+                            <div className="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 font-black text-xs flex items-center justify-center shrink-0">
                               {idx + 1}
                             </div>
-                            <div>
-                              <h5 className="text-sm font-black text-white group-hover:text-indigo-400 transition-colors truncate max-w-[140px]">
+                            <div className="min-w-0">
+                              <h5 className="text-sm font-black text-white group-hover:text-indigo-400 transition-colors truncate max-w-[130px]">
                                 {file.name.replace(/\.html?$/i, '')}
                               </h5>
-                              <span className="text-[10px] font-bold text-slate-500">
+                              <span className="text-[10px] font-bold text-slate-500 truncate block">
                                 {file.folderName}
                               </span>
                             </div>
@@ -834,9 +960,42 @@ export default function StudentReviewExplorer({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between text-[11px] pt-1 border-t border-white/5 text-slate-400">
-                          <span className="text-indigo-400 font-bold">클릭하여 풀이 보기</span>
-                          <Play size={12} className="text-indigo-400 opacity-60 group-hover:opacity-100 transition-opacity" />
+                        {/* 최근 시험 응시 결과 (DB에 저장된 데이터 표시) */}
+                        {file.lastTestedAt && (
+                          <div className="flex items-center justify-between text-[10px] font-bold py-1 px-2.5 rounded-xl bg-black/40 border border-white/5">
+                            {file.lastIsCorrect ? (
+                              <span className="text-emerald-400 flex items-center gap-1 font-black">
+                                <CheckCircle2 size={12} /> 정답 ({file.lastSpentSec || 0}초)
+                              </span>
+                            ) : (
+                              <span className="text-rose-400 flex items-center gap-1 font-black">
+                                <XCircle size={12} /> 오답 {file.answer ? `(정답: ${file.answer})` : ''}
+                              </span>
+                            )}
+                            <span className="text-slate-500 font-normal">
+                              {file.lastUserAnswer ? `마킹: ${file.lastUserAnswer}` : ''}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* 🌟 [사용자 요청 2번 스샷 반영] 문제풀기 / 해설보기 2가지 버전 버튼 */}
+                        <div className="grid grid-cols-2 gap-1.5 pt-2 border-t border-white/10" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => handleStartTest([file], file.name)}
+                            className="py-2 px-2 rounded-xl bg-violet-600/30 hover:bg-violet-600 text-violet-200 hover:text-white font-black text-xs transition-all flex items-center justify-center gap-1 border border-violet-500/30 shadow-xs"
+                            title="이 문제 퀵 테스트 (타이머 & OMR)"
+                          >
+                            <Zap size={13} className="text-amber-400 shrink-0" />
+                            <span>문제풀기</span>
+                          </button>
+                          <button
+                            onClick={() => handleOpenSolution(filteredFiles, idx)}
+                            className="py-2 px-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-black text-xs transition-all flex items-center justify-center gap-1 border border-indigo-500/20 shadow-xs"
+                            title="상세 정답 및 해설 보기"
+                          >
+                            <BookOpen size={13} className="shrink-0" />
+                            <span>해설보기</span>
+                          </button>
                         </div>
                       </div>
                     );
@@ -1022,6 +1181,28 @@ export default function StudentReviewExplorer({
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── 🌟 [사용자 요청] 복습 테스트 모달 (타임어택, OMR, 즉시 채점, DB 영구 저장) ── */}
+      {testModalState && (
+        <ReviewTestModal
+          studentId={studentId}
+          items={testModalState.items}
+          title={testModalState.title}
+          folderId={testModalState.folderId}
+          reviewData={reviewData}
+          onUpdateReviewData={onUpdateReviewData}
+          onClose={() => setTestModalState(null)}
+        />
+      )}
+
+      {/* ── 🌟 [사용자 요청] 복습 상세 해설 보기 모달 ── */}
+      {solutionModalState && (
+        <ReviewSolutionModal
+          items={solutionModalState.items}
+          initialIndex={solutionModalState.initialIndex}
+          onClose={() => setSolutionModalState(null)}
+        />
       )}
 
     </div>

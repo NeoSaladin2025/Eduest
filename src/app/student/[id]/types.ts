@@ -7,7 +7,39 @@ export interface ReviewItem {
   problemUrl?: string;
   solutionUrl?: string;
   type: 'html' | 'image';
-  addedAt: string;
+  addedAt?: string;
+  answer?: string;
+  raw_answer?: string;
+  points?: number;
+  questionNumber?: number;
+  examTitle?: string;
+  lastTestedAt?: string;
+  lastIsCorrect?: boolean;
+  lastUserAnswer?: string;
+  lastSpentSec?: number;
+}
+
+export interface ReviewTestResultItem {
+  itemId: string;
+  questionName: string;
+  userAnswer: string;
+  correctAnswer: string;
+  isCorrect: boolean;
+  spentSec: number;
+  solutionUrl?: string;
+  problemUrl?: string;
+}
+
+export interface ReviewTestHistory {
+  id: string;
+  folderId?: string | null;
+  folderName?: string;
+  testedAt: string;
+  totalQuestions: number;
+  correctCount: number;
+  score: number;
+  timeSpentSec: number;
+  results: ReviewTestResultItem[];
 }
 
 export interface ReviewFolder {
@@ -20,6 +52,7 @@ export interface ReviewFolder {
 export interface StudentReviewData {
   folders: ReviewFolder[];
   items: ReviewItem[];
+  testHistory?: ReviewTestHistory[];
 }
 
 export interface StudentHomeworkItem {

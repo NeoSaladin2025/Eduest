@@ -336,7 +336,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     const activeRecord = mappedList.find(r => r.id === file.fileId) || mappedList[0];
     setSelectedList(mappedList);
     setSelectedRecord(activeRecord);
-    setSelectedTab(file.type === 'image' ? 'problem' : 'solution');
+    // 풀이 보기 클릭 시 해설(solution)이 기본으로 표시되도록 설정
+    setSelectedTab(file.solutionUrl ? 'solution' : 'problem');
     setShowReviewer(true);
     startStealthPrefetch(mappedList, 0, file.type);
   };
@@ -662,6 +663,30 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
               <div className="w-[1px] h-10 bg-white/10 mx-1 hidden sm:block" />
 
+              {/* 문제 / 해설 탭 전환 토글 버튼 */}
+              <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10 shrink-0">
+                <button
+                  onClick={() => setSelectedTab('solution')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                    selectedTab === 'solution'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  해설 보기
+                </button>
+                <button
+                  onClick={() => setSelectedTab('problem')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                    selectedTab === 'problem'
+                      ? 'bg-indigo-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  문제 원본
+                </button>
+              </div>
+
               <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x items-center">
                 {selectedList.map((record, idx) => {
                   const 번Match = record.name.match(/(\d+)번/);
@@ -676,7 +701,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                         title={isLibrary ? libraryLabel : undefined}
                         onClick={() => { 
                           setSelectedRecord(record); 
-                          if (mode === 'review') setSelectedTab('problem'); 
                           startStealthPrefetch(selectedList, idx, isLibrary ? 'html' : 'image');
                         }}
                         onMouseEnter={() => {
