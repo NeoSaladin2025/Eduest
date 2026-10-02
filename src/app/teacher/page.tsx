@@ -42,78 +42,86 @@ export default function TeacherAdminPage() {
   }, []);
 
   const menuItems = [
-    { id: 'dashboard', label: '대시보드', icon: <LayoutDashboard size={19} /> },
-    { id: 'students', label: '학생 관리', icon: <Users size={19} /> },
-    { id: 'studentview', label: '학생화면 관리', icon: <SlidersHorizontal size={19} /> },
-    { id: 'classes', label: '수업관리', icon: <CalendarDays size={19} /> },
-    { id: 'exammgr', label: '테스트 관리', icon: <FileCheck size={19} /> },
-    { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={19} /> },
-    { id: 'notices', label: '공지사항', icon: <Bell size={19} /> },
+    { id: 'dashboard', label: '대시보드', icon: <LayoutDashboard size={16} /> },
+    { id: 'students', label: '학생 관리', icon: <Users size={16} /> },
+    { id: 'studentview', label: '학생화면 관리', icon: <SlidersHorizontal size={16} /> },
+    { id: 'classes', label: '수업관리', icon: <CalendarDays size={16} /> },
+    { id: 'exammgr', label: '테스트 관리', icon: <FileCheck size={16} /> },
+    { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={16} /> },
+    { id: 'notices', label: '공지사항', icon: <Bell size={16} /> },
   ];
 
   if (adminName === '곽명용') {
     menuItems.push({ 
       id: 'special', 
       label: '스페셜 유틸리티', 
-      icon: <Zap size={19} className="text-amber-500 fill-amber-500 animate-pulse" /> 
+      icon: <Zap size={16} className="text-amber-500 fill-amber-500" /> 
     });
   }
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
       
-      {/* 1. 상단 GNB (고정 높이) */}
-      <nav className="h-20 bg-white border-b border-slate-200 px-8 flex items-center justify-between shadow-sm flex-shrink-0 z-50">
-        <div className="flex items-center gap-10">
-          <div className="flex items-center gap-2 group cursor-pointer" onClick={() => setActiveMenu('dashboard')}>
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200 group-hover:rotate-12 transition-transform">
-              <UserCheck className="text-white" size={22} />
+      {/* 1. 상단 GNB (고정 높이 & 모던 탭 네비게이션) */}
+      <nav className="h-18 bg-white border-b border-slate-200/80 px-6 md:px-8 flex items-center justify-between gap-4 shadow-xs flex-shrink-0 z-50">
+        <div className="flex items-center gap-6 lg:gap-8 min-w-0 flex-1">
+          {/* 로고 */}
+          <div 
+            className="flex items-center gap-2.5 group cursor-pointer shrink-0" 
+            onClick={() => setActiveMenu('dashboard')}
+            title="대시보드 홈으로 이동"
+          >
+            <div className="w-9 h-9 bg-indigo-600 rounded-xl flex items-center justify-center shadow-md shadow-indigo-200 group-hover:scale-105 transition-all">
+              <UserCheck className="text-white" size={20} />
             </div>
-            <div className="text-xl font-black tracking-tighter text-slate-800 italic uppercase">
+            <div className="text-lg font-black tracking-tighter text-slate-900 italic uppercase">
               Eduest
             </div>
           </div>
 
-          <div className="flex items-center bg-slate-100/50 p-1 rounded-xl">
-            {menuItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveMenu(item.id)}
-                className={`flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-bold transition-all ${
-                  activeMenu === item.id 
-                  ? 'bg-white text-indigo-600 shadow-sm scale-[1.02]' 
-                  : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {item.icon}
-                {item.label}
-                {item.id === 'special' && (
-                  <span className="ml-1 px-2 py-0.5 text-xs font-black text-rose-500 bg-rose-50 border border-rose-200 rounded-md animate-pulse">
-                    배포테스트2 🚀✨
+          {/* 중앙 네비게이션 탭 메뉴 (줄바꿈 방지 & 스크롤 지원) */}
+          <div className="flex items-center bg-slate-100/80 p-1 rounded-2xl border border-slate-200/60 overflow-x-auto scrollbar-hide max-w-full">
+            {menuItems.map((item) => {
+              const isActive = activeMenu === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveMenu(item.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 md:px-3.5 md:py-2 rounded-xl text-xs md:text-[13px] font-bold transition-all duration-150 whitespace-nowrap shrink-0 ${
+                    isActive 
+                      ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/70 font-black' 
+                      : 'text-slate-500 hover:text-slate-800 hover:bg-white/60'
+                  }`}
+                >
+                  <span className={isActive ? 'text-indigo-600' : 'text-slate-400'}>
+                    {item.icon}
                   </span>
-                )}
-              </button>
-            ))}
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        {/* 우측 관리자 프로필 & 로그아웃 */}
+        <div className="flex items-center gap-3 shrink-0">
           <div className="text-right hidden sm:block">
             <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] leading-none mb-1">
               {adminName === '곽명용' ? 'Super Administrator' : 'Authenticated Teacher'}
             </p>
-            <p className="text-sm font-bold text-slate-700">{adminName} 선생님</p>
+            <p className="text-xs md:text-sm font-bold text-slate-700">{adminName} 선생님</p>
           </div>
-          <div className="h-8 w-[1px] bg-slate-200 mx-1"></div>
+          <div className="h-7 w-[1px] bg-slate-200 mx-0.5 hidden sm:block"></div>
           <button 
             onClick={() => { 
               localStorage.clear(); 
               document.cookie = 'currentAdminName=; path=/; max-age=0; SameSite=Strict; Secure';
               window.location.href = '/'; 
             }}
-            className="p-2.5 bg-slate-50 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+            className="p-2 md:p-2.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-500 rounded-xl transition-all border border-slate-100"
+            title="로그아웃"
           >
-            <LogOut size={18} />
+            <LogOut size={16} />
           </button>
         </div>
       </nav>
