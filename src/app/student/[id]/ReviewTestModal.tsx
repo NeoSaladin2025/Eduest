@@ -16,10 +16,14 @@ import {
   AlertCircle,
   Check,
   Zap,
-  CheckSquare
+  CheckSquare,
+  Trophy,
+  Flame,
+  Medal
 } from 'lucide-react';
-import { ReviewItem, StudentReviewData, ReviewTestHistory, ReviewTestResultItem } from './types';
+import { ReviewItem, StudentReviewData, ReviewTestHistory, ReviewTestResultItem, ReviewLapRecord } from './types';
 import ReviewSolutionModal from './ReviewSolutionModal';
+import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
 
 interface ReviewTestModalProps {
   studentId: string;
@@ -61,6 +65,9 @@ export default function ReviewTestModal({
 
   // 결과 화면에서 해설 보기 모달 연동
   const [solutionModalTargetIndex, setSolutionModalTargetIndex] = useState<number | null>(null);
+
+  // 결과 화면에서 오락실 하이스코어 랭킹보드 모달 연동
+  const [leaderboardModalTargetItem, setLeaderboardModalTargetItem] = useState<ReviewItem | null>(null);
 
   // DB 저장 완료 메시지
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
@@ -142,7 +149,7 @@ export default function ReviewTestModal({
     let correctCount = 0;
     const resultItems: ReviewTestResultItem[] = [];
 
-    // 채점 루프
+    // 채점 및 랩타임 연산 루프
     items.forEach((item, idx) => {
       const userAns = userAnswers[item.id] || '';
       const correctAns = item.answer || item.raw_answer || '';
@@ -151,7 +158,7 @@ export default function ReviewTestModal({
       const userNorm = normalizeAnswer(userAns);
       const corrNorm = normalizeAnswer(correctAns);
 
-      // 정답이 지정되지 않은 경우(수동 채점 대비) 또는 매칭 여부
+      // 정답 판정
       const isCorrect = corrNorm !== '' && userNorm !== '' && userNorm === corrNorm;
 
       if (isCorrect) {
@@ -159,15 +166,59 @@ export default function ReviewTestModal({
         totalScore += point;
       }
 
+      const spentSec = questionSpentTimes[item.id] || 0;
+      
+      // 이전 풀이 시간 (lastSpentSec)과의 차이 (음수면 단축: 예 28초 - 42초 = -14초)
+      const prevSpent = item.lastSpentSec;
+      let diffFromPrev: number | undefined = undefined;
+      if (prevSpent !== undefined && prevSpent > 0) {
+        diffFromPrev = spentSec - prevSpent;
+      }
+
+      // 이전 역대 최고 기록 (bestSpentSec)
+      const prevBest = item.bestSpentSec;
+      const isNewRecord = isCorrect && (prevBest === undefined || spentSec < prevBest);
+
+      // 기존 랩타임 기록 불러오기
+      const existingLaps = item.timeRecords ? [...item.timeRecords] : (
+        item.lastSpentSec !== undefined ? [{
+          id: `legacy_${item.id}`,
+          spentSec: item.lastSpentSec,
+          isCorrect: item.lastIsCorrect ?? false,
+          recordedAt: item.lastTestedAt || new Date().toISOString(),
+          userAnswer: item.lastUserAnswer,
+        }] : []
+      );
+
+      const newLap: ReviewLapRecord = {
+        id: `lap_${Date.now()}_${idx}`,
+        spentSec,
+        isCorrect,
+        recordedAt: new Date().toISOString(),
+        userAnswer: userAns,
+        diffFromPrev,
+      };
+
+      const allLaps = [newLap, ...existingLaps];
+      const correctOnly = allLaps.filter(l => l.isCorrect).sort((a, b) => a.spentSec - b.spentSec);
+      const top3 = (correctOnly.length > 0 ? correctOnly : allLaps.sort((a, b) => a.spentSec - b.spentSec)).slice(0, 3);
+      const newBestSpentSec = isCorrect
+        ? Math.min(spentSec, prevBest ?? spentSec)
+        : prevBest;
+
       resultItems.push({
         itemId: item.id,
         questionName: item.name,
         userAnswer: userAns,
         correctAnswer: correctAns,
         isCorrect,
-        spentSec: questionSpentTimes[item.id] || 0,
+        spentSec,
         solutionUrl: item.solutionUrl,
         problemUrl: item.problemUrl,
+        diffFromPrev,
+        isNewRecord,
+        bestSpentSec: newBestSpentSec,
+        topRecords: top3,
       });
     });
 
@@ -185,19 +236,44 @@ export default function ReviewTestModal({
 
     setTestResult(newHistoryRecord);
 
-    // ── 3. DB 영구 동기화: reviewData 갱신 ────────────────────────
-    // items 배열의 각 item에 최근 테스트 결과(lastTestedAt, lastIsCorrect, lastUserAnswer, lastSpentSec) 주입
+    // ── 3. DB 영구 동기화: reviewData 갱신 (누적 랩타임 & 최고기록 반영) ──
     const resultMap = new Map(resultItems.map(r => [r.itemId, r]));
 
     const updatedItems = reviewData.items.map(item => {
       const res = resultMap.get(item.id);
       if (res) {
+        const existingLaps = item.timeRecords ? [...item.timeRecords] : (
+          item.lastSpentSec !== undefined ? [{
+            id: `legacy_${item.id}`,
+            spentSec: item.lastSpentSec,
+            isCorrect: item.lastIsCorrect ?? false,
+            recordedAt: item.lastTestedAt || new Date().toISOString(),
+            userAnswer: item.lastUserAnswer,
+          }] : []
+        );
+
+        const newLap: ReviewLapRecord = {
+          id: `lap_${Date.now()}_${item.id}`,
+          spentSec: res.spentSec,
+          isCorrect: res.isCorrect,
+          recordedAt: newHistoryRecord.testedAt,
+          userAnswer: res.userAnswer,
+          diffFromPrev: res.diffFromPrev,
+        };
+
+        const updatedLaps = [newLap, ...existingLaps];
+        const newBest = res.isCorrect
+          ? Math.min(res.spentSec, item.bestSpentSec ?? res.spentSec)
+          : item.bestSpentSec;
+
         return {
           ...item,
           lastTestedAt: newHistoryRecord.testedAt,
           lastIsCorrect: res.isCorrect,
           lastUserAnswer: res.userAnswer,
           lastSpentSec: res.spentSec,
+          bestSpentSec: newBest,
+          timeRecords: updatedLaps,
         };
       }
       return item;
@@ -357,9 +433,17 @@ export default function ReviewTestModal({
                         {currentItem.name}
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px] bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
-                      <Clock size={13} className="text-violet-400" />
-                      <span>소요시간: <strong className="text-white font-bold">{currentSpentSec}초</strong></span>
+                    <div className="flex items-center gap-2">
+                      {currentItem.bestSpentSec !== undefined && (
+                        <div className="flex items-center gap-1 text-amber-300 font-mono text-[11px] bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/30 shadow-xs">
+                          <Trophy size={12} className="text-amber-400" />
+                          <span>BEST: <strong className="font-bold">{currentItem.bestSpentSec}초</strong></span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px] bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
+                        <Clock size={13} className="text-violet-400" />
+                        <span>소요시간: <strong className="text-white font-bold">{currentSpentSec}초</strong></span>
+                      </div>
                     </div>
                   </div>
 
@@ -626,8 +710,8 @@ export default function ReviewTestModal({
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2.5">
-                            <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center ${
-                              isCorrect ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                            <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center shrink-0 ${
+                              isCorrect ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/30' : 'bg-rose-500 text-white'
                             }`}>
                               {idx + 1}
                             </span>
@@ -641,10 +725,48 @@ export default function ReviewTestModal({
                             </div>
                           </div>
 
-                          <span className="text-xs text-slate-400 font-mono bg-white/5 px-2 py-1 rounded-lg">
-                            ⏱️ {res.spentSec}초
-                          </span>
+                          <div className="text-right">
+                            <span className="text-xs text-white font-mono font-black bg-white/10 px-2 py-1 rounded-lg border border-white/10">
+                              ⏱️ {res.spentSec}초
+                            </span>
+                            {res.bestSpentSec !== undefined && (
+                              <span className="block text-[9px] text-amber-300 font-mono mt-0.5">
+                                BEST: {res.bestSpentSec}초
+                              </span>
+                            )}
+                          </div>
                         </div>
+
+                        {/* 🌟 NEW RECORD 또는 시간 단축 피드백 배너 */}
+                        {res.isNewRecord ? (
+                          <div className="p-2.5 rounded-xl bg-gradient-to-r from-amber-500/20 via-violet-600/20 to-amber-500/20 border border-amber-400/50 shadow-md flex items-center justify-between">
+                            <span className="text-xs font-black text-amber-300 flex items-center gap-1.5 font-mono animate-pulse">
+                              <Trophy size={14} className="text-amber-400 animate-bounce" />
+                              🎉 NEW BEST RECORD! (역대 최고)
+                            </span>
+                            {res.diffFromPrev !== undefined && res.diffFromPrev < 0 && (
+                              <span className="text-xs font-black text-emerald-300 font-mono">
+                                ⚡ {Math.abs(res.diffFromPrev)}초 단축!
+                              </span>
+                            )}
+                          </div>
+                        ) : res.diffFromPrev !== undefined ? (
+                          <div className={`p-2 rounded-xl text-xs font-mono font-bold flex items-center justify-between border ${
+                            res.diffFromPrev < 0
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                              : 'bg-white/5 border-white/10 text-slate-400'
+                          }`}>
+                            <span className="flex items-center gap-1">
+                              <Flame size={13} className={res.diffFromPrev < 0 ? 'text-emerald-400' : 'text-slate-500'} />
+                              이전 대비:
+                            </span>
+                            <span className="font-black">
+                              {res.diffFromPrev < 0
+                                ? `⚡ ${Math.abs(res.diffFromPrev)}초 단축 성공!`
+                                : `+${res.diffFromPrev}초`}
+                            </span>
+                          </div>
+                        ) : null}
 
                         {/* 답안 비교 */}
                         <div className="grid grid-cols-2 gap-2 text-xs bg-black/40 p-3 rounded-xl border border-white/5">
@@ -662,14 +784,27 @@ export default function ReviewTestModal({
                           </div>
                         </div>
 
-                        {/* 🔥 [해설 보기] 링크 버튼 */}
-                        <button
-                          onClick={() => setSolutionModalTargetIndex(idx)}
-                          className="w-full py-2.5 rounded-xl bg-violet-600/30 hover:bg-violet-600 text-violet-200 hover:text-white font-black text-xs transition-all flex items-center justify-center gap-1.5 border border-violet-500/30"
-                        >
-                          <BookOpen size={14} />
-                          <span>클릭하여 상세 해설 보기</span>
-                        </button>
+                        {/* 액션 버튼: [🏆 TOP 3 랭킹보드] + [📖 상세 해설 보기] */}
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <button
+                            onClick={() => {
+                              const foundItem = items.find(i => i.id === res.itemId) || items[idx];
+                              setLeaderboardModalTargetItem(foundItem);
+                            }}
+                            className="py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/30 text-amber-300 font-black text-xs transition-all flex items-center justify-center gap-1.5 border border-amber-500/30 shadow-xs"
+                            title="오락실 하이스코어 TOP 3 전광판 보기"
+                          >
+                            <Trophy size={14} className="text-amber-400" />
+                            <span>TOP 3 랭킹</span>
+                          </button>
+                          <button
+                            onClick={() => setSolutionModalTargetIndex(idx)}
+                            className="py-2.5 rounded-xl bg-violet-600/30 hover:bg-violet-600 text-violet-200 hover:text-white font-black text-xs transition-all flex items-center justify-center gap-1.5 border border-violet-500/30 shadow-xs"
+                          >
+                            <BookOpen size={14} />
+                            <span>해설 보기</span>
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -689,6 +824,14 @@ export default function ReviewTestModal({
           items={items}
           initialIndex={solutionModalTargetIndex}
           onClose={() => setSolutionModalTargetIndex(null)}
+        />
+      )}
+
+      {/* 🌟 결과 화면에서 오락실 TOP 3 타임랩 랭킹보드 모달 */}
+      {leaderboardModalTargetItem && (
+        <ReviewArcadeLeaderboard
+          item={leaderboardModalTargetItem}
+          onClose={() => setLeaderboardModalTargetItem(null)}
         />
       )}
 

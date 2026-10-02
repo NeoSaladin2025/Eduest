@@ -24,11 +24,15 @@ import {
   Zap,
   CheckCircle2,
   XCircle,
-  Clock
+  Clock,
+  Trophy,
+  Flame,
+  Medal
 } from 'lucide-react';
 import { ReviewFolder, ReviewItem, StudentReviewData } from './types';
 import ReviewTestModal from './ReviewTestModal';
 import ReviewSolutionModal from './ReviewSolutionModal';
+import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
 
 interface StudentReviewExplorerProps {
   studentId: string;
@@ -91,6 +95,9 @@ export default function StudentReviewExplorer({
     items: ReviewItem[];
     initialIndex: number;
   } | null>(null);
+
+  // 🌟 오락실 하이스코어 전광판 모달 상태
+  const [leaderboardTargetItem, setLeaderboardTargetItem] = useState<ReviewItem | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -960,21 +967,63 @@ export default function StudentReviewExplorer({
                           </div>
                         </div>
 
-                        {/* 최근 시험 응시 결과 (DB에 저장된 데이터 표시) */}
+                        {/* 🌟 [사용자 요청] 소요시간 & BEST 기록 & 시간 단축 표시 */}
                         {file.lastTestedAt && (
-                          <div className="flex items-center justify-between text-[10px] font-bold py-1 px-2.5 rounded-xl bg-black/40 border border-white/5">
-                            {file.lastIsCorrect ? (
-                              <span className="text-emerald-400 flex items-center gap-1 font-black">
-                                <CheckCircle2 size={12} /> 정답 ({file.lastSpentSec || 0}초)
+                          <div className="space-y-1.5">
+                            {/* 소요시간 및 BEST 기록 칩 바 */}
+                            <div className="flex items-center justify-between text-[10px] font-mono font-bold px-2 py-1 rounded-lg bg-black/40 border border-white/5">
+                              <span className="text-slate-400 flex items-center gap-1">
+                                <Clock size={11} className="text-violet-400" />
+                                <span>소요: <strong className="text-white">{file.lastSpentSec ?? 0}초</strong></span>
                               </span>
-                            ) : (
-                              <span className="text-rose-400 flex items-center gap-1 font-black">
-                                <XCircle size={12} /> 오답 {file.answer ? `(정답: ${file.answer})` : ''}
-                              </span>
-                            )}
-                            <span className="text-slate-500 font-normal">
-                              {file.lastUserAnswer ? `마킹: ${file.lastUserAnswer}` : ''}
-                            </span>
+                              
+                              <div className="flex items-center gap-1.5">
+                                {file.bestSpentSec !== undefined && (
+                                  <span className="text-amber-300 flex items-center gap-0.5 bg-amber-500/15 px-1.5 py-0.2 rounded border border-amber-500/30">
+                                    <Trophy size={10} className="text-amber-400" />
+                                    <span>BEST: {file.bestSpentSec}초</span>
+                                  </span>
+                                )}
+                                
+                                {/* 🏆 오락실 TOP 3 전광판 열기 버튼 */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setLeaderboardTargetItem(file);
+                                  }}
+                                  className="text-[10px] text-amber-400 hover:text-amber-200 bg-amber-500/20 hover:bg-amber-500/30 px-1.5 py-0.5 rounded transition-all flex items-center gap-0.5 font-sans font-black"
+                                  title="오락실 하이스코어 TOP 3 전광판 보기"
+                                >
+                                  <Medal size={11} />
+                                  <span>TOP 3</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* 최근 정답 / 오답 및 시간 단축 뱃지 */}
+                            <div className="flex items-center justify-between text-[10px] font-bold py-1 px-2.5 rounded-xl bg-black/40 border border-white/5">
+                              {file.lastIsCorrect ? (
+                                <span className="text-emerald-400 flex items-center gap-1 font-black">
+                                  <CheckCircle2 size={12} /> 정답
+                                </span>
+                              ) : (
+                                <span className="text-rose-400 flex items-center gap-1 font-black">
+                                  <XCircle size={12} /> 오답 {file.answer ? `(정답: ${file.answer})` : ''}
+                                </span>
+                              )}
+                              
+                              {/* 시간 단축 피드백 */}
+                              {file.timeRecords && file.timeRecords[0]?.diffFromPrev !== undefined && file.timeRecords[0].diffFromPrev < 0 ? (
+                                <span className="text-emerald-300 font-mono font-black animate-pulse flex items-center gap-0.5">
+                                  <Flame size={11} className="text-emerald-400" />
+                                  ⚡ {Math.abs(file.timeRecords[0].diffFromPrev)}초 단축!
+                                </span>
+                              ) : (
+                                <span className="text-slate-500 font-normal">
+                                  {file.lastUserAnswer ? `마킹: ${file.lastUserAnswer}` : ''}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
 
@@ -1202,6 +1251,17 @@ export default function StudentReviewExplorer({
           items={solutionModalState.items}
           initialIndex={solutionModalState.initialIndex}
           onClose={() => setSolutionModalState(null)}
+        />
+      )}
+
+      {/* ── 🌟 [사용자 요청] 오락실 TOP 3 타임랩 전광판 모달 ── */}
+      {leaderboardTargetItem && (
+        <ReviewArcadeLeaderboard
+          item={leaderboardTargetItem}
+          onClose={() => setLeaderboardTargetItem(null)}
+          onStartTest={() => {
+            handleStartTest([leaderboardTargetItem], leaderboardTargetItem.name);
+          }}
         />
       )}
 
