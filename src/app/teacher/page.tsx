@@ -29,6 +29,8 @@ import StudentViewManagerMain from './studentviewmanager/main';
 import ExamManagerMain from './exammgr/main';
 // ✅ 테스트자료 관리 컴포넌트 추가
 import TestDataManagerMain from './testdatamgr/main';
+// ✅ 복습관리 컴포넌트 추가
+import ReviewManagerMain from './reviewmgr/main';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -46,6 +48,7 @@ export default function TeacherAdminPage() {
     { id: 'students', label: '학생 관리', icon: <Users size={16} /> },
     { id: 'studentview', label: '학생화면 관리', icon: <SlidersHorizontal size={16} /> },
     { id: 'classes', label: '수업관리', icon: <CalendarDays size={16} /> },
+    { id: 'reviewmgr', label: '복습관리', icon: <BookOpen size={16} /> },
     { id: 'exammgr', label: '테스트 관리', icon: <FileCheck size={16} /> },
     { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={16} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={16} /> },
@@ -162,6 +165,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'classes' && (
             <div className="w-full h-full bg-white overflow-hidden">
               <ClassManagerMain />
+            </div>
+          )}
+
+          {/* ✅ 복습관리 (학생별 복습 현황 모니터링 & 스페셜 테스트 제작/인증샷 확인) */}
+          {activeMenu === 'reviewmgr' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <ReviewManagerMain />
             </div>
           )}
 

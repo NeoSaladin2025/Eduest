@@ -1015,7 +1015,7 @@ export default function StudentReviewExplorer({
                                 </span>
                               ) : (
                                 <span className="text-rose-400 flex items-center gap-1 font-black">
-                                  <XCircle size={12} /> 오답 {file.answer ? `(정답: ${file.answer})` : ''}
+                                  <XCircle size={12} /> 오답
                                 </span>
                               )}
                               

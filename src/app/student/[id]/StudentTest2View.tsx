@@ -22,7 +22,10 @@ import {
   Lock,
   Layers,
   PlayCircle,
-  Star
+  Star,
+  Camera,
+  Trash2,
+  Maximize2
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
@@ -47,7 +50,7 @@ export default function StudentTest2View({
 }: StudentTest2ViewProps) {
   // 모드: 목록('list') | 응시 중('taking') | 결과/채점 보기('result')
   const [viewMode, setViewMode] = useState<'list' | 'taking' | 'result'>('list');
-  const [listTab, setListTab] = useState<'single' | 'bundle' | 'wrong'>('single');
+  const [listTab, setListTab] = useState<'single' | 'bundle' | 'special' | 'wrong'>('single');
   const [loading, setLoading] = useState(true);
 
   // 배정된 단일 시험지 및 묶음 시험지 목록
@@ -64,6 +67,11 @@ export default function StudentTest2View({
   const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
+
+  // 📸 [신규] 풀이과정 사진 인증샷 상태 & 모달
+  const [proofImages, setProofImages] = useState<Record<string, { drive_id: string; url: string; fileName: string }>>({});
+  const [uploadingProofQId, setUploadingProofQId] = useState<string | null>(null);
+  const [viewingProofUrl, setViewingProofUrl] = useState<string | null>(null);
 
   // 타이머 & 일시정지 & 이탈 감지 화면 잠금
   const [timeLeft, setTimeLeft] = useState<number>(0);
@@ -109,14 +117,66 @@ export default function StudentTest2View({
 
   const currentReviewData = reviewData || localReviewData;
 
-  // 단일 시험지와 오답 시험지 분류
+  // 스페셜, 단일, 오답 시험지 분류
+  const specialExams = useMemo(() => {
+    return examList.filter(e => e.is_special || (e.title && e.title.includes('[스페셜]')));
+  }, [examList]);
+
   const wrongExams = useMemo(() => {
-    return examList.filter(e => e.is_wrong_review || e.title.startsWith('[오답]'));
+    return examList.filter(e => !e.is_special && !e.title?.includes('[스페셜]') && (e.is_wrong_review || e.title.startsWith('[오답]')));
   }, [examList]);
 
   const singleExams = useMemo(() => {
-    return examList.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]')));
+    return examList.filter(e => !e.is_special && !e.title?.includes('[스페셜]') && !(e.is_wrong_review || e.title.startsWith('[오답]')));
   }, [examList]);
+
+  // 📸 풀이 인증샷 업로드 핸들러 (구글 드라이브 학생 폴더로 자동 저장)
+  const handleUploadProof = async (questionId: string, qNum: number, file?: File | null) => {
+    if (!file || !currentExam) return;
+    setUploadingProofQId(questionId);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('studentId', studentId);
+      formData.append('examId', currentExam.id);
+      formData.append('examTitle', currentExam.title);
+      formData.append('questionNumber', String(qNum));
+      formData.append('questionId', questionId);
+
+      const res = await fetch('/api/drive/upload-proof', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setProofImages(prev => ({
+          ...prev,
+          [questionId]: {
+            drive_id: data.fileId,
+            url: data.url,
+            fileName: data.fileName,
+          },
+        }));
+        showReviewToast(`📸 ${qNum}번 풀이 인증샷이 내 구글 드라이브에 안전하게 저장되었습니다!`);
+      } else {
+        alert(`사진 업로드 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err) {
+      console.error('Proof upload error:', err);
+      alert('사진 업로드 중 통신 오류가 발생했습니다.');
+    } finally {
+      setUploadingProofQId(null);
+    }
+  };
+
+  const handleRemoveProof = (questionId: string) => {
+    setProofImages(prev => {
+      const next = { ...prev };
+      delete next[questionId];
+      return next;
+    });
+  };
 
   // 문항이 현재 복습에 담겨있는지 확인
   const isQuestionInReview = (qId: string) => {
@@ -573,6 +633,16 @@ export default function StudentTest2View({
   const handleSubmitExam = async () => {
     if (!currentExam) return;
 
+    // 📸 풀이 인증샷 필수 검증
+    if (currentExam.require_proof_image) {
+      const proofCount = Object.keys(proofImages).length;
+      if (proofCount === 0) {
+        alert("📸 이 시험은 풀이과정 사진 인증이 필수입니다!\n\n문항별로 풀이과정 사진을 첨부한 후 제출해 주세요.");
+        setShowSubmitConfirm(false);
+        return;
+      }
+    }
+
     try {
       setIsSubmitting(true);
       const res = await fetch('/api/test2/student-exams', {
@@ -583,6 +653,7 @@ export default function StudentTest2View({
           examId: currentExam.id,
           answers: userAnswers,
           questionTimes: questionSpentTimes,
+          proofImages,
         }),
       });
 
@@ -705,6 +776,17 @@ export default function StudentTest2View({
                   단일 시험지 ({singleExams.length})
                 </button>
                 <button
+                  onClick={() => setListTab('special')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+                    listTab === 'special'
+                      ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30 font-extrabold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Sparkles size={16} className={listTab === 'special' ? 'text-slate-950 fill-slate-950' : 'text-amber-400'} />
+                  스페셜 시험지 ({specialExams.length})
+                </button>
+                <button
                   onClick={() => setListTab('bundle')}
                   className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
                     listTab === 'bundle'
@@ -729,6 +811,99 @@ export default function StudentTest2View({
               </div>
             </div>
           </div>
+
+          {/* 🌟 탭: 스페셜 시험지 목록 */}
+          {listTab === 'special' && (
+            specialExams.length === 0 ? (
+              <div className="bg-white/5 border border-dashed border-amber-500/20 rounded-[40px] p-16 text-center space-y-4 max-w-xl mx-auto">
+                <div className="w-16 h-16 bg-amber-500/20 text-amber-400 rounded-3xl flex items-center justify-center mx-auto shadow-lg shadow-amber-500/10">
+                  <Sparkles size={32} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-xl font-black text-white">배정된 스페셜 시험지가 없습니다</h3>
+                  <p className="text-xs text-slate-500 font-bold">
+                    선생님이 복습 관리에서 나만을 위한 스페셜 시험지를 배정하면 이곳에 나타납니다!
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {specialExams.map((exam: any) => {
+                  const isSubmitted = exam.is_submitted;
+                  return (
+                    <div
+                      key={exam.id}
+                      className="bg-gradient-to-b from-amber-500/10 to-transparent border border-amber-500/30 hover:border-amber-400 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black rounded-full flex items-center gap-1">
+                              <Sparkles size={11} /> 스페셜
+                            </span>
+                            {exam.require_proof_image && (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Camera size={11} /> 사진인증
+                              </span>
+                            )}
+                          </div>
+                          {isSubmitted ? (
+                            <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                              <CheckCircle2 size={13} />
+                              완료 ({exam.submission?.score}점)
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 text-xs font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
+                              <Clock size={13} />
+                              응시 대기
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <h3 className="text-2xl font-black text-white group-hover:text-amber-300 transition-colors line-clamp-2 leading-tight">
+                            {exam.title}
+                          </h3>
+                          <p className="text-xs text-slate-400 font-bold mt-2">
+                            총 {exam.question_count}문항 • 제한시간 {exam.duration_min}분
+                          </p>
+                        </div>
+
+                        {isSubmitted && exam.submission && (
+                          <div className="bg-white/5 rounded-2xl p-3 flex items-center justify-between border border-white/5 text-xs">
+                            <span className="text-slate-400 font-bold">채점 결과</span>
+                            <span className="text-amber-400 font-black text-sm">
+                              {exam.submission.correct_count} / {exam.submission.total_questions} 정답 ({exam.submission.score}점)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-6 mt-6 border-t border-white/10">
+                        {isSubmitted ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 bg-white/10 hover:bg-white/20 text-white font-black text-xs rounded-2xl transition-all flex items-center justify-center gap-2 group-hover:scale-[1.02]"
+                          >
+                            <Eye size={16} />
+                            결과 및 인증샷 확인
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-2xl transition-all shadow-xl shadow-amber-500/20 flex items-center justify-center gap-2 group-hover:scale-[1.02]"
+                          >
+                            <PlayCircle size={16} />
+                            스페셜 시험 시작하기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
 
           {/* 탭 1: 단일 시험지 목록 */}
           {listTab === 'single' && (
@@ -1222,6 +1397,82 @@ export default function StudentTest2View({
                         className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
                       />
                     </div>
+
+                    {/* 📸 [신규] 풀이과정 사진 인증샷 업로드 영역 */}
+                    <div className="mt-6 pt-5 border-t border-white/10 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <Camera size={14} />
+                          풀이 인증샷 {currentExam.require_proof_image && <span className="text-rose-400 font-extrabold">*필수</span>}
+                        </label>
+                        {proofImages[question.id] && (
+                          <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 size={12} /> 구글드라이브 저장됨
+                          </span>
+                        )}
+                      </div>
+
+                      {proofImages[question.id] ? (
+                        <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
+                          <img
+                            src={proofImages[question.id].url}
+                            alt="풀이 인증샷"
+                            className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
+                            onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                            title="클릭하여 크게 보기"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
+                            <button
+                              type="button"
+                              onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                              className="text-[10px] text-amber-400 hover:underline flex items-center gap-1 mt-0.5"
+                            >
+                              <Maximize2 size={10} /> 크게 보기
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveProof(question.id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                            title="삭제 후 다시 촬영"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <input
+                            type="file"
+                            id={`proof-upload-${question.id}`}
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={(e) => handleUploadProof(question.id, currentQuestionIndex + 1, e.target.files?.[0])}
+                          />
+                          <label
+                            htmlFor={`proof-upload-${question.id}`}
+                            className={`w-full py-3.5 px-4 rounded-2xl border border-dashed flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                              uploadingProofQId === question.id
+                                ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
+                                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/30 text-amber-300 hover:border-amber-400/60'
+                            }`}
+                          >
+                            {uploadingProofQId === question.id ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin text-amber-400" />
+                                <span className="text-xs font-black">내 구글 드라이브에 저장 중...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Camera size={16} className="text-amber-400" />
+                                <span className="text-xs font-black">풀이과정 사진 촬영 / 업로드</span>
+                              </>
+                            )}
+                          </label>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* 마킹 현황 요약 */}
@@ -1419,9 +1670,50 @@ export default function StudentTest2View({
                         </span>
                       </div>
                     </div>
+
+                    {/* 📸 제출된 풀이 인증샷 보기 버튼 */}
+                    {ansInfo?.proof_image_url && (
+                      <div className="mt-2.5 pt-2 border-t border-white/5">
+                        <button
+                          type="button"
+                          onClick={() => setViewingProofUrl(ansInfo.proof_image_url!)}
+                          className="w-full py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <Camera size={13} />
+                          <span>내가 올린 풀이 인증샷 확인</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 풀이과정 사진 인증샷 확대 보기 모달 */}
+      {viewingProofUrl && (
+        <div className="fixed inset-0 z-[120] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="relative max-w-4xl w-full max-h-[90vh] bg-slate-900 border border-white/10 rounded-[32px] p-6 flex flex-col items-center shadow-3xl">
+            <div className="w-full flex items-center justify-between pb-4 border-b border-white/10 mb-4">
+              <div className="flex items-center gap-2 text-white font-black text-sm">
+                <Camera size={18} className="text-amber-400" />
+                <span>풀이과정 사진 인증샷 (원본)</span>
+              </div>
+              <button
+                onClick={() => setViewingProofUrl(null)}
+                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors font-black"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 w-full overflow-auto flex items-center justify-center">
+              <img
+                src={viewingProofUrl}
+                alt="풀이 인증샷 원본"
+                className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-2xl bg-black"
+              />
             </div>
           </div>
         </div>

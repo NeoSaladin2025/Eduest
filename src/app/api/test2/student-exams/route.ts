@@ -27,8 +27,17 @@ export interface StudentSubmission {
       raw_answer: string;
       solution_drive_id: string;
       time_spent_sec?: number;
+      proof_image_drive_id?: string;
+      proof_image_url?: string;
     };
   };
+  proof_images?: Array<{
+    question_id?: string;
+    question_number?: number;
+    drive_id: string;
+    url?: string;
+    file_name?: string;
+  }>;
 }
 
 // 헬퍼: 전체 시험지 가져오기
@@ -193,6 +202,9 @@ export async function GET(req: NextRequest) {
         duration_min: e.duration_min,
         question_count: e.questions.length,
         created_at: e.created_at,
+        is_wrong_review: e.is_wrong_review,
+        is_special: e.is_special,
+        require_proof_image: e.require_proof_image,
         is_submitted: !!sub,
         submission: sub
           ? {
@@ -200,6 +212,7 @@ export async function GET(req: NextRequest) {
               score: sub.score,
               correct_count: sub.correct_count,
               total_questions: sub.total_questions,
+              proof_images: sub.proof_images,
             }
           : null,
       };
@@ -216,7 +229,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, answers, questionTimes } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }
+    const { studentId, examId, answers, questionTimes, proofImages } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
 
     if (!studentId || !examId) {
       return NextResponse.json(
@@ -235,12 +248,24 @@ export async function POST(req: NextRequest) {
     // 채점 진행
     let correctCount = 0;
     const gradedAnswers: StudentSubmission["answers"] = {};
+    const collectedProofImages: StudentSubmission["proof_images"] = [];
 
-    exam.questions.forEach((q) => {
+    exam.questions.forEach((q, idx) => {
       const userAns = String(answers?.[q.id] ?? "").trim();
       const isCorrect = checkAnswerMatch(userAns, q.answer, q.raw_answer);
 
       if (isCorrect) correctCount++;
+
+      const pImg = proofImages?.[q.id];
+      if (pImg) {
+        collectedProofImages.push({
+          question_id: q.id,
+          question_number: idx + 1,
+          drive_id: pImg.drive_id || pImg.fileId,
+          url: pImg.url,
+          file_name: pImg.file_name || pImg.fileName,
+        });
+      }
 
       gradedAnswers[q.id] = {
         user_answer: userAns,
@@ -249,6 +274,8 @@ export async function POST(req: NextRequest) {
         raw_answer: q.raw_answer,
         solution_drive_id: q.solution_drive_id,
         time_spent_sec: questionTimes?.[q.id] ? Number(questionTimes[q.id]) : 0,
+        proof_image_drive_id: pImg?.drive_id || pImg?.fileId,
+        proof_image_url: pImg?.url,
       };
     });
 
@@ -265,6 +292,7 @@ export async function POST(req: NextRequest) {
       total_questions: totalQuestions,
       correct_count: correctCount,
       answers: gradedAnswers,
+      proof_images: collectedProofImages,
     };
 
     const allSubmissions = await getSubmissions();

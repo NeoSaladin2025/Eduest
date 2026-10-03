@@ -30,6 +30,8 @@ export interface ExamPaper {
   questions: ExamQuestion[];
   assigned_student_ids: string[];
   is_wrong_review?: boolean;
+  is_special?: boolean;
+  require_proof_image?: boolean;
   parent_exam_id?: string;
   created_at: string;
   updated_at: string;
@@ -107,7 +109,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { title, grade, duration_min, questions, assigned_student_ids, is_wrong_review, parent_exam_id } = body;
+    const { title, grade, duration_min, questions, assigned_student_ids, is_wrong_review, is_special, require_proof_image, parent_exam_id } = body;
 
     if (!title || !questions || !Array.isArray(questions) || questions.length === 0) {
       return NextResponse.json(
@@ -133,6 +135,8 @@ export async function POST(req: NextRequest) {
       })),
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
       is_wrong_review: !!is_wrong_review,
+      is_special: !!is_special,
+      require_proof_image: !!require_proof_image,
       parent_exam_id: parent_exam_id || undefined,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
