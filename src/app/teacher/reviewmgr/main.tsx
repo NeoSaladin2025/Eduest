@@ -96,9 +96,11 @@ export default function ReviewManagerMain() {
   const [assignedStudentIds, setAssignedStudentIds] = useState<Set<string>>(new Set());
   const [creatingExam, setCreatingExam] = useState(false);
 
-  // 스페셜 시험지 목록 & 인증샷 모달
+  // 스페셜 시험지 목록 & 인증샷 모달 & 필터링
   const [specialExams, setSpecialExams] = useState<any[]>([]);
   const [specialExamsLoading, setSpecialExamsLoading] = useState(false);
+  const [specialSearchTerm, setSpecialSearchTerm] = useState('');
+  const [selectedSpecialGrade, setSelectedSpecialGrade] = useState('전체');
   const [viewingProofData, setViewingProofData] = useState<{
     studentName: string;
     examTitle: string;
@@ -194,6 +196,57 @@ export default function ReviewManagerMain() {
       return matchSearch && matchGrade;
     });
   }, [students, searchTerm, selectedGrade]);
+
+  // 필터링된 스페셜 시험지 목록 (학년 필터 + 자유 검색 대조)
+  const filteredSpecialExams = useMemo(() => {
+    const term = specialSearchTerm.trim().toLowerCase();
+    return specialExams
+      .map(exam => {
+        // 1. 학년 필터 (시험지 grade 또는 배정된 학생 grade)
+        const matchGrade =
+          selectedSpecialGrade === '전체' ||
+          exam.grade?.includes(selectedSpecialGrade) ||
+          exam.assigned_students?.some((st: any) => st.student_grade?.includes(selectedSpecialGrade));
+
+        if (!matchGrade) return null;
+
+        // 2. 검색어가 비어있을 때는 전체 통과
+        if (!term) return exam;
+
+        // 3. 검색어 대조: 시험지 제목, 시험지 학년
+        const matchExamTitle = exam.title?.toLowerCase().includes(term);
+        const matchExamGrade = exam.grade?.toLowerCase().includes(term);
+
+        // 4. 배정된 학생 정보 대조 (이름, 학년, 응시 상태, 점수 등)
+        const matchingStudents = exam.assigned_students?.filter((st: any) => {
+          const matchName = st.student_name?.toLowerCase().includes(term);
+          const matchStGrade = st.student_grade?.toLowerCase().includes(term);
+          const matchStatus = (st.is_submitted ? '제출 완료' : '미응시 대기').toLowerCase().includes(term);
+          const matchScore = st.submission ? `${st.submission.score}점`.includes(term) : false;
+          return matchName || matchStGrade || matchStatus || matchScore;
+        }) || [];
+
+        // 시험지 제목이나 학년에 매칭되면 학생 목록 전체 유지
+        if (matchExamTitle || matchExamGrade) {
+          return exam;
+        }
+
+        // 학생 정보에 매칭되면 해당 학생만 좁혀서 보여주어 검색 가독성 극대화
+        if (matchingStudents.length > 0) {
+          return {
+            ...exam,
+            assigned_students: matchingStudents,
+          };
+        }
+
+        return null;
+      })
+      .filter(Boolean);
+  }, [specialExams, specialSearchTerm, selectedSpecialGrade]);
+
+  const totalFilteredStudentsCount = useMemo(() => {
+    return filteredSpecialExams.reduce((acc: number, exam: any) => acc + (exam.assigned_students?.length || 0), 0);
+  }, [filteredSpecialExams]);
 
   const selectedStudent = useMemo(() => {
     return students.find(s => s.id === selectedStudentId) || null;
@@ -603,6 +656,73 @@ export default function ReviewManagerMain() {
             </button>
           </div>
 
+          {/* 🔍 스페셜 테스트 학년별 필터 & 자유 검색 필터링 바 */}
+          <div className="bg-white border border-slate-200 rounded-[28px] p-5 shadow-xs space-y-3.5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+              {/* 자유 검색 입력창 */}
+              <div className="relative flex-1">
+                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={specialSearchTerm}
+                  onChange={e => setSpecialSearchTerm(e.target.value)}
+                  placeholder="시험지 제목, 학생 이름, 학년, 응시 상태(제출완료/미응시) 등 자유롭게 검색..."
+                  className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-amber-400 focus:bg-white transition-all placeholder:text-slate-400"
+                />
+                {specialSearchTerm && (
+                  <button
+                    onClick={() => setSpecialSearchTerm('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                    title="검색어 지우기"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* 통계 카운터 및 초기화 버튼 */}
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-2 rounded-xl">
+                  검색 결과: <strong className="text-amber-600 font-black">{filteredSpecialExams.length}</strong>개 시험지
+                  <span className="text-slate-400 font-medium ml-1">({totalFilteredStudentsCount}명)</span>
+                </span>
+                {(specialSearchTerm || selectedSpecialGrade !== '전체') && (
+                  <button
+                    onClick={() => {
+                      setSpecialSearchTerm('');
+                      setSelectedSpecialGrade('전체');
+                    }}
+                    className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-bold transition-colors flex items-center gap-1"
+                  >
+                    <X size={12} /> 필터 초기화
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 학년별 필터 버튼 칩 */}
+            <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+              <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider shrink-0 mr-1">
+                학년 선택:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {gradeButtons.map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setSelectedSpecialGrade(g)}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-black transition-all border ${
+                      selectedSpecialGrade === g
+                        ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-xs scale-105'
+                        : 'bg-white text-slate-500 border-slate-200 hover:border-amber-300 hover:text-slate-800'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {specialExamsLoading ? (
             <div className="py-28 flex flex-col items-center justify-center text-slate-400">
               <Loader2 size={36} className="animate-spin text-amber-500 mb-2" />
@@ -616,9 +736,26 @@ export default function ReviewManagerMain() {
                 [학생별 복습 현황] 탭에서 학생의 복습 문항을 선별하여 스페셜 테스트를 생성해보세요!
               </p>
             </div>
+          ) : filteredSpecialExams.length === 0 ? (
+            <div className="bg-white border border-dashed border-slate-200 rounded-[40px] py-28 text-center text-slate-400 space-y-3">
+              <Search size={40} className="mx-auto text-slate-300" />
+              <h3 className="text-base font-black text-slate-700">검색 조건과 일치하는 스페셜 시험지가 없습니다</h3>
+              <p className="text-xs text-slate-400">
+                검색어 &apos;{specialSearchTerm}&apos; 또는 학년 필터 &apos;{selectedSpecialGrade}&apos; 조건에 해당하는 항목이 없습니다.
+              </p>
+              <button
+                onClick={() => {
+                  setSpecialSearchTerm('');
+                  setSelectedSpecialGrade('전체');
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs transition-all shadow-xs"
+              >
+                필터 초기화
+              </button>
+            </div>
           ) : (
             <div className="space-y-5">
-              {specialExams.map((exam: any) => {
+              {filteredSpecialExams.map((exam: any) => {
                 return (
                   <div
                     key={exam.id}
