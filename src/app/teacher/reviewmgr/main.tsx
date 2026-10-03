@@ -888,19 +888,39 @@ export default function ReviewManagerMain() {
                     <span className="text-amber-300 font-black text-sm">
                       {img.question_number ? `${img.question_number}번 문항 풀이` : `인증샷 #${i + 1}`}
                     </span>
-                    <span className="truncate max-w-xs">{img.file_name || 'handwritten_proof.jpg'}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="truncate max-w-[200px] md:max-w-xs">{img.file_name || 'handwritten_proof.jpg'}</span>
+                      {img.drive_id && (
+                        <a
+                          href={`https://drive.google.com/file/d/${img.drive_id}/view`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-amber-400 hover:text-amber-300 hover:underline flex items-center gap-1 shrink-0 bg-white/5 px-2 py-0.5 rounded-lg border border-white/10"
+                          title="구글 드라이브에서 직접 열기"
+                        >
+                          <ExternalLink size={10} /> 드라이브 원본
+                        </a>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex justify-center bg-black/70 rounded-xl p-2">
+                  <div className="flex justify-center bg-black/70 rounded-xl p-2 min-h-[160px] items-center">
                     <img
                       src={
                         img.url
-                          ? img.url.includes('raw=')
+                          ? img.url.startsWith('data:')
+                            ? img.url
+                            : img.url.includes('raw=')
                             ? img.url
                             : `${img.url}&raw=true`
                           : `/api/drive/library/file?fileId=${img.drive_id}&type=image&raw=true`
                       }
                       alt="풀이 인증샷"
                       className="max-h-[65vh] object-contain rounded-lg shadow-2xl"
+                      onError={(e) => {
+                        if (img.drive_id && !e.currentTarget.src.includes(img.drive_id)) {
+                          e.currentTarget.src = `/api/drive/library/file?fileId=${img.drive_id}&type=image&raw=true`;
+                        }
+                      }}
                     />
                   </div>
                 </div>

@@ -262,7 +262,7 @@ export async function POST(req: NextRequest) {
           question_id: q.id,
           question_number: idx + 1,
           drive_id: pImg.drive_id || pImg.fileId,
-          url: pImg.url,
+          url: pImg.remote_url || pImg.url,
           file_name: pImg.file_name || pImg.fileName,
         });
       }
@@ -275,7 +275,7 @@ export async function POST(req: NextRequest) {
         solution_drive_id: q.solution_drive_id,
         time_spent_sec: questionTimes?.[q.id] ? Number(questionTimes[q.id]) : 0,
         proof_image_drive_id: pImg?.drive_id || pImg?.fileId,
-        proof_image_url: pImg?.url,
+        proof_image_url: pImg?.remote_url || pImg?.url,
       };
     });
 
