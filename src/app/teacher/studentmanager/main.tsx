@@ -4,7 +4,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
   Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound,
-  ChevronRight, ChevronDown, Folder, FolderOpen, MinusSquare
+  ChevronRight, ChevronDown, Folder, FolderOpen, MinusSquare, Sparkles, ArrowRight,
+  Edit2, CheckCircle2, AlertCircle, RefreshCw
 } from 'lucide-react';
 
 interface Student {
@@ -22,6 +23,33 @@ interface FolderNode {
   parent_id: string | null;
   name: string;
   children: FolderNode[];
+}
+
+// 학년 승급 계산 헬퍼 (접미사 유지 지원: 예 '고1-A' -> '고2-A')
+const PROMOTE_MAP: Record<string, string> = {
+  '중1': '중2',
+  '중2': '중3',
+  '중3': '고1',
+  '고1': '고2',
+  '고2': '고3',
+};
+
+function getPromotedGradeClient(currentGrade: string, high3Action: 'graduated' | 'keep' = 'keep'): string | null {
+  const trimmed = (currentGrade || '').trim();
+  const match = trimmed.match(/^(중1|중2|중3|고1|고2|고3)(.*)$/);
+  if (!match) return null;
+
+  const base = match[1];
+  const suffix = match[2] || '';
+
+  if (base === '고3') {
+    if (high3Action === 'graduated') return `졸업${suffix}`;
+    return `고3${suffix}`;
+  }
+
+  const nextBase = PROMOTE_MAP[base];
+  if (!nextBase) return null;
+  return `${nextBase}${suffix}`;
 }
 
 function buildFolderTree(items: any[], grade: string): FolderNode[] {
@@ -83,6 +111,7 @@ export default function StudentManagerMain() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // 회차 및 폴더 권한 모달 상태
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
@@ -94,6 +123,35 @@ export default function StudentManagerMain() {
   const [pwdStudent, setPwdStudent] = useState<Student | null>(null);
   const [newPwd, setNewPwd] = useState('');
   const [pwdSaving, setPwdSaving] = useState(false);
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능] 1. 선택 모드 & 선택 학생 학년 변경 상태
+  // ----------------------------------------------------
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<Set<string>>(new Set());
+  const [isTargetGradeModalOpen, setIsTargetGradeModalOpen] = useState(false);
+  const [targetGradeValue, setTargetGradeValue] = useState('');
+  const [targetResetFolders, setTargetResetFolders] = useState(true);
+  const [targetRenameDrive, setTargetRenameDrive] = useState(true);
+  const [targetSaving, setTargetSaving] = useState(false);
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능] 2. 전체 1학년 일괄 진급 모달 상태
+  // ----------------------------------------------------
+  const [isPromoteModalOpen, setIsPromoteModalOpen] = useState(false);
+  const [promoteHigh3Action, setPromoteHigh3Action] = useState<'keep' | 'graduated'>('keep');
+  const [promoteResetFolders, setPromoteResetFolders] = useState(true);
+  const [promoteRenameDrive, setPromoteRenameDrive] = useState(true);
+  const [promoteSaving, setPromoteSaving] = useState(false);
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능] 3. 개별 학생 빠른 학년 변경 상태
+  // ----------------------------------------------------
+  const [quickGradeStudent, setQuickGradeStudent] = useState<Student | null>(null);
+  const [quickGradeValue, setQuickGradeValue] = useState('');
+  const [quickResetFolders, setQuickResetFolders] = useState(true);
+  const [quickRenameDrive, setQuickRenameDrive] = useState(true);
+  const [quickGradeSaving, setQuickGradeSaving] = useState(false);
 
   const handleCopyLink = (studentId: string) => {
     const origin = window.location.origin;
@@ -183,6 +241,7 @@ export default function StudentManagerMain() {
     }
   };
 
+  // 학생 잠금 토글
   const toggleStudentLock = async (student: Student) => {
     const nextStatus = !student.is_unlocked;
     
@@ -207,6 +266,7 @@ export default function StudentManagerMain() {
     }
   };
 
+  // 폴더 권한 저장
   const saveFolderPermissions = async (folderIds: string[]) => {
     if (!selectedStudent) return;
     setModalLoading(true);
@@ -247,7 +307,6 @@ export default function StudentManagerMain() {
       setTreeRoots(roots);
       setLibraryItems(folders);
 
-      // 상위 및 1단계 하위 폴더 기본 펼침
       const initialExpanded = new Set<string>();
       roots.forEach(r => {
         initialExpanded.add(r.drive_id);
@@ -279,10 +338,8 @@ export default function StudentManagerMain() {
     const isAllChecked = subIds.every(id => currentUnlocked.has(id));
 
     if (isAllChecked) {
-      // 해당 노드 및 하위 모든 노드 일괄 해제
       subIds.forEach(id => currentUnlocked.delete(id));
     } else {
-      // 해당 노드 및 하위 모든 노드 일괄 선택
       subIds.forEach(id => currentUnlocked.add(id));
     }
 
@@ -392,6 +449,187 @@ export default function StudentManagerMain() {
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
   }, [students, searchTerm, selectedGradeFilter]);
 
+  // ----------------------------------------------------
+  // 🌟 [신규 기능 핸들러] 다중 선택 토글 및 전체 선택/해제
+  // ----------------------------------------------------
+  const toggleSelectStudent = (studentId: string) => {
+    setSelectedStudentIds(prev => {
+      const next = new Set(prev);
+      if (next.has(studentId)) next.delete(studentId);
+      else next.add(studentId);
+      return next;
+    });
+  };
+
+  const isAllFilteredSelected = useMemo(() => {
+    if (filteredAndSortedStudents.length === 0) return false;
+    return filteredAndSortedStudents.every(s => selectedStudentIds.has(s.id));
+  }, [filteredAndSortedStudents, selectedStudentIds]);
+
+  const handleSelectAllFiltered = () => {
+    if (isAllFilteredSelected) {
+      setSelectedStudentIds(new Set());
+    } else {
+      const allIds = new Set(selectedStudentIds);
+      filteredAndSortedStudents.forEach(s => allIds.add(s.id));
+      setSelectedStudentIds(allIds);
+    }
+  };
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능 핸들러] 선택한 학생 학년 일괄 변경 적용
+  // ----------------------------------------------------
+  const handleApplyTargetGrade = async () => {
+    const trimmed = targetGradeValue.trim();
+    if (!trimmed) {
+      return alert('변경할 학년을 입력하거나 선택해주세요.');
+    }
+    if (selectedStudentIds.size === 0) {
+      return alert('선택된 학생이 없습니다.');
+    }
+
+    setTargetSaving(true);
+    try {
+      const res = await fetch('/api/drive/students/grade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'target_update',
+          studentIds: Array.from(selectedStudentIds),
+          targetGrade: trimmed,
+          resetUnlockedFolders: targetResetFolders,
+          renameDriveFolder: targetRenameDrive,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(`✅ ${data.message || '학년 변경이 완료되었습니다.'}`);
+        setIsTargetGradeModalOpen(false);
+        setSelectedStudentIds(new Set());
+        setIsSelectMode(false);
+        await fetchStudents();
+      } else {
+        alert(`변경 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err) {
+      console.error('학년 변경 통신 오류:', err);
+      alert('통신 중 오류가 발생했습니다.');
+    } finally {
+      setTargetSaving(false);
+    }
+  };
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능 핸들러] 전체 1학년 일괄 진급 실행
+  // ----------------------------------------------------
+  const promotableStudents = useMemo(() => {
+    return students
+      .map(s => {
+        const nextGrade = getPromotedGradeClient(s.grade, promoteHigh3Action);
+        return {
+          ...s,
+          nextGrade,
+          willChange: !!nextGrade && nextGrade !== s.grade,
+        };
+      })
+      .filter(s => s.willChange);
+  }, [students, promoteHigh3Action]);
+
+  const promotionSummaryByGrade = useMemo(() => {
+    const summary: Record<string, { count: number; next: string }> = {};
+    students.forEach(s => {
+      const nextGrade = getPromotedGradeClient(s.grade, promoteHigh3Action);
+      if (nextGrade && nextGrade !== s.grade) {
+        if (!summary[s.grade]) {
+          summary[s.grade] = { count: 0, next: nextGrade };
+        }
+        summary[s.grade].count += 1;
+      }
+    });
+    return summary;
+  }, [students, promoteHigh3Action]);
+
+  const handlePromoteAll = async () => {
+    if (promotableStudents.length === 0) {
+      return alert('진급 대상인 학생이 없습니다.');
+    }
+
+    const confirmMsg = `⚠️ [주의] 총 ${promotableStudents.length}명의 학생을 1학년씩 진급시키겠습니까?\n\n이 작업은 각 학생의 학년 정보를 다음 학년으로 변경하며, 선택한 옵션에 따라 구글 드라이브 폴더명과 라이브러리 권한이 동기화됩니다.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setPromoteSaving(true);
+    try {
+      const res = await fetch('/api/drive/students/grade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'promote_all',
+          high3Action: promoteHigh3Action,
+          resetUnlockedFolders: promoteResetFolders,
+          renameDriveFolder: promoteRenameDrive,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(`🎉 ${data.message || '전체 진급이 성공적으로 완료되었습니다!'}`);
+        setIsPromoteModalOpen(false);
+        await fetchStudents();
+      } else {
+        alert(`진급 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err) {
+      console.error('일괄 진급 오류:', err);
+      alert('진급 처리 중 오류가 발생했습니다.');
+    } finally {
+      setPromoteSaving(false);
+    }
+  };
+
+  // ----------------------------------------------------
+  // 🌟 [신규 기능 핸들러] 개별 학생 빠른 학년 변경 저장
+  // ----------------------------------------------------
+  const handleQuickGradeSave = async () => {
+    if (!quickGradeStudent) return;
+    const trimmed = quickGradeValue.trim();
+    if (!trimmed) return alert('학년을 입력해주세요.');
+
+    setQuickGradeSaving(true);
+    try {
+      const res = await fetch('/api/drive/students/grade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'target_update',
+          studentIds: [quickGradeStudent.id],
+          targetGrade: trimmed,
+          resetUnlockedFolders: quickResetFolders,
+          renameDriveFolder: quickRenameDrive,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setStudents(prev => prev.map(s => 
+          s.id === quickGradeStudent.id ? { 
+            ...s, 
+            grade: trimmed, 
+            unlocked_folders: quickResetFolders ? [] : s.unlocked_folders 
+          } : s
+        ));
+        setQuickGradeStudent(null);
+      } else {
+        alert(`변경 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err) {
+      console.error('빠른 학년 변경 에러:', err);
+      alert('오류가 발생했습니다.');
+    } finally {
+      setQuickGradeSaving(false);
+    }
+  };
+
   const renderTreeNode = (node: FolderNode, depth: number = 0) => {
     const isExpanded = expandedNodes.has(node.drive_id);
     const checkState = getNodeCheckState(node, selectedStudent?.unlocked_folders);
@@ -414,7 +652,6 @@ export default function StudentManagerMain() {
               : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200'
           }`}
         >
-          {/* 접기/펼치기 토글 화살표 */}
           {hasChildren ? (
             <button
               type="button"
@@ -430,7 +667,6 @@ export default function StudentManagerMain() {
             <div className="w-6 shrink-0" />
           )}
 
-          {/* 체크박스 & 라벨 영역 (클릭 시 일괄 체크/해제) */}
           <div 
             onClick={() => toggleNodeSelection(node)}
             className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
@@ -473,7 +709,6 @@ export default function StudentManagerMain() {
           </div>
         </div>
 
-        {/* 하위 폴더 렌더링 (들여쓰기 + 세로 연결 가이드라인) */}
         {hasChildren && isExpanded && (
           <div className="pl-4 ml-3 border-l-2 border-slate-200/80 mt-1.5 space-y-1.5">
             {node.children.map(child => renderTreeNode(child, depth + 1))}
@@ -495,8 +730,6 @@ export default function StudentManagerMain() {
             className="relative bg-white w-full max-w-2xl rounded-[32px] shadow-2xl flex flex-col animate-in zoom-in duration-200"
             style={{ maxHeight: '82vh' }} 
           >
-            
-            {/* 상단 헤더 (높이 고정) */}
             <div className="shrink-0 p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-[32px]">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 tracking-tighter italic uppercase leading-none">
@@ -509,7 +742,6 @@ export default function StudentManagerMain() {
               </button>
             </div>
 
-            {/* 상단 안내 & 툴바 */}
             <div className="shrink-0 px-6 py-3 bg-slate-50/90 border-b border-slate-100 flex items-center justify-between text-xs">
               <span className="font-bold text-slate-500">
                 열린 폴더: <strong className="text-indigo-600 font-black">{(selectedStudent.unlocked_folders || []).length}</strong> / {allTreeIds.length}개
@@ -523,10 +755,7 @@ export default function StudentManagerMain() {
               </button>
             </div>
             
-            {/* 트리 스크롤 영역 */}
-            <div 
-              className="flex-1 p-6 bg-white overflow-y-auto"
-            >
+            <div className="flex-1 p-6 bg-white overflow-y-auto">
               {modalLoading ? (
                 <div className="h-full flex items-center justify-center py-20"><Loader2 size={40} className="animate-spin text-indigo-500" /></div>
               ) : treeRoots.length > 0 ? (
@@ -540,7 +769,6 @@ export default function StudentManagerMain() {
               )}
             </div>
 
-            {/* 하단 버튼 (높이 고정) */}
             <div className="shrink-0 p-6 bg-slate-50 border-t border-slate-100 flex gap-3 rounded-b-[32px]">
               <button 
                 onClick={handleToggleSelectAll}
@@ -556,7 +784,6 @@ export default function StudentManagerMain() {
                 {modalLoading ? <Loader2 size={18} className="animate-spin" /> : 'Save Permissions'}
               </button>
             </div>
-            
           </div>
         </div>
       )}
@@ -597,6 +824,329 @@ export default function StudentManagerMain() {
                 className="flex-1 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black transition-all disabled:bg-slate-300 flex items-center justify-center gap-2"
               >
                 {pwdSaving ? <Loader2 size={18} className="animate-spin" /> : '저장'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 [신규 모달 1] 선택한 학생 학년 일괄 변경 모달 */}
+      {isTargetGradeModalOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => setIsTargetGradeModalOpen(false)} />
+          <div className="relative bg-white rounded-[32px] p-7 w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-xl font-black text-slate-800 tracking-tight">선택 학생 학년 변경</h3>
+                <p className="text-xs text-indigo-600 font-bold mt-1">총 {selectedStudentIds.size}명의 학생이 선택되었습니다.</p>
+              </div>
+              <button onClick={() => setIsTargetGradeModalOpen(false)} className="text-slate-300 hover:text-slate-600 transition-colors">
+                <X size={22} />
+              </button>
+            </div>
+
+            {/* 변경 대상 학생 미리보기 칩 */}
+            <div className="mb-5 max-h-24 overflow-y-auto p-3 bg-slate-50 rounded-2xl border border-slate-100 flex flex-wrap gap-1.5">
+              {students.filter(s => selectedStudentIds.has(s.id)).map(st => (
+                <span key={st.id} className="text-[11px] font-bold bg-white text-slate-700 px-2.5 py-1 rounded-xl border border-slate-200 shadow-2xs">
+                  {st.name} <span className="text-slate-400">({st.grade})</span>
+                </span>
+              ))}
+            </div>
+
+            {/* 목표 학년 선택 */}
+            <div className="mb-5 space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">변경할 목표 학년 선택</label>
+              <div className="grid grid-cols-3 gap-2">
+                {['중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setTargetGradeValue(g)}
+                    className={`py-2.5 rounded-xl font-black text-xs transition-all border ${
+                      targetGradeValue === g
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-300'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="text"
+                value={targetGradeValue}
+                onChange={e => setTargetGradeValue(e.target.value)}
+                placeholder="또는 직접 입력 (예: 고2-A, 졸업)"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-indigo-400 outline-none transition-all mt-2"
+              />
+            </div>
+
+            {/* 부가 옵션 */}
+            <div className="mb-6 space-y-2.5 p-3.5 bg-slate-50/70 rounded-2xl border border-slate-100 text-xs">
+              <label className="flex items-center gap-2.5 cursor-pointer font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={targetResetFolders}
+                  onChange={e => setTargetResetFolders(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                />
+                <span>이전 학년 라이브러리 폴더 권한 초기화 <span className="text-indigo-600 font-extrabold">(권장)</span></span>
+              </label>
+              <p className="text-[10px] text-slate-400 pl-6 leading-snug">새 학년 진입 시 기존 학년 폴더 잠금 권한을 정리하고 잠금 상태로 시작합니다.</p>
+
+              <label className="flex items-center gap-2.5 cursor-pointer font-bold text-slate-700 pt-1">
+                <input
+                  type="checkbox"
+                  checked={targetRenameDrive}
+                  onChange={e => setTargetRenameDrive(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                />
+                <span>구글 드라이브 폴더명 동기화 <span className="text-slate-400 font-normal">([새학년] 이름)</span></span>
+              </label>
+            </div>
+
+            {/* 버튼 */}
+            <div className="flex gap-3">
+              <button onClick={() => setIsTargetGradeModalOpen(false)} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-2xl font-bold hover:bg-slate-200 transition-all text-xs">취소</button>
+              <button
+                onClick={handleApplyTargetGrade}
+                disabled={targetSaving || !targetGradeValue.trim()}
+                className="flex-1 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black transition-all disabled:bg-slate-300 flex items-center justify-center gap-2 text-xs shadow-md shadow-indigo-100"
+              >
+                {targetSaving ? <Loader2 size={16} className="animate-spin" /> : '학년 변경 실행'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 [신규 모달 2] 전체 1학년 일괄 진급 마법사 모달 */}
+      {isPromoteModalOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => setIsPromoteModalOpen(false)} />
+          <div className="relative bg-white rounded-[32px] p-8 w-full max-w-lg shadow-2xl flex flex-col animate-in zoom-in-95 duration-200" style={{ maxHeight: '90vh' }}>
+            
+            {/* 상단 타이틀 */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                  <Sparkles size={20} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-800 tracking-tight leading-none">신학기 전체 1학년 일괄 진급</h3>
+                  <p className="text-[11px] font-bold text-slate-400 mt-1">모든 학생을 다음 학년으로 일괄 승급합니다.</p>
+                </div>
+              </div>
+              <button onClick={() => setIsPromoteModalOpen(false)} className="text-slate-300 hover:text-slate-600 transition-colors">
+                <X size={22} />
+              </button>
+            </div>
+
+            {/* 스크롤 본문 */}
+            <div className="flex-1 overflow-y-auto py-5 space-y-5">
+              
+              {/* 진급 대상 요약 배너 */}
+              <div className="bg-gradient-to-br from-indigo-50 to-violet-50 border border-indigo-100 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Promotion Target</div>
+                  <div className="text-2xl font-black text-slate-800 mt-0.5">
+                    총 <strong className="text-indigo-600">{promotableStudents.length}명</strong> 진급 대상
+                  </div>
+                </div>
+                <div className="text-right text-xs font-bold text-slate-500">
+                  전체 {students.length}명 중
+                </div>
+              </div>
+
+              {/* 학년별 승급 규칙 미리보기 */}
+              <div className="space-y-2">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">학년별 승급 현황</div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {['중1', '중2', '중3', '고1', '고2'].map(g => {
+                    const info = promotionSummaryByGrade[g];
+                    return (
+                      <div key={g} className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between">
+                        <span className="font-black text-slate-700">{g} → {info?.next || PROMOTE_MAP[g]}</span>
+                        <span className="font-extrabold text-indigo-600">{info?.count || 0}명</span>
+                      </div>
+                    );
+                  })}
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center justify-between">
+                    <span className="font-black text-slate-700">고3 → {promoteHigh3Action === 'graduated' ? '졸업' : '유지'}</span>
+                    <span className="font-extrabold text-indigo-600">{promotionSummaryByGrade['고3']?.count || students.filter(s => s.grade.startsWith('고3')).length}명</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 고3 학생 처리 옵션 */}
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-2">
+                <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest">고3 학생 처리 방식 선택</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPromoteHigh3Action('keep')}
+                    className={`p-3 rounded-xl text-left border transition-all ${
+                      promoteHigh3Action === 'keep'
+                        ? 'bg-white border-indigo-500 shadow-sm ring-2 ring-indigo-200'
+                        : 'bg-white/60 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="font-black text-xs text-slate-800">고3 학년 유지</div>
+                    <div className="text-[10px] text-slate-400 font-bold mt-0.5">고3 학생은 학년 유지</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPromoteHigh3Action('graduated')}
+                    className={`p-3 rounded-xl text-left border transition-all ${
+                      promoteHigh3Action === 'graduated'
+                        ? 'bg-white border-indigo-500 shadow-sm ring-2 ring-indigo-200'
+                        : 'bg-white/60 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="font-black text-xs text-slate-800">졸업생 처리</div>
+                    <div className="text-[10px] text-slate-400 font-bold mt-0.5">'졸업'으로 변경</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* 옵션 체크박스 */}
+              <div className="space-y-2.5 p-3.5 bg-slate-50/70 rounded-2xl border border-slate-100 text-xs">
+                <label className="flex items-center gap-2.5 cursor-pointer font-bold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={promoteResetFolders}
+                    onChange={e => setPromoteResetFolders(e.target.checked)}
+                    className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                  />
+                  <span>이전 학년 라이브러리 폴더 권한 초기화 <span className="text-indigo-600 font-extrabold">(권장)</span></span>
+                </label>
+                <p className="text-[10px] text-slate-400 pl-6 leading-snug">새 학년 진입 시 기존 학년 폴더 잠금 권한을 정리하고 잠금 상태로 시작합니다.</p>
+
+                <label className="flex items-center gap-2.5 cursor-pointer font-bold text-slate-700 pt-1">
+                  <input
+                    type="checkbox"
+                    checked={promoteRenameDrive}
+                    onChange={e => setPromoteRenameDrive(e.target.checked)}
+                    className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                  />
+                  <span>구글 드라이브 폴더명 동기화 <span className="text-slate-400 font-normal">([새학년] 이름)</span></span>
+                </label>
+              </div>
+
+              {/* 진급 대상 학생 목록 미리보기 */}
+              <div className="space-y-2">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                  진급 대상 학생 명단 ({promotableStudents.length}명)
+                </div>
+                <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-2xl divide-y divide-slate-100 bg-white">
+                  {promotableStudents.map(st => (
+                    <div key={st.id} className="p-2.5 px-3.5 flex items-center justify-between text-xs">
+                      <span className="font-black text-slate-800">{st.name}</span>
+                      <div className="flex items-center gap-2 font-bold">
+                        <span className="text-slate-400">{st.grade}</span>
+                        <ArrowRight size={12} className="text-indigo-500" />
+                        <span className="text-indigo-600 font-black">{st.nextGrade}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            {/* 하단 버튼 */}
+            <div className="pt-4 border-t border-slate-100 flex gap-3 shrink-0">
+              <button 
+                onClick={() => setIsPromoteModalOpen(false)} 
+                className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-2xl font-bold hover:bg-slate-200 transition-all text-xs"
+              >
+                취소
+              </button>
+              <button
+                onClick={handlePromoteAll}
+                disabled={promoteSaving || promotableStudents.length === 0}
+                className="flex-1 py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-2xl font-black transition-all disabled:bg-slate-300 flex items-center justify-center gap-2 text-xs shadow-lg shadow-indigo-100"
+              >
+                {promoteSaving ? <Loader2 size={16} className="animate-spin" /> : '진급 일괄 실행'}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 [신규 모달 3] 개별 학생 빠른 학년 변경 모달 */}
+      {quickGradeStudent && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" onClick={() => setQuickGradeStudent(null)} />
+          <div className="relative bg-white rounded-[32px] p-7 w-full max-w-sm shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-black text-slate-800 tracking-tight">학년 변경</h3>
+                <p className="text-xs text-slate-400 font-bold mt-0.5">{quickGradeStudent.name} (현재: <span className="text-indigo-600">{quickGradeStudent.grade}</span>)</p>
+              </div>
+              <button onClick={() => setQuickGradeStudent(null)} className="text-slate-300 hover:text-slate-600 transition-colors">
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="mb-4 space-y-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">새 학년 선택</label>
+              <div className="grid grid-cols-3 gap-2">
+                {['중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setQuickGradeValue(g)}
+                    className={`py-2 rounded-xl font-black text-xs transition-all border ${
+                      quickGradeValue === g
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-300'
+                    }`}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+              <input
+                type="text"
+                value={quickGradeValue}
+                onChange={e => setQuickGradeValue(e.target.value)}
+                placeholder="직접 입력 (예: 고2-A, 졸업)"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-700 focus:ring-2 focus:ring-indigo-400 outline-none transition-all mt-2"
+              />
+            </div>
+
+            <div className="mb-5 space-y-2 p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
+              <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={quickResetFolders}
+                  onChange={e => setQuickResetFolders(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                />
+                <span className="text-[11px]">이전 학년 폴더 권한 초기화</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={quickRenameDrive}
+                  onChange={e => setQuickRenameDrive(e.target.checked)}
+                  className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                />
+                <span className="text-[11px]">구글 드라이브 폴더명 동기화</span>
+              </label>
+            </div>
+
+            <div className="flex gap-2.5">
+              <button onClick={() => setQuickGradeStudent(null)} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl font-bold hover:bg-slate-200 transition-all text-xs">취소</button>
+              <button
+                onClick={handleQuickGradeSave}
+                disabled={quickGradeSaving || !quickGradeValue.trim()}
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-black transition-all disabled:bg-slate-300 flex items-center justify-center gap-2 text-xs shadow-md shadow-indigo-100"
+              >
+                {quickGradeSaving ? <Loader2 size={16} className="animate-spin" /> : '저장'}
               </button>
             </div>
           </div>
@@ -659,10 +1209,12 @@ export default function StudentManagerMain() {
           </div>
         </div>
 
-        {/* 오른쪽: 학생 목록 */}
+        {/* 오른쪽: 학생 목록 & 학년 관리 툴바 */}
         <div className="lg:col-span-2 space-y-6">
           
-          <div className="space-y-5">
+          <div className="space-y-4">
+            
+            {/* 검색창 */}
             <div className="relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input 
@@ -673,6 +1225,7 @@ export default function StudentManagerMain() {
               />
             </div>
 
+            {/* 학년 필터 버튼들 */}
             <div className="flex flex-wrap gap-2">
               {gradeButtons.map((g) => (
                 <button
@@ -688,6 +1241,70 @@ export default function StudentManagerMain() {
                 </button>
               ))}
             </div>
+
+            {/* 🌟 학년 일괄 진급 & 선택 변경 모드 툴바 */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsPromoteModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-2xl font-black text-xs shadow-md shadow-indigo-100 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <Sparkles size={14} />
+                전체 1학년 일괄 진급
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const nextState = !isSelectMode;
+                  setIsSelectMode(nextState);
+                  if (!nextState) setSelectedStudentIds(new Set());
+                }}
+                className={`flex items-center gap-1.5 px-4 py-2.5 rounded-2xl font-black text-xs transition-all border ${
+                  isSelectMode
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                    : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-600 shadow-2xs'
+                }`}
+              >
+                <CheckSquare size={14} />
+                {isSelectMode ? '선택 모드 닫기' : '선택 변경 모드'}
+              </button>
+            </div>
+
+            {/* 🌟 선택 모드 활성화 시 나타나는 플로팅 액션바 */}
+            {isSelectMode && (
+              <div className="bg-indigo-50/90 border border-indigo-200 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-200 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleSelectAllFiltered}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs font-black text-indigo-700 hover:bg-indigo-100 transition-all shadow-2xs"
+                  >
+                    {isAllFilteredSelected ? <CheckSquare size={14} /> : <Square size={14} />}
+                    {isAllFilteredSelected ? '전체 해제' : '현재 목록 전체 선택'}
+                  </button>
+                  <span className="text-xs font-bold text-slate-700">
+                    선택: <strong className="text-indigo-600 font-black">{selectedStudentIds.size}명</strong> / {filteredAndSortedStudents.length}명
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={selectedStudentIds.size === 0}
+                    onClick={() => {
+                      setTargetGradeValue('');
+                      setIsTargetGradeModalOpen(true);
+                    }}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-black text-xs rounded-xl shadow-md shadow-indigo-100 transition-all flex items-center gap-1.5"
+                  >
+                    <Edit2 size={13} />
+                    선택한 {selectedStudentIds.size}명 학년 변경
+                  </button>
+                </div>
+              </div>
+            )}
+
           </div>
 
           {fetching ? (
@@ -697,81 +1314,134 @@ export default function StudentManagerMain() {
             </div>
           ) : filteredAndSortedStudents.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filteredAndSortedStudents.map((student) => (
-                <div key={student.id} className="group bg-white border border-slate-100 rounded-[32px] p-6 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50 transition-all duration-500 relative">
-                  
-                  <div className="flex justify-between items-start mb-4">
-                    <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm relative overflow-hidden">
-                      < GraduationCap size={28} />
-                      {!student.is_unlocked && (
-                        <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white group-hover:rotate-0 transition-transform">
-                          <Lock size={18} />
-                        </div>
-                      )}
+              {filteredAndSortedStudents.map((student) => {
+                const isSelected = selectedStudentIds.has(student.id);
+
+                return (
+                  <div 
+                    key={student.id} 
+                    onClick={() => {
+                      if (isSelectMode) toggleSelectStudent(student.id);
+                    }}
+                    className={`group bg-white border rounded-[32px] p-6 transition-all duration-300 relative ${
+                      isSelectMode ? 'cursor-pointer' : ''
+                    } ${
+                      isSelected 
+                        ? 'border-indigo-500 ring-2 ring-indigo-200 bg-indigo-50/20 shadow-md' 
+                        : 'border-slate-100 hover:border-indigo-300 hover:shadow-2xl hover:shadow-indigo-100/50'
+                    }`}
+                  >
+                    
+                    {/* 선택 모드 체크박스 (좌측 상단 오버레이) */}
+                    {isSelectMode && (
+                      <div className="absolute top-5 left-5 z-10">
+                        {isSelected ? (
+                          <CheckSquare size={22} className="text-indigo-600 drop-shadow-xs" />
+                        ) : (
+                          <Square size={22} className="text-slate-300 hover:text-indigo-400 bg-white rounded" />
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-start mb-4">
+                      <div className={`w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-indigo-600 group-hover:text-white group-hover:rotate-6 transition-all duration-300 shadow-sm relative overflow-hidden ${
+                        isSelectMode ? 'ml-7' : ''
+                      }`}>
+                        <GraduationCap size={28} />
+                        {!student.is_unlocked && (
+                          <div className="absolute inset-0 bg-rose-500/80 flex items-center justify-center text-white group-hover:rotate-0 transition-transform">
+                            <Lock size={18} />
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex gap-2 items-center" onClick={(e) => e.stopPropagation()}>
+                        <button 
+                          onClick={() => openLockModal(student)}
+                          className="p-2.5 rounded-xl bg-white text-slate-400 border border-slate-100 hover:border-indigo-300 hover:text-indigo-600 shadow-sm transition-all"
+                          title="회차별 권한 설정"
+                        >
+                          <Settings2 size={18} />
+                        </button>
+
+                        <button 
+                          onClick={() => toggleStudentLock(student)}
+                          className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border shadow-sm ${
+                            student.is_unlocked 
+                            ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' 
+                            : 'bg-rose-50 text-rose-600 border-rose-100 hover:bg-rose-100'
+                          }`}
+                        >
+                          {student.is_unlocked ? <Unlock size={14} /> : <Lock size={14} />}
+                          {student.is_unlocked ? 'OPEN' : 'LOCKED'}
+                        </button>
+
+                        <button 
+                          onClick={() => handleCopyLink(student.id)}
+                          className={`p-2.5 rounded-xl transition-all border shadow-sm ${
+                            copiedId === student.id 
+                            ? 'bg-emerald-500 text-white border-emerald-400' 
+                            : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-200 hover:text-indigo-600'
+                          }`}
+                        >
+                          {copiedId === student.id ? <Check size={14} /> : <Copy size={14} />}
+                        </button>
+
+                        <button 
+                          onClick={() => handleDeleteStudent(student)}
+                          className="p-2 text-slate-200 hover:text-rose-500 transition-all transform hover:scale-110"
+                        >
+                          <Trash2 size={20} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mb-4">
+                      {/* 🌟 학년 표시 배지 (클릭 시 개별 빠른 학년 변경) */}
+                      <div className="flex items-center gap-2 mb-1" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuickGradeStudent(student);
+                            setQuickGradeValue(student.grade);
+                          }}
+                          className="group/badge inline-flex items-center gap-1 text-[11px] font-black text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/60 px-2.5 py-0.5 rounded-lg uppercase tracking-wider transition-all"
+                          title="클릭하여 학년 변경"
+                        >
+                          <span>{student.grade}</span>
+                          <Edit2 size={11} className="opacity-40 group-hover/badge:opacity-100 text-indigo-500 transition-opacity ml-0.5" />
+                        </button>
+                      </div>
+
+                      <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight mb-3">{student.name}</h3>
+
+                      {/* 비번 배지 */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPwdStudent(student);
+                          setNewPwd(student.password || '');
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
+                        title="비번 변경"
+                      >
+                        <KeyRound size={13} />
+                        {student.password ?? '배정 중...'}
+                      </button>
                     </div>
                     
-                    <div className="flex gap-2 items-center">
-                      <button 
-                        onClick={() => openLockModal(student)}
-                        className="p-2.5 rounded-xl bg-white text-slate-400 border border-slate-100 hover:border-indigo-300 hover:text-indigo-600 shadow-sm transition-all"
-                        title="회차별 권한 설정"
-                      >
-                        <Settings2 size={18} />
-                      </button>
-
-                      <button 
-                        onClick={() => toggleStudentLock(student)}
-                        className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 font-black text-[10px] uppercase tracking-tighter border shadow-sm ${
-                          student.is_unlocked 
-                          ? 'bg-emerald-50 text-emerald-600 border-emerald-100 hover:bg-emerald-100' 
-                          : 'bg-rose-50 text-rose-600 border-rose-100 hover:bg-rose-100'
-                        }`}
-                      >
-                        {student.is_unlocked ? <Unlock size={14} /> : <Lock size={14} />}
-                        {student.is_unlocked ? 'OPEN' : 'LOCKED'}
-                      </button>
-
-                      <button 
-                        onClick={() => handleCopyLink(student.id)}
-                        className={`p-2.5 rounded-xl transition-all border shadow-sm ${
-                          copiedId === student.id 
-                          ? 'bg-emerald-500 text-white border-emerald-400' 
-                          : 'bg-white text-slate-400 border-slate-100 hover:border-indigo-200 hover:text-indigo-600'
-                        }`}
-                      >
-                        {copiedId === student.id ? <Check size={14} /> : <Copy size={14} />}
-                      </button>
-
-                      <button 
-                        onClick={() => handleDeleteStudent(student)}
-                        className="p-2 text-slate-200 hover:text-rose-500 transition-all transform hover:scale-110"
-                      >
-                        <Trash2 size={20} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mb-4">
-                    <div className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] mb-1 leading-none">{student.grade}</div>
-                    <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight mb-3">{student.name}</h3>
-                    {/* 비번 배지 */}
-                    <button
-                      onClick={() => { setPwdStudent(student); setNewPwd(student.password || ''); }}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
-                      title="비번 변경"
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(`/student/${student.id}`, '_blank');
+                      }}
+                      className="w-full bg-slate-50 group-hover:bg-indigo-600 text-slate-500 group-hover:text-white font-black py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm text-xs"
                     >
-                      <KeyRound size={13} />
-                      {student.password ?? '배정 중...'}
+                      VIEW REPLAY <ExternalLink size={14} />
                     </button>
                   </div>
-                  
-                  <button 
-                    onClick={() => window.open(`/student/${student.id}`, '_blank')}
-                    className="w-full bg-slate-50 group-hover:bg-indigo-600 text-slate-500 group-hover:text-white font-black py-3.5 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm text-xs"
-                  >
-                    VIEW REPLAY <ExternalLink size={14} />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-[40px] py-32 flex flex-col items-center justify-center text-slate-300">
@@ -785,7 +1455,6 @@ export default function StudentManagerMain() {
   );
 }
 
-// Props 타입을 정의하고 LoaderIcon을 사용하도록 수정
 function Loader2({ size, className }: { size: number, className?: string }) {
   return <LoaderIcon size={size} className={className} />;
 }
