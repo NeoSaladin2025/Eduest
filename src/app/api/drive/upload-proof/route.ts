@@ -1,7 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { google } from 'googleapis';
 import { NextRequest, NextResponse } from 'next/server';
-import { Readable } from 'stream';
 
 // 1. Supabase 클라이언트 초기화
 const supabase = createClient(
@@ -9,25 +7,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// 2. 구글 드라이브 인증
-let driveClient: any = null;
-function getDrive() {
-  if (driveClient) return driveClient;
-  const credsKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (!credsKey) return null;
-  try {
-    const credentials = JSON.parse(credsKey);
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    });
-    driveClient = google.drive({ version: 'v3', auth });
-    return driveClient;
-  } catch (e) {
-    console.error('Google Auth init failed in upload-proof:', e);
-    return null;
-  }
-}
+// 2. 선생님 구글 계정 권한으로 실행되는 Google Apps Script WebApp URL (Quota 0 에러 우회 및 개인 드라이브 직접 저장)
+const APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzfsRGa1EuoDaHjiYKCslabSsE4j3sHRsv7b0T-23wDuZqTGw_VrDlIXXfEB-zwyUKh1A/exec';
 
 export async function POST(req: NextRequest) {
   try {
@@ -46,14 +28,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const drive = getDrive();
-    if (!drive) {
-      return NextResponse.json(
-        { success: false, error: '구글 드라이브 서비스 계정 인증에 실패했습니다.' },
-        { status: 500 }
-      );
-    }
-
     // 학생 정보 조회 (drive_folder_id 확인)
     const { data: student, error: studentErr } = await supabase
       .from('students')
@@ -68,7 +42,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let targetFolderId = student.drive_folder_id;
+    const targetFolderId = student.drive_folder_id;
     if (!targetFolderId) {
       return NextResponse.json(
         { success: false, error: '해당 학생의 구글 드라이브 폴더가 존재하지 않습니다.' },
@@ -76,47 +50,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 파일 버퍼 및 스트림 생성
+    // 파일 버퍼 및 Base64 변환
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const stream = new Readable();
-    stream.push(buffer);
-    stream.push(null);
+    const base64String = buffer.toString('base64');
 
     // 구글 드라이브 파일명 생성 (예: [스페셜풀이] 1번_공수2A모의평가_김미경_1720000000.jpg)
     const sanitizedTitle = examTitle.replace(/[/\\?%*:|"<>]/g, '_').trim();
     const extension = file.type.includes('png') ? 'png' : 'jpg';
     const fileName = `[스페셜풀이] ${questionNumber}번_${sanitizedTitle}_${student.name}_${Date.now()}.${extension}`;
 
-    // 구글 드라이브 해당 학생 폴더에 업로드
-    const driveRes = await drive.files.create({
-      requestBody: {
-        name: fileName,
-        parents: [targetFolderId],
-        mimeType: file.type || 'image/jpeg',
-      },
-      media: {
-        mimeType: file.type || 'image/jpeg',
-        body: stream,
-      },
-      fields: 'id, name, webViewLink, webContentLink',
-      supportsAllDrives: true,
+    // 🔥 서비스 계정의 0바이트 Quota 제약을 우회하기 위해
+    // 선생님 본인 계정 권한으로 동작하는 GAS WebApp을 호출하여 학생 폴더에 파일 생성
+    const gasResponse = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'upload_and_record',
+        studentFolderId: targetFolderId,
+        imageData: base64String,
+        fileName: fileName,
+      }),
+      redirect: 'follow',
     });
 
-    const fileId = driveRes.data.id;
-    if (!fileId) {
-      throw new Error('드라이브 파일 생성에 실패했습니다.');
+    if (!gasResponse.ok) {
+      const errorText = await gasResponse.text();
+      throw new Error(`Google Apps Script 서버 응답 오류: ${errorText}`);
     }
 
-    // 우리 프록시를 통과하여 인증 없이 바로 브라우저에서 볼 수 있는 뷰어 URL 생성
-    const proxyUrl = `/api/drive/library/file?fileId=${fileId}&type=image`;
+    const gasResult = await gasResponse.json();
+
+    if (!gasResult.success || !gasResult.fileId) {
+      throw new Error(
+        `구글 드라이브 저장 실패: ${gasResult.error || '알 수 없는 오류'}`
+      );
+    }
+
+    const fileId = gasResult.fileId;
+
+    // 우리 프록시를 통해 브라우저 img 태그에서 바로 렌더링될 수 있는 고속 이미지 스트림 URL
+    const proxyUrl = `/api/drive/library/file?fileId=${fileId}&type=image&raw=true`;
+    const dataUrl = `data:${file.type || 'image/jpeg'};base64,${base64String}`;
 
     return NextResponse.json({
       success: true,
       fileId,
       fileName,
       url: proxyUrl,
-      webViewLink: driveRes.data.webViewLink,
+      dataUrl,
       questionId,
       questionNumber,
     });

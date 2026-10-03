@@ -154,7 +154,8 @@ export default function StudentTest2View({
           ...prev,
           [questionId]: {
             drive_id: data.fileId,
-            url: data.url,
+            url: data.dataUrl || data.url,
+            remote_url: data.url,
             fileName: data.fileName,
           },
         }));
@@ -578,6 +579,14 @@ export default function StudentTest2View({
   // 🚨 5. 화면 이탈 감지 (부정행위 방지: 화면 잠금 + 타이머 정지 + 원격 해제 대기)
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam) return;
+
+    // 🔥 스페셜 시험이거나 풀이 인증샷 첨부 시험인 경우 카메라/사진 앱 전환을 허용하기 위해 화면 이탈 잠금 해제
+    const isSpecialTest = Boolean(
+      currentExam.is_special ||
+      currentExam.require_proof_image ||
+      (currentExam.title && currentExam.title.includes('[스페셜]'))
+    );
+    if (isSpecialTest) return;
 
     const triggerAwayLock = () => {
       if (isLocked) return;

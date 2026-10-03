@@ -892,7 +892,13 @@ export default function ReviewManagerMain() {
                   </div>
                   <div className="flex justify-center bg-black/70 rounded-xl p-2">
                     <img
-                      src={img.url || `/api/drive/library/file?fileId=${img.drive_id}&type=image`}
+                      src={
+                        img.url
+                          ? img.url.includes('raw=')
+                            ? img.url
+                            : `${img.url}&raw=true`
+                          : `/api/drive/library/file?fileId=${img.drive_id}&type=image&raw=true`
+                      }
                       alt="풀이 인증샷"
                       className="max-h-[65vh] object-contain rounded-lg shadow-2xl"
                     />

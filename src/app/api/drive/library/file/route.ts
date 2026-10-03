@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fileId = searchParams.get("fileId");
   const type = searchParams.get("type") || "html"; // 'html' | 'image'
+  const raw = searchParams.get("raw") === "true";
 
   if (!fileId) {
     return NextResponse.json({ success: false, error: "fileId is required" }, { status: 400 });
@@ -39,8 +40,19 @@ export async function GET(req: NextRequest) {
 
   const cacheKey = `${fileId}_${type}`;
   if (memoryCache.has(cacheKey)) {
+    const cached = memoryCache.get(cacheKey)!;
+    if (raw && type === "image") {
+      const base64Data = cached.replace(/^data:image\/\w+;base64,/, "");
+      const buf = Buffer.from(base64Data, "base64");
+      return new NextResponse(buf, {
+        headers: {
+          "Content-Type": "image/jpeg",
+          "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+        },
+      });
+    }
     return NextResponse.json(
-      { success: true, data: memoryCache.get(cacheKey), from: "memory-cache" },
+      { success: true, data: cached, from: "memory-cache" },
       {
         headers: {
           "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
@@ -80,6 +92,14 @@ export async function GET(req: NextRequest) {
         const buffer = Buffer.from(res.data);
         const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`;
         memoryCache.set(cacheKey, dataUrl);
+        if (raw) {
+          return new NextResponse(buffer, {
+            headers: {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+            },
+          });
+        }
         return NextResponse.json(
           { success: true, data: dataUrl, from: "drive-v3" },
           {
@@ -113,6 +133,16 @@ export async function GET(req: NextRequest) {
       let d = result.data;
       if (type === "html") d = d.replace(/[₩¥]/g, "\\");
       memoryCache.set(cacheKey, d);
+      if (raw && type === "image") {
+        const base64Data = d.replace(/^data:image\/\w+;base64,/, "");
+        const buf = Buffer.from(base64Data, "base64");
+        return new NextResponse(buf, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+          },
+        });
+      }
       return NextResponse.json(
         { success: true, data: d, from: "gas-fallback" },
         {
