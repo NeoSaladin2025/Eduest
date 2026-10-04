@@ -25,7 +25,8 @@ import {
   AlertCircle, 
   Send, 
   Layers, 
-  Maximize2 
+  Maximize2,
+  Trash2 
 } from 'lucide-react';
 import { ExamPaper } from '@/app/api/test2/exam/route';
 
@@ -99,6 +100,7 @@ export default function ReviewManagerMain() {
   // 스페셜 시험지 목록 & 인증샷 모달 & 필터링
   const [specialExams, setSpecialExams] = useState<any[]>([]);
   const [specialExamsLoading, setSpecialExamsLoading] = useState(false);
+  const [deletingExamId, setDeletingExamId] = useState<string | null>(null);
   const [specialSearchTerm, setSpecialSearchTerm] = useState('');
   const [selectedSpecialGrade, setSelectedSpecialGrade] = useState('전체');
   const [viewingProofData, setViewingProofData] = useState<{
@@ -178,6 +180,35 @@ export default function ReviewManagerMain() {
       console.error('Failed to load special exams:', e);
     } finally {
       setSpecialExamsLoading(false);
+    }
+  };
+
+  // 스페셜 시험지 및 연동된 구글 드라이브 인증샷 일괄 삭제
+  const handleDeleteSpecialExam = async (examId: string, examTitle: string) => {
+    if (
+      !confirm(
+        `'${examTitle}' 시험지를 삭제하시겠습니까?\n\n※ 주의: 학생들이 응시하며 제출한 모든 손글씨 풀이 인증 사진(구글 드라이브 파일)과 학생 응시 제출 기록도 함께 영구 삭제됩니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setDeletingExamId(examId);
+      const res = await fetch(`/api/test2/exam?examId=${examId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || '시험지 및 연동된 인증 사진이 성공적으로 삭제되었습니다.');
+        await fetchSpecialExams();
+      } else {
+        alert(`삭제 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err: any) {
+      alert(`시험지 삭제 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setDeletingExamId(null);
     }
   };
 
@@ -783,13 +814,27 @@ export default function ReviewManagerMain() {
                         </p>
                       </div>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-4">
                         <div className="text-right">
                           <span className="text-[10px] text-slate-400 block font-bold">제출 완료 현황</span>
                           <strong className="text-base font-black text-indigo-600">
                             {exam.submitted_count} / {exam.total_assigned}명 완료
                           </strong>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSpecialExam(exam.id, exam.title)}
+                          disabled={deletingExamId === exam.id}
+                          className="flex items-center gap-1.5 px-3 py-2 text-rose-500 hover:text-rose-700 bg-rose-50/80 hover:bg-rose-100 rounded-xl transition-all border border-rose-200/80 font-bold text-xs"
+                          title="시험지 및 연동된 인증샷 영구 삭제"
+                        >
+                          {deletingExamId === exam.id ? (
+                            <Loader2 size={14} className="animate-spin text-rose-500" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                          <span>시험지 삭제</span>
+                        </button>
                       </div>
                     </div>
 
