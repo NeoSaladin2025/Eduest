@@ -26,7 +26,13 @@ import {
   Send, 
   Layers, 
   Maximize2,
-  Trash2 
+  Trash2,
+  History,
+  Filter,
+  Calendar,
+  TrendingUp,
+  FileText,
+  Check
 } from 'lucide-react';
 import { ExamPaper } from '@/app/api/test2/exam/route';
 
@@ -69,7 +75,26 @@ interface ReviewItem {
     isCorrect: boolean;
     recordedAt: string;
     userAnswer?: string;
+    diffFromPrev?: number;
   }>;
+}
+
+// 헬퍼: YYYY년 MM월 DD일 HH시 mm분 ss초 포맷팅
+function formatFullDateTime(isoString?: string | null): string {
+  if (!isoString) return '-';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${year}년 ${month}월 ${day}일 ${hours}시 ${minutes}분 ${seconds}초`;
+  } catch {
+    return isoString;
+  }
 }
 
 export default function ReviewManagerMain() {
@@ -85,6 +110,16 @@ export default function ReviewManagerMain() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [reviewFolders, setReviewFolders] = useState<ReviewFolder[]>([]);
   const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  const [studentSubmissions, setStudentSubmissions] = useState<any[]>([]);
+
+  // 🔍 복습 문항 검색 & 상태 필터링 상태 (자유 검색어, 상태 칩, 폴더 칩)
+  const [itemSearchTerm, setItemSearchTerm] = useState('');
+  const [itemFilterStatus, setItemFilterStatus] = useState<'ALL' | 'INCORRECT' | 'CORRECT' | 'ATTEMPTED' | 'UNATTEMPTED'>('ALL');
+  const [selectedFolderFilter, setSelectedFolderFilter] = useState('전체');
+
+  // 📋 문항 풀이 이력 상세보기 모달 상태
+  const [detailModalItem, setDetailModalItem] = useState<ReviewItem | null>(null);
+  const [viewingDetailProofUrl, setViewingDetailProofUrl] = useState<string | null>(null);
 
   // 문항 선택 (스페셜 테스트 생성용)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -148,14 +183,19 @@ export default function ReviewManagerMain() {
       try {
         setDetailLoading(true);
         setSelectedItemIds(new Set());
+        setItemSearchTerm('');
+        setItemFilterStatus('ALL');
+        setSelectedFolderFilter('전체');
         const res = await fetch(`/api/teacher/review-management?studentId=${selectedStudentId}`);
         const data = await res.json();
         if (data.success && data.reviewData) {
           setReviewFolders(data.reviewData.folders || []);
           setReviewItems(data.reviewData.items || []);
+          setStudentSubmissions(data.studentSubmissions || []);
         } else {
           setReviewFolders([]);
           setReviewItems([]);
+          setStudentSubmissions([]);
         }
       } catch (e) {
         console.error('Failed to load student review detail:', e);
@@ -283,6 +323,58 @@ export default function ReviewManagerMain() {
     return students.find(s => s.id === selectedStudentId) || null;
   }, [students, selectedStudentId]);
 
+  // 해당 학생의 고유 복습 폴더 목록
+  const uniqueFolderNames = useMemo(() => {
+    const set = new Set<string>();
+    reviewItems.forEach(i => {
+      if (i.folderName) set.add(i.folderName);
+    });
+    return Array.from(set);
+  }, [reviewItems]);
+
+  // 🔍 필터링된 복습 문항 목록 (자유 검색어 + 상태 필터 + 폴더 필터)
+  const filteredReviewItems = useMemo(() => {
+    return reviewItems.filter(item => {
+      // 1. 자유 검색어 매칭 (문항명, 폴더명, 정답, 문제 번호 등 아무거나 검색)
+      if (itemSearchTerm.trim()) {
+        const query = itemSearchTerm.toLowerCase().trim();
+        const matchName = (item.name || '').toLowerCase().includes(query);
+        const matchFolder = (item.folderName || '').toLowerCase().includes(query);
+        const matchAnswer = String(item.answer || '').toLowerCase().includes(query) ||
+                            String(item.raw_answer || '').toLowerCase().includes(query);
+        const matchUserAns = String(item.lastUserAnswer || '').toLowerCase().includes(query);
+        if (!matchName && !matchFolder && !matchAnswer && !matchUserAns) {
+          return false;
+        }
+      }
+
+      // 2. 폴더 필터 매칭
+      if (selectedFolderFilter !== '전체' && item.folderName !== selectedFolderFilter) {
+        return false;
+      }
+
+      // 3. 상태 필터 매칭
+      const attemptCount = item.timeRecords?.length || (item.lastTestedAt ? 1 : 0);
+      const isIncorrect = item.lastIsCorrect === false || (item.timeRecords || []).some(r => !r.isCorrect);
+      const isCorrect = item.lastIsCorrect === true;
+
+      if (itemFilterStatus === 'INCORRECT') {
+        return isIncorrect;
+      }
+      if (itemFilterStatus === 'CORRECT') {
+        return isCorrect;
+      }
+      if (itemFilterStatus === 'ATTEMPTED') {
+        return attemptCount > 0;
+      }
+      if (itemFilterStatus === 'UNATTEMPTED') {
+        return attemptCount === 0;
+      }
+
+      return true;
+    });
+  }, [reviewItems, itemSearchTerm, selectedFolderFilter, itemFilterStatus]);
+
   // 문항 선택 토글
   const toggleItemSelection = (itemId: string) => {
     setSelectedItemIds(prev => {
@@ -293,12 +385,117 @@ export default function ReviewManagerMain() {
     });
   };
 
-  const handleSelectAllItems = () => {
-    if (selectedItemIds.size === reviewItems.length) {
-      setSelectedItemIds(new Set());
+  // 스마트 전체 선택 / 해제 (현재 필터링된 문항들 기준)
+  const handleSelectAllFilteredItems = () => {
+    const allFilteredSelected = filteredReviewItems.length > 0 && 
+      filteredReviewItems.every(i => selectedItemIds.has(i.id));
+
+    if (allFilteredSelected) {
+      setSelectedItemIds(prev => {
+        const next = new Set(prev);
+        filteredReviewItems.forEach(i => next.delete(i.id));
+        return next;
+      });
     } else {
-      setSelectedItemIds(new Set(reviewItems.map(i => i.id)));
+      setSelectedItemIds(prev => {
+        const next = new Set(prev);
+        filteredReviewItems.forEach(i => next.add(i.id));
+        return next;
+      });
     }
+  };
+
+  // 📋 특정 문항의 시도 이력(최신순 정렬) 추출 헬퍼 (복습 퀴즈 + 스페셜 시험지 인증샷 통합)
+  const getItemAttemptHistory = (item: ReviewItem) => {
+    interface AttemptHistoryItem {
+      id: string;
+      sourceType: 'review' | 'special_exam';
+      examTitle: string;
+      recordedAt: string;
+      isCorrect: boolean;
+      userAnswer?: string;
+      correctAnswer?: string;
+      spentSec?: number;
+      diffFromPrev?: number;
+      proofImageUrl?: string;
+      proofDriveId?: string;
+    }
+
+    const history: AttemptHistoryItem[] = [];
+
+    // 1. 복습 모드 시도 기록 (timeRecords)
+    if (Array.isArray(item.timeRecords) && item.timeRecords.length > 0) {
+      item.timeRecords.forEach((r, idx) => {
+        history.push({
+          id: `rev_${r.recordedAt}_${idx}`,
+          sourceType: 'review',
+          examTitle: item.folderName ? `복습 [${item.folderName}]` : 'EduOS 복습 테스트',
+          recordedAt: r.recordedAt,
+          isCorrect: r.isCorrect,
+          userAnswer: r.userAnswer || '-',
+          correctAnswer: item.answer || item.raw_answer || '-',
+          spentSec: r.spentSec,
+          diffFromPrev: (r as any).diffFromPrev,
+        });
+      });
+    } else if (item.lastTestedAt) {
+      history.push({
+        id: `rev_last_${item.lastTestedAt}`,
+        sourceType: 'review',
+        examTitle: item.folderName ? `복습 [${item.folderName}]` : 'EduOS 복습 테스트',
+        recordedAt: item.lastTestedAt,
+        isCorrect: !!item.lastIsCorrect,
+        userAnswer: item.lastUserAnswer || '-',
+        correctAnswer: item.answer || item.raw_answer || '-',
+        spentSec: item.bestSpentSec,
+      });
+    }
+
+    // 2. 스페셜 시험지 제출 기록 (studentSubmissions)에서 이 문항과 일치하는 기록 추출
+    const targetDriveId = (item.fileId || item.id || '').trim();
+    (studentSubmissions || []).forEach((sub: any) => {
+      if (!sub || !sub.answers) return;
+      Object.keys(sub.answers).forEach((qKey) => {
+        const ans = sub.answers[qKey];
+        const isMatch = (targetDriveId && qKey.includes(targetDriveId)) ||
+                        (item.solutionUrl && ans?.solution_drive_id === item.solutionUrl) ||
+                        (item.name && ans?.name === item.name);
+
+        if (isMatch) {
+          let proofImgUrl = ans?.proof_image_url;
+          let proofDriveId = ans?.proof_image_drive_id;
+          if (!proofImgUrl && Array.isArray(sub.proof_images)) {
+            const matchedProof = sub.proof_images.find((p: any) => p.question_id === qKey);
+            if (matchedProof) {
+              proofImgUrl = matchedProof.url;
+              proofDriveId = matchedProof.drive_id;
+            }
+          }
+
+          history.push({
+            id: `sub_${sub.id}_${qKey}`,
+            sourceType: 'special_exam',
+            examTitle: sub.exam_title || '스페셜 시험',
+            recordedAt: sub.submitted_at,
+            isCorrect: !!ans.is_correct,
+            userAnswer: ans.user_answer || '(미입력)',
+            correctAnswer: ans.correct_answer || item.answer || '-',
+            spentSec: ans.time_spent_sec,
+            proofImageUrl: proofImgUrl,
+            proofDriveId: proofDriveId,
+          });
+        }
+      });
+    });
+
+    // 최신 일시 기준 내림차순 정렬 (최근 정보부터 주루룩)
+    history.sort((a, b) => {
+      const timeA = new Date(a.recordedAt).getTime() || 0;
+      const timeB = new Date(b.recordedAt).getTime() || 0;
+      return timeB - timeA;
+    });
+
+    return history;
   };
 
   // 스페셜 테스트 모달 열기
@@ -540,10 +737,12 @@ export default function ReviewManagerMain() {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={handleSelectAllItems}
+                      onClick={handleSelectAllFilteredItems}
                       className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
                     >
-                      {selectedItemIds.size === reviewItems.length ? '선택 해제' : '전체 선택'}
+                      {filteredReviewItems.length > 0 && filteredReviewItems.every(i => selectedItemIds.has(i.id))
+                        ? '필터 문항 해제'
+                        : `필터 문항 선택 (${filteredReviewItems.length}개)`}
                     </button>
                     <button
                       type="button"
@@ -570,88 +769,205 @@ export default function ReviewManagerMain() {
                     <p className="text-xs text-slate-400">학생이 시험 후 오답노트나 라이브러리에서 복습 문제를 담으면 여기에 표시됩니다.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
+                    {/* 🔍 복습 문항 자유 검색 및 상태 필터링 바 */}
+                    <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-3">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
+                        {/* 자유 검색어 입력창 */}
+                        <div className="relative flex-1">
+                          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            value={itemSearchTerm}
+                            onChange={e => setItemSearchTerm(e.target.value)}
+                            placeholder="문항 제목, 폴더명, 정답, 번호 등 자유롭게 검색..."
+                            className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 transition-all placeholder:text-slate-400"
+                          />
+                          {itemSearchTerm && (
+                            <button
+                              type="button"
+                              onClick={() => setItemSearchTerm('')}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                              title="검색어 지우기"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* 폴더 선택 셀렉트 */}
+                        {uniqueFolderNames.length > 0 && (
+                          <div className="shrink-0 flex items-center gap-1.5">
+                            <Folder size={14} className="text-slate-400 ml-1" />
+                            <select
+                              value={selectedFolderFilter}
+                              onChange={e => setSelectedFolderFilter(e.target.value)}
+                              className="py-2 px-3 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-400"
+                            >
+                              <option value="전체">전체 폴더 ({uniqueFolderNames.length}개)</option>
+                              {uniqueFolderNames.map(f => (
+                                <option key={f} value={f}>{f}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* 필터 초기화 버튼 */}
+                        {(itemSearchTerm || itemFilterStatus !== 'ALL' || selectedFolderFilter !== '전체') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setItemSearchTerm('');
+                              setItemFilterStatus('ALL');
+                              setSelectedFolderFilter('전체');
+                            }}
+                            className="px-2.5 py-2 bg-white hover:bg-slate-100 text-slate-500 rounded-xl text-xs font-bold border border-slate-200 transition-colors flex items-center gap-1 shrink-0"
+                          >
+                            <X size={12} /> 초기화
+                          </button>
+                        )}
+                      </div>
+
+                      {/* 빠른 상태 필터 칩 */}
+                      <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-200/50">
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">
+                          상태:
+                        </span>
+                        {[
+                          { key: 'ALL', label: '전체 보기' },
+                          { key: 'INCORRECT', label: '✕ 오답만', activeClass: 'bg-rose-500 text-white border-rose-500' },
+                          { key: 'CORRECT', label: '✓ 정답만', activeClass: 'bg-emerald-600 text-white border-emerald-600' },
+                          { key: 'ATTEMPTED', label: '풀이완료', activeClass: 'bg-indigo-600 text-white border-indigo-600' },
+                          { key: 'UNATTEMPTED', label: '미풀이', activeClass: 'bg-slate-700 text-white border-slate-700' },
+                        ].map(btn => {
+                          const isActive = itemFilterStatus === btn.key;
+                          return (
+                            <button
+                              key={btn.key}
+                              type="button"
+                              onClick={() => setItemFilterStatus(btn.key as any)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all border ${
+                                isActive
+                                  ? (btn.activeClass || 'bg-slate-900 text-white border-slate-900 shadow-xs')
+                                  : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                              }`}
+                            >
+                              {btn.label}
+                            </button>
+                          );
+                        })}
+
+                        <span className="ml-auto text-[11px] font-bold text-slate-400">
+                          표시 중: <strong className="text-indigo-600 font-black">{filteredReviewItems.length}</strong> / {reviewItems.length}문항
+                        </span>
+                      </div>
+                    </div>
+
                     <div className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">
-                      <span>복습 문항 목록 ({reviewItems.length}문항)</span>
+                      <span>복습 문항 목록 ({filteredReviewItems.length}문항)</span>
                       <span className="text-indigo-600">{selectedItemIds.size}개 선택됨</span>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[calc(100vh-340px)] overflow-y-auto pr-1">
-                      {reviewItems.map(item => {
-                        const isSelected = selectedItemIds.has(item.id);
-                        const attemptCount = item.timeRecords?.length || (item.lastTestedAt ? 1 : 0);
-                        const correctCount = (item.timeRecords || []).filter(r => r.isCorrect).length + (item.lastIsCorrect && (!item.timeRecords || item.timeRecords.length === 0) ? 1 : 0);
-                        const accuracy = attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0;
+                    {filteredReviewItems.length === 0 ? (
+                      <div className="py-20 text-center text-slate-400 space-y-2 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                        <Search size={32} className="mx-auto text-slate-300 opacity-60" />
+                        <p className="text-xs font-black text-slate-600">조건에 일치하는 복습 문항이 없습니다.</p>
+                        <p className="text-[11px] text-slate-400">검색어를 지우거나 필터 조건을 변경해보세요.</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[calc(100vh-380px)] overflow-y-auto pr-1">
+                        {filteredReviewItems.map(item => {
+                          const isSelected = selectedItemIds.has(item.id);
+                          const attemptCount = item.timeRecords?.length || (item.lastTestedAt ? 1 : 0);
+                          const correctCount = (item.timeRecords || []).filter(r => r.isCorrect).length + (item.lastIsCorrect && (!item.timeRecords || item.timeRecords.length === 0) ? 1 : 0);
+                          const accuracy = attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0;
 
-                        return (
-                          <div
-                            key={item.id}
-                            onClick={() => toggleItemSelection(item.id)}
-                            className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
-                              isSelected
-                                ? 'bg-amber-50/60 border-amber-400 ring-2 ring-amber-200 shadow-sm'
-                                : 'bg-slate-50/60 border-slate-200 hover:border-slate-300 hover:bg-white'
-                            }`}
-                          >
-                            <div className="space-y-2">
-                              {/* 상단 체크박스 & 폴더명 */}
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  {isSelected ? (
-                                    <CheckSquare size={18} className="text-amber-600 shrink-0" />
-                                  ) : (
-                                    <Square size={18} className="text-slate-300 shrink-0" />
+                          return (
+                            <div
+                              key={item.id}
+                              onClick={() => toggleItemSelection(item.id)}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
+                                isSelected
+                                  ? 'bg-amber-50/60 border-amber-400 ring-2 ring-amber-200 shadow-sm'
+                                  : 'bg-slate-50/60 border-slate-200 hover:border-slate-300 hover:bg-white'
+                              }`}
+                            >
+                              <div className="space-y-2">
+                                {/* 상단 체크박스 & 폴더명 */}
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    {isSelected ? (
+                                      <CheckSquare size={18} className="text-amber-600 shrink-0" />
+                                    ) : (
+                                      <Square size={18} className="text-slate-300 shrink-0" />
+                                    )}
+                                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded truncate max-w-[160px]">
+                                      {item.folderName || '기본'}
+                                    </span>
+                                  </div>
+
+                                  {item.lastTestedAt && (
+                                    <span className="text-[10px] text-slate-400 font-bold">
+                                      {item.lastIsCorrect ? (
+                                        <span className="text-emerald-600 font-black">✓ 정답</span>
+                                      ) : (
+                                        <span className="text-rose-500 font-black">✕ 오답</span>
+                                      )}
+                                    </span>
                                   )}
-                                  <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded truncate max-w-[160px]">
-                                    {item.folderName || '기본'}
-                                  </span>
                                 </div>
 
-                                {item.lastTestedAt && (
-                                  <span className="text-[10px] text-slate-400 font-bold">
-                                    {item.lastIsCorrect ? (
-                                      <span className="text-emerald-600 font-black">✓ 정답</span>
-                                    ) : (
-                                      <span className="text-rose-500 font-black">✕ 오답</span>
-                                    )}
-                                  </span>
-                                )}
+                                {/* 문제 이름 */}
+                                <h4 className="text-sm font-black text-slate-800 line-clamp-2 leading-snug">
+                                  {item.name}
+                                </h4>
                               </div>
 
-                              {/* 문제 이름 */}
-                              <h4 className="text-sm font-black text-slate-800 line-clamp-2 leading-snug">
-                                {item.name}
-                              </h4>
-                            </div>
+                              {/* 하단 지표 및 상세보기 / 문제 미리보기 */}
+                              <div className="pt-3 mt-3 border-t border-slate-200/60 flex items-center justify-between text-xs gap-2">
+                                <div className="flex items-center gap-2.5 text-[11px] text-slate-500 font-bold flex-wrap">
+                                  <span>시도: <strong className="text-slate-800 font-black">{attemptCount}회</strong></span>
+                                  <span>정답률: <strong className={`font-black ${accuracy >= 70 ? 'text-emerald-600' : 'text-slate-800'}`}>{attemptCount > 0 ? `${accuracy}%` : '-'}</strong></span>
+                                  {item.bestSpentSec && (
+                                    <span className="hidden sm:inline">최고: <strong className="text-indigo-600 font-black">{item.bestSpentSec}초</strong></span>
+                                  )}
+                                </div>
 
-                            {/* 하단 지표 및 문제 미리보기 */}
-                            <div className="pt-3 mt-3 border-t border-slate-200/60 flex items-center justify-between text-xs">
-                              <div className="flex items-center gap-3 text-[11px] text-slate-500 font-bold">
-                                <span>시도: <strong className="text-slate-800 font-black">{attemptCount}회</strong></span>
-                                <span>정답률: <strong className={`font-black ${accuracy >= 70 ? 'text-emerald-600' : 'text-slate-800'}`}>{attemptCount > 0 ? `${accuracy}%` : '-'}</strong></span>
-                                {item.bestSpentSec && (
-                                  <span>최고: <strong className="text-indigo-600 font-black">{item.bestSpentSec}초</strong></span>
-                                )}
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {/* 📋 요구사항: 시도몇회 정답률 옆에 [상세보기] 메뉴 */}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDetailModalItem(item);
+                                    }}
+                                    className="flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-black text-[11px] transition-colors border border-indigo-200/70 shadow-xs"
+                                    title="상세 풀이 이력 보기 (제출일시, 답안, 손글씨 인증샷)"
+                                  >
+                                    <History size={13} className="text-indigo-600" />
+                                    <span>상세보기</span>
+                                  </button>
+
+                                  {item.problemUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPreviewProblemUrl(item.problemUrl!);
+                                      }}
+                                      className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-white transition-colors"
+                                      title="문제 미리보기"
+                                    >
+                                      <Eye size={15} />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
-
-                              {item.problemUrl && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setPreviewProblemUrl(item.problemUrl!);
-                                  }}
-                                  className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-white transition-colors"
-                                  title="문제 미리보기"
-                                >
-                                  <Eye size={15} />
-                                </button>
-                              )}
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1122,6 +1438,233 @@ export default function ReviewManagerMain() {
             </div>
             <div className="flex-1 overflow-auto flex items-center justify-center p-2 bg-slate-50 rounded-2xl">
               <img src={previewProblemUrl} alt="문제 원본" className="max-h-[70vh] object-contain rounded-xl" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 📋 7. 문항 풀이 이력 상세보기 모달 (최근 정보부터 역순 정렬, YYYY년 MM월 DD일 HH시 mm분 ss초) */}
+      {detailModalItem && (() => {
+        const historyList = getItemAttemptHistory(detailModalItem);
+        const attemptCount = historyList.length;
+        const correctCount = historyList.filter(h => h.isCorrect).length;
+        const accuracy = attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0;
+
+        return (
+          <div className="fixed inset-0 z-[115] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="relative max-w-2xl w-full max-h-[90vh] bg-white rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+              {/* 모달 헤더 */}
+              <div className="p-6 pb-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 via-indigo-50/30 to-white flex items-start justify-between gap-4">
+                <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-black text-indigo-700 bg-indigo-100/70 px-2.5 py-0.5 rounded-md">
+                      {detailModalItem.folderName || '복습함'}
+                    </span>
+                    <span className="text-xs font-bold text-slate-500">
+                      정답: <strong className="text-slate-800 font-black">{detailModalItem.answer || detailModalItem.raw_answer || '-'}</strong>
+                    </span>
+                    {selectedStudent && (
+                      <span className="text-xs text-slate-400 font-bold">
+                        • {selectedStudent.name} ({selectedStudent.grade})
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-lg font-black text-slate-800 leading-snug truncate">
+                    {detailModalItem.name}
+                  </h3>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {detailModalItem.problemUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setPreviewProblemUrl(detailModalItem.problemUrl!)}
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors"
+                      title="문제 이미지 미리보기"
+                    >
+                      <Eye size={13} className="text-indigo-600" /> 문제 보기
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDetailModalItem(null)}
+                    className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center font-black transition-colors"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* 통계 요약 띠 */}
+              <div className="px-6 py-3 bg-slate-50/80 border-b border-slate-100 flex items-center justify-between text-xs font-bold text-slate-600">
+                <div className="flex items-center gap-4">
+                  <span>총 제출: <strong className="text-slate-900 font-black">{attemptCount}회</strong></span>
+                  <span>정답: <strong className="text-emerald-600 font-black">{correctCount}회</strong></span>
+                  <span>정답률: <strong className={`font-black ${accuracy >= 70 ? 'text-emerald-600' : 'text-amber-600'}`}>{attemptCount > 0 ? `${accuracy}%` : '-'}</strong></span>
+                </div>
+                <div className="text-[11px] text-slate-400 font-medium">
+                  * 최신 제출 순으로 정렬됨
+                </div>
+              </div>
+
+              {/* 풀이 기록 리스트 (스크롤 영역) */}
+              <div className="p-6 flex-1 overflow-y-auto space-y-3.5">
+                {historyList.length === 0 ? (
+                  <div className="py-16 text-center text-slate-400 space-y-2">
+                    <History size={36} className="mx-auto text-slate-300 opacity-60" />
+                    <p className="text-sm font-black text-slate-600">제출된 풀이 기록이 없습니다.</p>
+                    <p className="text-xs text-slate-400">학생이 이 문항을 푼 뒤 다시 확인해보세요.</p>
+                  </div>
+                ) : (
+                  historyList.map((att, idx) => {
+                    const attemptNumber = historyList.length - idx;
+                    const isSpecial = att.sourceType === 'special_exam';
+
+                    return (
+                      <div
+                        key={att.id}
+                        className={`p-4 rounded-2xl border transition-all ${
+                          att.isCorrect
+                            ? 'bg-emerald-50/40 border-emerald-200/80'
+                            : 'bg-rose-50/40 border-rose-200/80'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-slate-800 text-white">
+                              #{attemptNumber}차 시도
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                              isSpecial
+                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                            }`}>
+                              {att.examTitle}
+                            </span>
+                            {idx === 0 && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-500 text-white animate-pulse">
+                                최근
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
+                              att.isCorrect
+                                ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
+                                : 'bg-rose-100 text-rose-700 border border-rose-300'
+                            }`}>
+                              {att.isCorrect ? '✓ 정답' : '✕ 오답'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 제출 일시 표시 (사용자 요청: 몇년 몇월 몇시 몇분 몇초에 제출했다는 내용 수록) */}
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 mb-2.5">
+                          <Calendar size={13} className="text-indigo-500 shrink-0" />
+                          <span>제출일시:</span>
+                          <span className="text-slate-800 font-black">
+                            {formatFullDateTime(att.recordedAt)}
+                          </span>
+                        </div>
+
+                        {/* 답안 & 소요시간 & 변화량 */}
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-white/80 p-2.5 rounded-xl border border-slate-200/60 text-xs">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">학생 제출 답안</span>
+                            <span className={`font-black ${att.isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {att.userAnswer || '-'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block font-medium">소요 시간</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-slate-700">
+                                {att.spentSec != null ? `${att.spentSec}초` : '-'}
+                              </span>
+                              {att.diffFromPrev != null && att.diffFromPrev < 0 && (
+                                <span className="text-[10px] font-black text-emerald-600 flex items-center">
+                                  ⚡ {Math.abs(att.diffFromPrev)}초 단축
+                                </span>
+                              )}
+                              {att.diffFromPrev != null && att.diffFromPrev > 0 && (
+                                <span className="text-[10px] font-bold text-slate-400">
+                                  +{att.diffFromPrev}초
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="col-span-2 sm:col-span-1">
+                            <span className="text-[10px] text-slate-400 block font-medium">정답</span>
+                            <span className="font-bold text-slate-600">
+                              {att.correctAnswer || detailModalItem.answer || '-'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 손글씨 풀이 인증샷 첨부 확인 및 바로보기 버튼 */}
+                        {(att.proofImageUrl || att.proofDriveId) && (
+                          <div className="mt-3 pt-2.5 border-t border-slate-200/50 flex items-center justify-between">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-700">
+                              <Camera size={14} className="text-amber-600" />
+                              <span>손글씨 풀이 인증샷 첨부됨</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const targetUrl = att.proofImageUrl || (att.proofDriveId ? `/api/drive/library/file?fileId=${att.proofDriveId}&type=image&raw=true` : null);
+                                if (targetUrl) setViewingDetailProofUrl(targetUrl);
+                              }}
+                              className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-lg transition-colors flex items-center gap-1 shadow-xs"
+                            >
+                              <Eye size={12} /> 풀이 사진 보기
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* 모달 푸터 */}
+              <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setDetailModalItem(null)}
+                  className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-colors"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 📸 8. 상세보기 모달 내 손글씨 풀이 인증샷 원본 확대 모달 */}
+      {viewingDetailProofUrl && (
+        <div className="fixed inset-0 z-[130] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="relative max-w-4xl w-full max-h-[90vh] bg-slate-900 border border-white/10 rounded-3xl p-6 flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3 text-white">
+              <div className="flex items-center gap-2">
+                <Camera size={16} className="text-amber-400" />
+                <span className="font-black text-sm">손글씨 풀이 인증샷 원본 확인</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingDetailProofUrl(null)}
+                className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center font-black transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto flex items-center justify-center p-2 bg-black/40 rounded-2xl min-h-[300px]">
+              <img
+                src={viewingDetailProofUrl}
+                alt="손글씨 풀이 인증샷 원본"
+                className="max-h-[75vh] object-contain rounded-xl shadow-2xl"
+              />
             </div>
           </div>
         </div>

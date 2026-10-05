@@ -18,21 +18,31 @@ export async function GET(req: NextRequest) {
     const mode = searchParams.get('mode'); // 'single_student' | 'special_exams' | 'summary'
 
     // ----------------------------------------------------
-    // 모드 1: 특정 학생의 상세 복습 데이터 조회
+    // 모드 1: 특정 학생의 상세 복습 데이터 조회 (+ 해당 학생의 시험 제출 기록 통합)
     // ----------------------------------------------------
     if (studentId && mode !== 'special_exams') {
-      const { data: revRow } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', `student_review_${studentId}`)
-        .maybeSingle();
+      const [revRes, subsRes] = await Promise.all([
+        supabase
+          .from('exam_library')
+          .select('file_data')
+          .eq('drive_id', `student_review_${studentId}`)
+          .maybeSingle(),
+        supabase
+          .from('exam_library')
+          .select('file_data')
+          .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
+          .maybeSingle(),
+      ]);
 
-      const reviewData = revRow?.file_data ? JSON.parse(revRow.file_data) : { folders: [], items: [] };
+      const reviewData = revRes.data?.file_data ? JSON.parse(revRes.data.file_data) : { folders: [], items: [] };
+      const allSubs: StudentSubmission[] = subsRes.data?.file_data ? JSON.parse(subsRes.data.file_data).submissions || [] : [];
+      const studentSubmissions = allSubs.filter(s => s.student_id === studentId);
 
       return NextResponse.json({
         success: true,
         studentId,
         reviewData,
+        studentSubmissions,
       });
     }
 
