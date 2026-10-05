@@ -302,18 +302,21 @@ export async function DELETE(req: NextRequest) {
       }
     }
 
-    // 3. 구글 드라이브에서 인증 사진 파일 영구 삭제 또는 휴지통 이동
+    // 3. 구글 드라이브에서 인증 사진 파일 영구 삭제 또는 학생 폴더에서 연결 해제
     let deletedProofsCount = 0;
     if (proofDriveIds.size > 0) {
       try {
         const drive = getDriveClient();
         if (drive) {
           const deletePromises = Array.from(proofDriveIds).map(async (fileId) => {
+            // 1단계: 영구 삭제 시도
             try {
               await drive.files.delete({ fileId, supportsAllDrives: true });
               deletedProofsCount++;
               console.log(`✅ Google Drive proof image permanently deleted: ${fileId}`);
+              return;
             } catch (delErr: any) {
+              // 2단계: 휴지통 이동 시도
               try {
                 await drive.files.update({
                   fileId,
@@ -322,26 +325,104 @@ export async function DELETE(req: NextRequest) {
                 });
                 deletedProofsCount++;
                 console.log(`✅ Google Drive proof image moved to trash: ${fileId}`);
+                return;
               } catch (trashErr: any) {
-                console.warn(`⚠️ Failed to delete/trash Google Drive file ${fileId}:`, trashErr?.message);
+                // 3단계: 소유권 제약 시 부모 폴더(학생 폴더)에서 완전히 분리(removeParents)
+                try {
+                  const fileMeta = await drive.files.get({
+                    fileId,
+                    fields: "id, parents",
+                    supportsAllDrives: true,
+                  });
+                  const parents = fileMeta.data.parents;
+                  if (parents && parents.length > 0) {
+                    for (const parentId of parents) {
+                      await drive.files.update({
+                        fileId,
+                        removeParents: parentId,
+                        supportsAllDrives: true,
+                      });
+                    }
+                    deletedProofsCount++;
+                    console.log(`✅ Google Drive proof image detached from parents (removed from student folder): ${fileId}`);
+                    return;
+                  }
+                } catch (detachErr: any) {
+                  console.warn(`⚠️ Failed to detach Google Drive file ${fileId}:`, detachErr?.message);
+                }
               }
             }
           });
           await Promise.allSettled(deletePromises);
+
+          // 4단계: 학생 드라이브 폴더의 list.json에서도 해당 인증샷 레코드 정리
+          const relatedStudentIds = Array.from(new Set(relatedSubmissions.map((s: any) => s.student_id).filter(Boolean)));
+          if (relatedStudentIds.length > 0) {
+            try {
+              const { data: students } = await supabase
+                .from("students")
+                .select("id, drive_folder_id")
+                .in("id", relatedStudentIds);
+
+              if (students && students.length > 0) {
+                for (const st of students) {
+                  if (!st.drive_folder_id) continue;
+                  try {
+                    const listRes = await drive.files.list({
+                      q: `'${st.drive_folder_id}' in parents and name = 'list.json' and trashed = false`,
+                      fields: "files(id, name)",
+                      supportsAllDrives: true,
+                    });
+                    for (const f of listRes.data.files || []) {
+                      if (!f.id) continue;
+                      try {
+                        const contentRes: any = await (drive.files.get as any)({ fileId: f.id, alt: "media" });
+                        let records = contentRes?.data;
+                        if (typeof records === "string") {
+                          try { records = JSON.parse(records); } catch {}
+                        }
+                        if (Array.isArray(records)) {
+                          const originalLen = records.length;
+                          const filteredRecords = records.filter((r: any) => !proofDriveIds.has(r.id));
+                          if (filteredRecords.length !== originalLen) {
+                            await (drive.files.update as any)({
+                              fileId: f.id,
+                              media: {
+                                mimeType: "application/json",
+                                body: JSON.stringify(filteredRecords, null, 2),
+                              },
+                              supportsAllDrives: true,
+                            });
+                            console.log(`✅ Cleaned up ${originalLen - filteredRecords.length} records in student list.json (${f.id})`);
+                          }
+                        }
+                      } catch (readErr: any) {
+                        console.warn(`Failed reading/updating list.json ${f.id}:`, readErr?.message);
+                      }
+                    }
+                  } catch (folderErr: any) {
+                    console.warn(`Failed checking student folder ${st.drive_folder_id}:`, folderErr?.message);
+                  }
+                }
+              }
+            } catch (stErr: any) {
+              console.warn("Error fetching students for list.json cleanup:", stErr?.message);
+            }
+          }
         }
       } catch (driveErr) {
         console.error("Google Drive deletion processing error:", driveErr);
       }
     }
 
-    // 4. 연동된 제출 기록이 있다면 DB에서 정리 저장
+    // 5. 연동된 제출 기록이 있다면 DB에서 정리 저장
     if (relatedSubmissions.length > 0) {
       await saveSubmissions(remainingSubmissions);
     }
 
     return NextResponse.json({
       success: true,
-      message: `시험지가 삭제되었습니다.${proofDriveIds.size > 0 ? ` (연동된 인증샷 ${deletedProofsCount}장 구글 드라이브 삭제 완료)` : ""}`,
+      message: `시험지가 삭제되었습니다.${proofDriveIds.size > 0 ? ` (연동된 인증샷 ${deletedProofsCount}장 구글 드라이브 삭제 및 정리 완료)` : ""}`,
       deletedProofsCount,
     });
   } catch (error: any) {

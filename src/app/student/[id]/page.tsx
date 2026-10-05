@@ -558,6 +558,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentId={student?.id}
                 studentName={student?.name}
                 studentGrade={student?.grade}
+                studentFolderId={student?.drive_folder_id}
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
               />
