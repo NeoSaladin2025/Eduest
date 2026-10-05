@@ -8,7 +8,7 @@ import { useStudentData } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
 import StudentTest2View from './StudentTest2View';
-import { StudentReviewData, ReviewItem } from './types';
+import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
@@ -190,30 +190,75 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     }
   }, [menuConfig, mode]);
 
-  // 학생 복습 데이터 로드 (Local Cache -> Cloud DB)
+  // 학생 복습 데이터 로드 (Local Cache -> Cloud DB 실시간 동기화)
   useEffect(() => {
     if (!resolvedParams.id) return;
+
+    const syncReviewFromCloud = () => {
+      fetch(`/api/student/review?studentId=${resolvedParams.id}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.reviewData) {
+            const rawFolders: ReviewFolder[] = Array.isArray(data.reviewData.folders) ? data.reviewData.folders : [];
+            const rawItems: ReviewItem[] = Array.isArray(data.reviewData.items) ? data.reviewData.items : [];
+
+            // 문항이 전혀 없는 경우 잔여 유령 폴더도 함께 완전 비움
+            let cleanFolders: ReviewFolder[] = rawFolders;
+            if (rawItems.length === 0) {
+              cleanFolders = [];
+            } else {
+              // 남아있는 문항이 참조하는 폴더 및 하위 계층만 유지
+              const activeFolderIds = new Set(rawItems.map(i => i.folderId).filter(Boolean));
+              const activeFolderNames = new Set(rawItems.map(i => i.folderName).filter(Boolean));
+              cleanFolders = rawFolders.filter(f =>
+                activeFolderIds.has(f.id) ||
+                activeFolderNames.has(f.name) ||
+                rawFolders.some(child => child.parentId === f.id && activeFolderIds.has(child.id))
+              );
+            }
+
+            const cleanData: StudentReviewData = {
+              folders: cleanFolders,
+              items: rawItems,
+            };
+
+            setReviewData(cleanData);
+            localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(cleanData));
+          }
+        })
+        .catch(err => console.error('Review data fetch error:', err));
+    };
+
+    // 1. 최초 로컬 캐시 적용 (문항 0개면 유령 폴더 제거)
     const local = localStorage.getItem(`student_review_${resolvedParams.id}`);
     if (local) {
       try {
-        setReviewData(JSON.parse(local));
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed.items) && parsed.items.length === 0) {
+          parsed.folders = [];
+        }
+        setReviewData(parsed);
       } catch (e) {}
     }
 
-    fetch(`/api/student/review?studentId=${resolvedParams.id}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.reviewData && (data.reviewData.folders?.length > 0 || data.reviewData.items?.length > 0)) {
-          setReviewData(data.reviewData);
-          localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(data.reviewData));
-        }
-      })
-      .catch(err => console.error('Review data fetch error:', err));
+    // 2. 서버 최신 데이터 동기화
+    syncReviewFromCloud();
+
+    // 3. 윈도우 포커스 / 탭 전환 시 선생님 변경사항 실시간 재동기화
+    window.addEventListener('focus', syncReviewFromCloud);
+    return () => {
+      window.removeEventListener('focus', syncReviewFromCloud);
+    };
   }, [resolvedParams.id]);
 
   const saveReviewData = async (newData: StudentReviewData) => {
-    setReviewData(newData);
-    localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(newData));
+    // 문항이 0개라면 유령 폴더가 남지 않도록 폴더도 함께 비움
+    let cleanData = newData;
+    if (Array.isArray(newData.items) && newData.items.length === 0) {
+      cleanData = { folders: [], items: [] };
+    }
+    setReviewData(cleanData);
+    localStorage.setItem(`student_review_${resolvedParams.id}`, JSON.stringify(cleanData));
 
     try {
       await fetch('/api/student/review', {
@@ -221,7 +266,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           studentId: resolvedParams.id,
-          reviewData: newData,
+          reviewData: cleanData,
         }),
       });
     } catch (err) {

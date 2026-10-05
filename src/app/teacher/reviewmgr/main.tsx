@@ -599,6 +599,76 @@ export default function ReviewManagerMain() {
     }
   };
 
+  // 🗑️ 학생 복습함에서 특정 문항 삭제
+  const [deletingBoxItemId, setDeletingBoxItemId] = useState<string | null>(null);
+  const [clearingBox, setClearingBox] = useState(false);
+
+  const handleDeleteReviewItemFromBox = async (item: ReviewItem) => {
+    if (!selectedStudentId) return;
+
+    if (!confirm(`'${item.name}' 문항을 ${selectedStudent?.name || '학생'}의 복습함에서 삭제하시겠습니까?\n\n※ 학생의 복습함 화면에서도 즉시 사라집니다.`)) {
+      return;
+    }
+
+    try {
+      setDeletingBoxItemId(item.id);
+      const res = await fetch('/api/teacher/review-management', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_review_item',
+          studentId: selectedStudentId,
+          itemId: item.id,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        await fetchStudentDetail(selectedStudentId);
+        fetchStudentsSummary();
+      } else {
+        alert(`삭제 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err: any) {
+      alert(`삭제 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setDeletingBoxItemId(null);
+    }
+  };
+
+  // 🗑️ 학생의 복습함 전체 비우기
+  const handleClearStudentReviewBox = async () => {
+    if (!selectedStudentId) return;
+
+    if (!confirm(`${selectedStudent?.name || '학생'}의 복습함을 완전히 비우시겠습니까?\n\n※ 복습함에 담긴 모든 문항과 폴더가 학생 화면에서도 즉시 사라집니다.`)) {
+      return;
+    }
+
+    try {
+      setClearingBox(true);
+      const res = await fetch('/api/teacher/review-management', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'clear_student_review',
+          studentId: selectedStudentId,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        await fetchStudentDetail(selectedStudentId);
+        fetchStudentsSummary();
+      } else {
+        alert(`비우기 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err: any) {
+      alert(`비우기 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setClearingBox(false);
+    }
+  };
+
   // 스페셜 테스트 모달 열기
   const handleOpenSpecialModal = () => {
     if (selectedItemIds.size === 0) {
@@ -854,6 +924,16 @@ export default function ReviewManagerMain() {
                       <Sparkles size={14} className="fill-slate-950" />
                       선택한 {selectedItemIds.size}문항으로 스페셜 테스트 만들기
                     </button>
+                    <button
+                      type="button"
+                      disabled={reviewItems.length === 0 || clearingBox}
+                      onClick={handleClearStudentReviewBox}
+                      className="px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200/80 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 disabled:opacity-40"
+                      title="이 학생의 복습함에 담긴 모든 문항과 폴더를 깨끗하게 비웁니다"
+                    >
+                      {clearingBox ? <Loader2 size={13} className="animate-spin text-rose-500" /> : <Trash2 size={13} />}
+                      복습함 비우기
+                    </button>
                   </div>
                 </div>
 
@@ -1062,6 +1142,24 @@ export default function ReviewManagerMain() {
                                       <Eye size={15} />
                                     </button>
                                   )}
+
+                                  {/* 🗑️ 학생 복습함에서 이 문항 삭제 */}
+                                  <button
+                                    type="button"
+                                    disabled={deletingBoxItemId === item.id}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteReviewItemFromBox(item);
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
+                                    title="학생 복습함에서 이 문항 삭제"
+                                  >
+                                    {deletingBoxItemId === item.id ? (
+                                      <Loader2 size={14} className="animate-spin text-rose-500" />
+                                    ) : (
+                                      <Trash2 size={14} />
+                                    )}
+                                  </button>
                                 </div>
                               </div>
                             </div>

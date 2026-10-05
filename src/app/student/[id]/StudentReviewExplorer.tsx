@@ -212,6 +212,12 @@ export default function StudentReviewExplorer({
   };
 
   // 1. Current active folder object
+  useEffect(() => {
+    if (currentFolderId && !reviewData.folders.some(f => f.id === currentFolderId)) {
+      setCurrentFolderId(null);
+    }
+  }, [currentFolderId, reviewData.folders]);
+
   const currentFolder = useMemo(() => {
     if (!currentFolderId) return null;
     return reviewData.folders.find(f => f.id === currentFolderId) || null;

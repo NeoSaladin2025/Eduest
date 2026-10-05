@@ -244,9 +244,9 @@ async function handleMutation(req: NextRequest) {
       name,
     } = body;
 
-    if (!studentId || !itemId) {
+    if (!studentId) {
       return NextResponse.json(
-        { success: false, error: 'studentId와 itemId가 필요합니다.' },
+        { success: false, error: 'studentId가 필요합니다.' },
         { status: 400 }
       );
     }
@@ -506,6 +506,76 @@ async function handleMutation(req: NextRequest) {
       return NextResponse.json({
         success: true,
         message: '해당 문항의 모든 풀이 기록 및 인증샷이 완전히 삭제되었습니다.',
+      });
+    }
+
+    // 3. 학생 복습함에서 특정 문항 완전히 삭제 (delete_review_item)
+    if (action === 'delete_review_item') {
+      if (!itemId) {
+        return NextResponse.json({ success: false, error: 'itemId가 필요합니다.' }, { status: 400 });
+      }
+
+      const revRes = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', `student_review_${studentId}`)
+        .maybeSingle();
+
+      if (revRes.data?.file_data) {
+        const reviewData = JSON.parse(revRes.data.file_data);
+        const prevItems: any[] = reviewData.items || [];
+        const nextItems = prevItems.filter((it: any) => it.id !== itemId && it.fileId !== itemId);
+
+        // 남은 문항이 속한 폴더들만 유지 (문항이 0개면 폴더도 완전 비움)
+        let nextFolders: any[] = reviewData.folders || [];
+        if (nextItems.length === 0) {
+          nextFolders = [];
+        } else {
+          const activeFolderIds = new Set(nextItems.map((i: any) => i.folderId).filter(Boolean));
+          const activeFolderNames = new Set(nextItems.map((i: any) => i.folderName).filter(Boolean));
+          nextFolders = nextFolders.filter((f: any) =>
+            activeFolderIds.has(f.id) ||
+            activeFolderNames.has(f.name) ||
+            nextFolders.some((child: any) => child.parentId === f.id && activeFolderIds.has(child.id))
+          );
+        }
+
+        await supabase.from('exam_library').upsert(
+          {
+            drive_id: `student_review_${studentId}`,
+            name: `student_review_${studentId}.json`,
+            type: 'file',
+            grade: '공통',
+            file_data: JSON.stringify({ folders: nextFolders, items: nextItems }),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'drive_id' }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: '문항이 학생의 복습함에서 삭제되었습니다.',
+      });
+    }
+
+    // 4. 학생 복습함 전체 비우기 (clear_student_review)
+    if (action === 'clear_student_review') {
+      await supabase.from('exam_library').upsert(
+        {
+          drive_id: `student_review_${studentId}`,
+          name: `student_review_${studentId}.json`,
+          type: 'file',
+          grade: '공통',
+          file_data: JSON.stringify({ folders: [], items: [] }),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'drive_id' }
+      );
+
+      return NextResponse.json({
+        success: true,
+        message: '학생의 복습함이 완전히 비워졌습니다.',
       });
     }
 
