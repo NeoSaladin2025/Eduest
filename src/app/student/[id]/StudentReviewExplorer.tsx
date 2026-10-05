@@ -18,7 +18,6 @@ import {
   ChevronDown, 
   Sparkles,
   BookOpen,
-  Database,
   GripVertical,
   Layers,
   Zap,
@@ -39,9 +38,6 @@ interface StudentReviewExplorerProps {
   reviewData: StudentReviewData;
   onUpdateReviewData: (newData: StudentReviewData) => void;
   onOpenFileForReview: (file: ReviewItem, fileList: ReviewItem[]) => void;
-  gasRecords?: any[];
-  gasCartridges?: string[];
-  onOpenGasCartridge?: (cartridgeName: string) => void;
 }
 
 export default function StudentReviewExplorer({
@@ -49,9 +45,6 @@ export default function StudentReviewExplorer({
   reviewData,
   onUpdateReviewData,
   onOpenFileForReview,
-  gasRecords = [],
-  gasCartridges = [],
-  onOpenGasCartridge,
 }: StudentReviewExplorerProps) {
   // Current active folder in right pane: null means Root (내 복습 홈)
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -667,34 +660,6 @@ export default function StudentReviewExplorer({
               </div>
             ) : (
               rootLevelFolders.map(folder => renderFolderTreeNode(folder, 0))
-            )}
-
-            {/* Google Apps Script 기존 시험 오답 팩 (GAS) */}
-            {gasCartridges.length > 0 && (
-              <div className="pt-4 mt-4 border-t border-white/10 space-y-1">
-                <div className="px-2 py-1 text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-1.5">
-                  <Database size={12} />
-                  <span>시험 오답 팩</span>
-                </div>
-                {gasCartridges.map(cat => {
-                  const count = gasRecords.filter(r => r.name.includes(`[${cat}]`)).length;
-                  return (
-                    <div
-                      key={cat}
-                      onClick={() => onOpenGasCartridge && onOpenGasCartridge(cat)}
-                      className="flex items-center justify-between p-2 rounded-xl cursor-pointer text-xs font-bold text-slate-300 hover:text-white hover:bg-indigo-900/30 transition-all"
-                    >
-                      <div className="flex items-center gap-2 truncate">
-                        <Database size={14} className="text-indigo-400 flex-shrink-0" />
-                        <span className="truncate">{cat}</span>
-                      </div>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-white/5 text-indigo-300 font-mono">
-                        {count}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
             )}
 
           </div>

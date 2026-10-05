@@ -621,12 +621,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
                 onOpenFileForReview={handleOpenFileForReview}
-                gasRecords={allRecords}
-                gasCartridges={cartridges}
-                onOpenGasCartridge={(cat) => {
-                  const filtered = allRecords.filter(r => r.name.includes(`[${cat}]`)).sort((a: any, b: any) => extractNumber(a.name) - extractNumber(b.name));
-                  setSelectedList(filtered); setShowReviewer(true); setSelectedRecord(filtered[0]); setSelectedTab('problem'); startStealthPrefetch(filtered, 0, 'image');
-                }}
               />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
