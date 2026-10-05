@@ -120,6 +120,8 @@ export default function ReviewManagerMain() {
   // 📋 문항 풀이 이력 상세보기 모달 상태
   const [detailModalItem, setDetailModalItem] = useState<ReviewItem | null>(null);
   const [viewingDetailProofUrl, setViewingDetailProofUrl] = useState<string | null>(null);
+  const [deletingAttemptId, setDeletingAttemptId] = useState<string | null>(null);
+  const [deletingAllAttempts, setDeletingAllAttempts] = useState(false);
 
   // 문항 선택 (스페셜 테스트 생성용)
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -175,36 +177,45 @@ export default function ReviewManagerMain() {
     fetchStudentsSummary();
   }, []);
 
-  // 2. 선택된 학생의 상세 복습 데이터 로드
+  // 2. 선택된 학생의 상세 복습 데이터 로드 (외부에서도 직접 호출 가능)
+  const fetchStudentDetail = async (targetStudentId?: string | null) => {
+    const sId = targetStudentId || selectedStudentId;
+    if (!sId) return;
+
+    try {
+      setDetailLoading(true);
+      const res = await fetch(`/api/teacher/review-management?studentId=${sId}`);
+      const data = await res.json();
+      if (data.success && data.reviewData) {
+        const nextItems = data.reviewData.items || [];
+        setReviewFolders(data.reviewData.folders || []);
+        setReviewItems(nextItems);
+        setStudentSubmissions(data.studentSubmissions || []);
+
+        // 열려있는 상세보기 모달의 문항 데이터도 최신 상태로 동기화
+        setDetailModalItem(prev => {
+          if (!prev) return null;
+          return nextItems.find((it: ReviewItem) => it.id === prev.id) || prev;
+        });
+      } else {
+        setReviewFolders([]);
+        setReviewItems([]);
+        setStudentSubmissions([]);
+      }
+    } catch (e) {
+      console.error('Failed to load student review detail:', e);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!selectedStudentId) return;
-
-    const fetchStudentDetail = async () => {
-      try {
-        setDetailLoading(true);
-        setSelectedItemIds(new Set());
-        setItemSearchTerm('');
-        setItemFilterStatus('ALL');
-        setSelectedFolderFilter('전체');
-        const res = await fetch(`/api/teacher/review-management?studentId=${selectedStudentId}`);
-        const data = await res.json();
-        if (data.success && data.reviewData) {
-          setReviewFolders(data.reviewData.folders || []);
-          setReviewItems(data.reviewData.items || []);
-          setStudentSubmissions(data.studentSubmissions || []);
-        } else {
-          setReviewFolders([]);
-          setReviewItems([]);
-          setStudentSubmissions([]);
-        }
-      } catch (e) {
-        console.error('Failed to load student review detail:', e);
-      } finally {
-        setDetailLoading(false);
-      }
-    };
-
-    fetchStudentDetail();
+    setSelectedItemIds(new Set());
+    setItemSearchTerm('');
+    setItemFilterStatus('ALL');
+    setSelectedFolderFilter('전체');
+    fetchStudentDetail(selectedStudentId);
   }, [selectedStudentId]);
 
   // 3. 스페셜 시험지 목록 및 인증샷 로드
@@ -419,6 +430,8 @@ export default function ReviewManagerMain() {
       diffFromPrev?: number;
       proofImageUrl?: string;
       proofDriveId?: string;
+      submissionId?: string;
+      questionKey?: string;
     }
 
     const history: AttemptHistoryItem[] = [];
@@ -483,6 +496,8 @@ export default function ReviewManagerMain() {
             spentSec: ans.time_spent_sec,
             proofImageUrl: proofImgUrl,
             proofDriveId: proofDriveId,
+            submissionId: sub.id,
+            questionKey: qKey,
           });
         }
       });
@@ -496,6 +511,92 @@ export default function ReviewManagerMain() {
     });
 
     return history;
+  };
+
+  // 🗑️ 개별 풀이 이력 삭제 (DB 실시간 반영)
+  const handleDeleteAttempt = async (att: any) => {
+    if (!selectedStudentId || !detailModalItem) return;
+
+    const formattedTime = formatFullDateTime(att.recordedAt);
+    if (
+      !confirm(
+        `해당 풀이 기록(${formattedTime})을 삭제하시겠습니까?\n\n※ 데이터베이스 및 관련 풀이 인증샷(구글 드라이브)에서도 영구 삭제됩니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setDeletingAttemptId(att.id);
+      const res = await fetch('/api/teacher/review-management', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_attempt',
+          studentId: selectedStudentId,
+          itemId: detailModalItem.id,
+          sourceType: att.sourceType,
+          recordedAt: att.recordedAt,
+          submissionId: att.submissionId,
+          questionKey: att.questionKey,
+          proofDriveId: att.proofDriveId,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        // 즉시 로컬 데이터 및 학생 개요 갱신
+        await fetchStudentDetail(selectedStudentId);
+        fetchStudentsSummary();
+      } else {
+        alert(`삭제 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err: any) {
+      alert(`삭제 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setDeletingAttemptId(null);
+    }
+  };
+
+  // 🗑️ 이 문항의 모든 풀이 기록 일괄 초기화 (DB 실시간 반영)
+  const handleDeleteAllAttemptsForModalItem = async () => {
+    if (!selectedStudentId || !detailModalItem) return;
+
+    if (
+      !confirm(
+        `'${detailModalItem.name}' 문항의 모든 풀이 이력을 삭제하시겠습니까?\n\n※ 해당 문항에 대한 학생의 모든 시도 내역, 정답/오답 통계 및 손글씨 인증샷이 데이터베이스에서 영구 삭제됩니다.`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setDeletingAllAttempts(true);
+      const res = await fetch('/api/teacher/review-management', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_all_attempts',
+          studentId: selectedStudentId,
+          itemId: detailModalItem.id,
+          targetDriveId: detailModalItem.fileId || detailModalItem.id,
+          solutionUrl: detailModalItem.solutionUrl,
+          name: detailModalItem.name,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        await fetchStudentDetail(selectedStudentId);
+        fetchStudentsSummary();
+      } else {
+        alert(`초기화 실패: ${data.error || '오류가 발생했습니다.'}`);
+      }
+    } catch (err: any) {
+      alert(`초기화 중 오류가 발생했습니다: ${err.message}`);
+    } finally {
+      setDeletingAllAttempts(false);
+    }
   };
 
   // 스페셜 테스트 모달 열기
@@ -1502,8 +1603,26 @@ export default function ReviewManagerMain() {
                   <span>정답: <strong className="text-emerald-600 font-black">{correctCount}회</strong></span>
                   <span>정답률: <strong className={`font-black ${accuracy >= 70 ? 'text-emerald-600' : 'text-amber-600'}`}>{attemptCount > 0 ? `${accuracy}%` : '-'}</strong></span>
                 </div>
-                <div className="text-[11px] text-slate-400 font-medium">
-                  * 최신 제출 순으로 정렬됨
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+                    * 최신 제출 순으로 정렬됨
+                  </span>
+                  {historyList.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={deletingAllAttempts}
+                      onClick={handleDeleteAllAttemptsForModalItem}
+                      className="flex items-center gap-1 text-[11px] font-bold text-rose-500 hover:text-rose-700 hover:bg-rose-50 px-2 py-1 rounded-lg transition-colors border border-rose-200/60"
+                      title="이 문항의 모든 풀이 기록 및 인증샷을 데이터베이스에서 영구 삭제합니다"
+                    >
+                      {deletingAllAttempts ? (
+                        <Loader2 size={12} className="animate-spin text-rose-500" />
+                      ) : (
+                        <Trash2 size={12} />
+                      )}
+                      <span>전체 내역 삭제</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1556,6 +1675,22 @@ export default function ReviewManagerMain() {
                             }`}>
                               {att.isCorrect ? '✓ 정답' : '✕ 오답'}
                             </span>
+
+                            {/* 🗑️ 내역 개별 삭제 버튼 */}
+                            <button
+                              type="button"
+                              disabled={deletingAttemptId === att.id}
+                              onClick={() => handleDeleteAttempt(att)}
+                              className="flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-rose-600 hover:bg-white px-2 py-1 rounded-lg transition-colors border border-slate-200/80 hover:border-rose-200 shadow-2xs"
+                              title="이 풀이 기록을 데이터베이스에서 삭제합니다"
+                            >
+                              {deletingAttemptId === att.id ? (
+                                <Loader2 size={12} className="animate-spin text-rose-500" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                              <span>삭제</span>
+                            </button>
                           </div>
                         </div>
 

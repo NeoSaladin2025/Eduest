@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 import { ExamPaper } from '@/app/api/test2/exam/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
+import { google } from 'googleapis';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -10,6 +11,48 @@ const supabase = createClient(
 
 const EXAMS_RECORD_DRIVE_ID = 'test2_exam_papers_data';
 const SUBMISSIONS_RECORD_DRIVE_ID = 'test2_student_submissions_data';
+
+// 헬퍼: Google Drive 클라이언트
+function getDriveClient() {
+  const keyString = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  if (!keyString) return null;
+  try {
+    const credentials = JSON.parse(keyString);
+    if (credentials.private_key) {
+      credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+    }
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    return google.drive({ version: 'v3', auth });
+  } catch (e) {
+    console.error('Google Auth initialization error in review-management:', e);
+    return null;
+  }
+}
+
+// 헬퍼: 구글 드라이브 인증샷 파일 안전 삭제
+async function deleteDriveFileSafely(fileId?: string) {
+  if (!fileId) return;
+  try {
+    const drive = getDriveClient();
+    if (!drive) return;
+    try {
+      await drive.files.delete({ fileId, supportsAllDrives: true });
+      console.log(`✅ Google Drive proof deleted in review-management: ${fileId}`);
+    } catch {
+      await drive.files.update({
+        fileId,
+        requestBody: { trashed: true },
+        supportsAllDrives: true,
+      });
+      console.log(`✅ Google Drive proof trashed in review-management: ${fileId}`);
+    }
+  } catch (e) {
+    console.warn(`Drive file deletion error for ${fileId}:`, e);
+  }
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -168,6 +211,312 @@ export async function GET(req: NextRequest) {
     console.error('Review management API error:', error);
     return NextResponse.json(
       { success: false, error: error.message || '복습 관리 데이터 로드 실패' },
+      { status: 500 }
+    );
+  }
+}
+
+// ----------------------------------------------------
+// POST & DELETE: 특정 문항 풀이 이력 삭제 / 전체 내역 초기화
+// ----------------------------------------------------
+export async function POST(req: NextRequest) {
+  return handleMutation(req);
+}
+
+export async function DELETE(req: NextRequest) {
+  return handleMutation(req);
+}
+
+async function handleMutation(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const {
+      action,
+      studentId,
+      itemId,
+      sourceType,
+      recordedAt,
+      submissionId,
+      questionKey,
+      proofDriveId,
+      targetDriveId,
+      solutionUrl,
+      name,
+    } = body;
+
+    if (!studentId || !itemId) {
+      return NextResponse.json(
+        { success: false, error: 'studentId와 itemId가 필요합니다.' },
+        { status: 400 }
+      );
+    }
+
+    // 1. 개별 시도 기록 삭제 (delete_attempt)
+    if (action === 'delete_attempt') {
+      if (sourceType === 'review') {
+        const revRes = await supabase
+          .from('exam_library')
+          .select('file_data')
+          .eq('drive_id', `student_review_${studentId}`)
+          .maybeSingle();
+
+        if (revRes.data?.file_data) {
+          const reviewData = JSON.parse(revRes.data.file_data);
+          const items: any[] = reviewData.items || [];
+          const item = items.find((it: any) => it.id === itemId || it.fileId === itemId);
+
+          if (item) {
+            if (Array.isArray(item.timeRecords)) {
+              item.timeRecords = item.timeRecords.filter((r: any) => r.recordedAt !== recordedAt);
+              if (item.timeRecords.length > 0) {
+                const sorted = [...item.timeRecords].sort(
+                  (a: any, b: any) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime()
+                );
+                const latest = sorted[0];
+                item.lastTestedAt = latest.recordedAt;
+                item.lastIsCorrect = latest.isCorrect;
+                item.lastUserAnswer = latest.userAnswer;
+                const spents = item.timeRecords
+                  .map((r: any) => r.spentSec)
+                  .filter((s: any) => typeof s === 'number' && s > 0);
+                item.bestSpentSec = spents.length > 0 ? Math.min(...spents) : undefined;
+              } else {
+                item.timeRecords = [];
+                item.lastTestedAt = undefined;
+                item.lastIsCorrect = undefined;
+                item.lastUserAnswer = undefined;
+                item.bestSpentSec = undefined;
+              }
+            } else if (item.lastTestedAt === recordedAt) {
+              item.lastTestedAt = undefined;
+              item.lastIsCorrect = undefined;
+              item.lastUserAnswer = undefined;
+              item.bestSpentSec = undefined;
+            }
+
+            await supabase.from('exam_library').upsert(
+              {
+                drive_id: `student_review_${studentId}`,
+                name: `student_review_${studentId}.json`,
+                type: 'file',
+                grade: '공통',
+                file_data: JSON.stringify(reviewData),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'drive_id' }
+            );
+          }
+        }
+
+        return NextResponse.json({
+          success: true,
+          message: '복습 테스트 기록이 삭제되었습니다.',
+        });
+      }
+
+      if (sourceType === 'special_exam') {
+        const subsRes = await supabase
+          .from('exam_library')
+          .select('file_data')
+          .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
+          .maybeSingle();
+
+        if (subsRes.data?.file_data) {
+          const parsed = JSON.parse(subsRes.data.file_data);
+          let allSubs: any[] = parsed.submissions || [];
+          const subIdx = allSubs.findIndex(
+            (s: any) => s.id === submissionId || (s.student_id === studentId && s.id === submissionId)
+          );
+
+          if (subIdx !== -1) {
+            const sub = allSubs[subIdx];
+            let driveFileToDelete = proofDriveId;
+
+            if (sub.answers && questionKey) {
+              if (!driveFileToDelete && sub.answers[questionKey]?.proof_image_drive_id) {
+                driveFileToDelete = sub.answers[questionKey].proof_image_drive_id;
+              }
+              delete sub.answers[questionKey];
+            }
+
+            if (Array.isArray(sub.proof_images)) {
+              if (!driveFileToDelete) {
+                const foundProof = sub.proof_images.find((p: any) => p.question_id === questionKey);
+                if (foundProof?.drive_id) driveFileToDelete = foundProof.drive_id;
+              }
+              sub.proof_images = sub.proof_images.filter(
+                (p: any) => p.question_id !== questionKey && p.drive_id !== driveFileToDelete
+              );
+            }
+
+            const remainingKeys = Object.keys(sub.answers || {});
+            sub.total_questions = remainingKeys.length;
+            sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
+            sub.score =
+              sub.total_questions > 0
+                ? Math.round((sub.correct_count / sub.total_questions) * 100)
+                : 0;
+
+            if (remainingKeys.length === 0) {
+              allSubs.splice(subIdx, 1);
+            }
+
+            await supabase.from('exam_library').upsert(
+              {
+                drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
+                name: 'test2_student_submissions.json',
+                type: 'file',
+                grade: '공통',
+                file_data: JSON.stringify({
+                  submissions: allSubs,
+                  updated_at: new Date().toISOString(),
+                }),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'drive_id' }
+            );
+
+            if (driveFileToDelete) {
+              await deleteDriveFileSafely(driveFileToDelete);
+            }
+          }
+        }
+
+        return NextResponse.json({
+          success: true,
+          message: '스페셜 시험 제출 기록 및 인증샷이 삭제되었습니다.',
+        });
+      }
+    }
+
+    // 2. 이 문항의 모든 풀이 기록 일괄 초기화 (delete_all_attempts)
+    if (action === 'delete_all_attempts') {
+      const proofsToDelete = new Set<string>();
+
+      // (1) student_review_${studentId} 초기화
+      const revRes = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', `student_review_${studentId}`)
+        .maybeSingle();
+
+      if (revRes.data?.file_data) {
+        const reviewData = JSON.parse(revRes.data.file_data);
+        const items: any[] = reviewData.items || [];
+        const item = items.find((it: any) => it.id === itemId || it.fileId === itemId);
+        if (item) {
+          item.timeRecords = [];
+          item.lastTestedAt = undefined;
+          item.lastIsCorrect = undefined;
+          item.lastUserAnswer = undefined;
+          item.bestSpentSec = undefined;
+
+          await supabase.from('exam_library').upsert(
+            {
+              drive_id: `student_review_${studentId}`,
+              name: `student_review_${studentId}.json`,
+              type: 'file',
+              grade: '공통',
+              file_data: JSON.stringify(reviewData),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'drive_id' }
+          );
+        }
+      }
+
+      // (2) test2_student_submissions_data 에서 이 학생의 해당 문항 답안 모두 제거
+      const subsRes = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
+        .maybeSingle();
+
+      if (subsRes.data?.file_data) {
+        const parsed = JSON.parse(subsRes.data.file_data);
+        let allSubs: any[] = parsed.submissions || [];
+
+        const tDriveId = (targetDriveId || itemId || '').trim();
+
+        allSubs = allSubs
+          .map((sub: any) => {
+            if (sub.student_id !== studentId || !sub.answers) return sub;
+
+            const keysToDelete: string[] = [];
+            Object.keys(sub.answers).forEach((qKey) => {
+              const ans = sub.answers[qKey];
+              const isMatch =
+                (tDriveId && qKey.includes(tDriveId)) ||
+                (solutionUrl && ans?.solution_drive_id === solutionUrl) ||
+                (name && ans?.name === name);
+
+              if (isMatch) {
+                keysToDelete.push(qKey);
+                if (ans?.proof_image_drive_id) {
+                  proofsToDelete.add(ans.proof_image_drive_id);
+                }
+              }
+            });
+
+            if (keysToDelete.length > 0) {
+              keysToDelete.forEach((k) => delete sub.answers[k]);
+              if (Array.isArray(sub.proof_images)) {
+                sub.proof_images.forEach((p: any) => {
+                  if (keysToDelete.includes(p.question_id) && p.drive_id) {
+                    proofsToDelete.add(p.drive_id);
+                  }
+                });
+                sub.proof_images = sub.proof_images.filter((p: any) => !keysToDelete.includes(p.question_id));
+              }
+
+              const remainingKeys = Object.keys(sub.answers || {});
+              sub.total_questions = remainingKeys.length;
+              sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
+              sub.score =
+                sub.total_questions > 0
+                  ? Math.round((sub.correct_count / sub.total_questions) * 100)
+                  : 0;
+            }
+
+            return sub;
+          })
+          .filter((sub: any) => Object.keys(sub.answers || {}).length > 0);
+
+        await supabase.from('exam_library').upsert(
+          {
+            drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
+            name: 'test2_student_submissions.json',
+            type: 'file',
+            grade: '공통',
+            file_data: JSON.stringify({
+              submissions: allSubs,
+              updated_at: new Date().toISOString(),
+            }),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'drive_id' }
+        );
+
+        // 연계된 모든 구글 드라이브 인증 사진 삭제
+        for (const fileId of Array.from(proofsToDelete)) {
+          await deleteDriveFileSafely(fileId);
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: '해당 문항의 모든 풀이 기록 및 인증샷이 완전히 삭제되었습니다.',
+      });
+    }
+
+    return NextResponse.json(
+      { success: false, error: '유효하지 않은 action입니다.' },
+      { status: 400 }
+    );
+  } catch (error: any) {
+    console.error('Review management deletion error:', error);
+    return NextResponse.json(
+      { success: false, error: error.message || '삭제 처리 중 오류 발생' },
       { status: 500 }
     );
   }
