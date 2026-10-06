@@ -9,7 +9,6 @@ import {
   Bell, 
   LayoutDashboard, 
   UserCheck,
-  Zap,
   CalendarDays,
   SlidersHorizontal,
   FileCheck,
@@ -18,7 +17,6 @@ import {
 
 // 🔗 하위 폴더 컴포넌트들 연동
 import DashboardMain from './dashboard/main';
-import SpecialMain from './special/main';
 // ✅ 학생 관리 컴포넌트 추가
 import StudentManagerMain from './studentmanager/main'; 
 // ✅ 수업 관리 컴포넌트 추가
@@ -53,14 +51,6 @@ export default function TeacherAdminPage() {
     { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={16} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={16} /> },
   ];
-
-  if (adminName === '곽명용') {
-    menuItems.push({ 
-      id: 'special', 
-      label: '스페셜 유틸리티', 
-      icon: <Zap size={16} className="text-amber-500 fill-amber-500" /> 
-    });
-  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
@@ -151,13 +141,6 @@ export default function TeacherAdminPage() {
           {activeMenu === 'studentview' && (
             <div className="w-full h-full bg-white overflow-y-auto">
               <StudentViewManagerMain />
-            </div>
-          )}
-
-          {/* ✅ 스페셜 유틸리티 */}
-          {activeMenu === 'special' && (
-            <div className="w-full h-full bg-slate-50 overflow-y-auto">
-              <SpecialMain />
             </div>
           )}
 
