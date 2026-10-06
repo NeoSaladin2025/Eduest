@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, use } from 'react';
+import React, { useState, useEffect, use, useRef, useCallback } from 'react';
 import { 
   Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck 
 } from 'lucide-react';
@@ -189,6 +189,207 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       }
     }
   }, [menuConfig, mode]);
+
+  // 📡 [실시간 모니터링 센터] 일상 학습 활동 및 딴짓(자리 이탈) 실시간 추적 트래커
+  const proctorChannelRef = useRef<any>(null);
+  const debounceTimerRef = useRef<any>(null);
+  const enteredAtRef = useRef<number>(Date.now());
+  const isAwayRef = useRef<boolean>(false);
+  const awayStartedAtRef = useRef<number | undefined>(undefined);
+
+  const computeCurrentLocation = useCallback(() => {
+    if (mode === 'test') {
+      return {
+        title: '테스트 응시 중',
+        subDetail: undefined,
+      };
+    }
+
+    if (mode === 'library') {
+      if (showReviewer) {
+        const folderName = currentActiveFolder?.name || (currentPath.length > 0 ? currentPath[currentPath.length - 1].name : '라이브러리');
+        const docName = selectedRecord?.name ? selectedRecord.name.replace(/\.html?$/i, '') : '문항 확인 중';
+        const subDetail = selectedTab === 'solution' ? '해설 열람' : '문제 원본';
+        return {
+          title: `라이브러리 > [${folderName}] > ${docName}`,
+          subDetail,
+        };
+      } else {
+        const pathStr = currentPath.length > 0 ? currentPath.map((f: any) => f.name).join(' > ') : '홈 화면';
+        return {
+          title: `라이브러리 > ${pathStr}`,
+          subDetail: '폴더 탐색 중',
+        };
+      }
+    }
+
+    if (mode === 'review') {
+      if (showReviewer) {
+        const docName = selectedRecord?.name ? selectedRecord.name.replace(/\.html?$/i, '') : '복습 문항';
+        return {
+          title: `복습(Review) > ${docName}`,
+          subDetail: selectedTab === 'solution' ? '해설 복습' : '문제 원본',
+        };
+      } else {
+        return {
+          title: '복습(Review) > 오답노트 보관함',
+          subDetail: undefined,
+        };
+      }
+    }
+
+    if (mode === 'homework') {
+      return {
+        title: '숙제(Homework) > 과제 목록 확인 중',
+        subDetail: undefined,
+      };
+    }
+
+    return {
+      title: '에듀이스트 홈',
+      subDetail: undefined,
+    };
+  }, [mode, showReviewer, currentActiveFolder, currentPath, selectedRecord, selectedTab]);
+
+  const sendActivityBroadcast = useCallback((forceImmediate = false, overrideAway?: boolean) => {
+    if (!student?.id || !proctorChannelRef.current) return;
+
+    const currentLoc = computeCurrentLocation();
+    const currentIsAway = overrideAway !== undefined ? overrideAway : isAwayRef.current;
+
+    const payload = {
+      student_id: student.id,
+      student_name: student.name,
+      student_grade: student.grade,
+      mode,
+      location_title: currentLoc.title,
+      sub_detail: currentLoc.subDetail,
+      is_away: currentIsAway,
+      away_started_at: currentIsAway ? (awayStartedAtRef.current || Date.now()) : undefined,
+      entered_at: enteredAtRef.current,
+      updated_at: new Date().toISOString(),
+    };
+
+    // 즉시 전송인 경우 (이탈/복귀/선생님 핑 응답)
+    if (forceImmediate) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      proctorChannelRef.current.send({
+        type: 'broadcast',
+        event: 'activity_sync',
+        payload,
+      });
+      return;
+    }
+
+    // 위치 변경 시 5초 정착 룰(Debounce)
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      enteredAtRef.current = Date.now();
+      payload.entered_at = enteredAtRef.current;
+      if (proctorChannelRef.current) {
+        proctorChannelRef.current.send({
+          type: 'broadcast',
+          event: 'activity_sync',
+          payload,
+        });
+      }
+    }, 5000);
+  }, [student, mode, computeCurrentLocation]);
+
+  // 실시간 채널 연결 및 딴짓/이탈 감지 이벤트
+  useEffect(() => {
+    if (!student?.id) return;
+
+    const channel = supabase.channel('proctoring_room');
+    proctorChannelRef.current = channel;
+
+    // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신
+    channel.on('broadcast', { event: 'ping_students' }, () => {
+      sendActivityBroadcast(true);
+    });
+
+    channel.subscribe((status: string) => {
+      if (status === 'SUBSCRIBED') {
+        sendActivityBroadcast(true);
+      }
+    });
+
+    // 딴짓 / 외부 사이트 이탈 감지 (mode !== 'test' 일 때)
+    const handleVisibilityChange = () => {
+      if (mode === 'test') return;
+
+      if (document.hidden) {
+        isAwayRef.current = true;
+        awayStartedAtRef.current = Date.now();
+        sendActivityBroadcast(true, true);
+      } else {
+        isAwayRef.current = false;
+        awayStartedAtRef.current = undefined;
+        sendActivityBroadcast(true, false);
+      }
+    };
+
+    const handleBlur = () => {
+      if (mode === 'test') return;
+      isAwayRef.current = true;
+      if (!awayStartedAtRef.current) awayStartedAtRef.current = Date.now();
+      sendActivityBroadcast(true, true);
+    };
+
+    const handleFocus = () => {
+      if (mode === 'test') return;
+      isAwayRef.current = false;
+      awayStartedAtRef.current = undefined;
+      sendActivityBroadcast(true, false);
+    };
+
+    const handleBeforeUnload = () => {
+      if (proctorChannelRef.current && student?.id) {
+        proctorChannelRef.current.send({
+          type: 'broadcast',
+          event: 'activity_sync',
+          payload: {
+            student_id: student.id,
+            student_name: student.name,
+            student_grade: student.grade,
+            mode: 'idle',
+            location_title: '오프라인 (종료)',
+            is_away: true,
+            away_started_at: Date.now(),
+            entered_at: Date.now(),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      supabase.removeChannel(channel);
+    };
+  }, [student?.id, mode, sendActivityBroadcast]);
+
+  // 위치/모드/문항 변경 시 5초 디바운스 트리거
+  useEffect(() => {
+    if (student?.id && mode !== 'test') {
+      sendActivityBroadcast(false);
+    }
+  }, [student?.id, mode, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
 
   // 학생 복습 데이터 로드 (Local Cache -> Cloud DB 실시간 동기화)
   useEffect(() => {

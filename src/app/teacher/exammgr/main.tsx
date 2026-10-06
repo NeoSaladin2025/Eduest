@@ -74,7 +74,7 @@ export function parseQuestionNumber(file: { question_number?: number | null; nam
   return 999999;
 }
 
-export default function ExamManagerMain() {
+export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: string) => void } = {}) {
   const [activeTab, setActiveTab] = useState<'list' | 'create' | 'bundle' | 'proctor'>('list');
   const [loading, setLoading] = useState(true);
 
@@ -687,7 +687,10 @@ export default function ExamManagerMain() {
 
             {/* 🌟 [사용자 요청] 왼쪽위 테스트관리(시험지 제작 및 배정센터) 글자 옆 [실시간 모니터링] 메뉴 */}
             <button
-              onClick={() => setActiveTab('proctor')}
+              onClick={() => {
+                if (onNavigate) onNavigate('monitoring');
+                else setActiveTab('proctor');
+              }}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black transition-all shadow-sm ${
                 activeTab === 'proctor'
                   ? 'bg-rose-600 text-white shadow-rose-200 ring-2 ring-rose-400 scale-105'
@@ -740,7 +743,10 @@ export default function ExamManagerMain() {
             새 시험지 만들기
           </button>
           <button
-            onClick={() => setActiveTab('proctor')}
+            onClick={() => {
+              if (onNavigate) onNavigate('monitoring');
+              else setActiveTab('proctor');
+            }}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all ${
               activeTab === 'proctor'
                 ? 'bg-rose-600 text-white shadow-md shadow-rose-200 scale-[1.02]'

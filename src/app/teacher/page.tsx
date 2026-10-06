@@ -12,7 +12,8 @@ import {
   CalendarDays,
   SlidersHorizontal,
   FileCheck,
-  Layers
+  Layers,
+  Radio
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -29,6 +30,8 @@ import ExamManagerMain from './exammgr/main';
 import TestDataManagerMain from './testdatamgr/main';
 // ✅ 복습관리 컴포넌트 추가
 import ReviewManagerMain from './reviewmgr/main';
+// ✅ 실시간 모니터링 독립 센터 추가
+import MonitoringCenterMain from './monitoring/main';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
@@ -50,6 +53,7 @@ export default function TeacherAdminPage() {
     { id: 'exammgr', label: '테스트 관리', icon: <FileCheck size={16} /> },
     { id: 'testdatamgr', label: '테스트자료 관리', icon: <Layers size={16} /> },
     { id: 'notices', label: '공지사항', icon: <Bell size={16} /> },
+    { id: 'monitoring', label: '실시간 모니터링', icon: <Radio size={16} /> },
   ];
 
   return (
@@ -161,7 +165,7 @@ export default function TeacherAdminPage() {
           {/* ✅ 테스트 관리 (시험지 제작 및 배정) */}
           {activeMenu === 'exammgr' && (
             <div className="w-full h-full bg-slate-50 overflow-y-auto">
-              <ExamManagerMain />
+              <ExamManagerMain onNavigate={(menu: string) => setActiveMenu(menu)} />
             </div>
           )}
 
@@ -176,6 +180,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'notices' && (
             <div className="flex flex-col items-center justify-center h-full text-slate-300 italic font-medium text-lg">
                Under Construction... ❤️
+            </div>
+          )}
+
+          {/* ✅ 실시간 모니터링 독립 센터 (일상 모니터링 + 테스트 모니터링) */}
+          {activeMenu === 'monitoring' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <MonitoringCenterMain />
             </div>
           )}
         </div>
