@@ -136,6 +136,35 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     }
   }
 
+// 서술형(채점 대기 필요) 답안인지 자동 판별
+function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
+  if (!cleanAnswer && !rawAnswer) return false;
+  const target = (cleanAnswer || rawAnswer).trim();
+
+  // 1. 객관식 1~5는 단답형
+  if (/^[1-5]$/.test(target)) return false;
+
+  // 2. 순수 단일 숫자(정수, 음수, 소수)는 단답형 (예: 83, -12, 0.5)
+  if (/^-?\d+(\.\d+)?$/.test(target)) return false;
+
+  // 3. 소문항 패턴 ((1), (2), ①, ② 등) 포함 시 서술형
+  if (/\([1-9]\)|[①②③④⑤❶❷❸❹❺]|\[[1-9]\]|\b[1-9]\)/.test(rawAnswer)) return true;
+
+  // 4. 서술/풀이 라벨(문제:, 정답:, 이므로, 따라서 등) 포함 시 서술형
+  if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) return true;
+
+  // 5. 줄바꿈이 포함된 경우 서술형
+  if (/\r|\n/.test(rawAnswer)) return true;
+
+  // 6. 띄어쓰기가 포함된 경우 (선생님 요청 핵심 기준)
+  if (/\s+/.test(target)) return true;
+
+  // 7. 텍스트 길이가 12자 이상인 경우
+  if (target.length >= 12) return true;
+
+  return false;
+}
+
   if (rawAnswer) {
     // 객관식 번호(①~⑤ 또는 1~5) 추출 시도
     const normalized = normalizeCircledNumber(rawAnswer);
@@ -148,10 +177,14 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     }
   }
 
+  const finalAns = cleanAnswer || rawAnswer || "";
+  const isDescriptive = isDescriptiveAnswer(cleanAnswer, rawAnswer);
+
   return {
     imageUrl,
     rawAnswer: rawAnswer || "정답 정보 없음",
-    answer: cleanAnswer || rawAnswer || "",
+    answer: finalAns,
+    is_descriptive: isDescriptive,
   };
 }
 
@@ -187,7 +220,7 @@ export async function POST(req: NextRequest) {
               };
             }
 
-            const { imageUrl, rawAnswer, answer } = extractQuestionData(html, file);
+            const { imageUrl, rawAnswer, answer, is_descriptive } = extractQuestionData(html, file);
 
             // 이미지 URL이 없는데 동일 폴더에 png가 있는지 DB 조회 시도
             let finalImageUrl = imageUrl;
@@ -216,6 +249,7 @@ export async function POST(req: NextRequest) {
               image_url: finalImageUrl,
               raw_answer: rawAnswer,
               answer: answer,
+              is_descriptive: !!is_descriptive,
               solution_drive_id: file.drive_id,
               status: "success",
             };
@@ -231,6 +265,7 @@ export async function POST(req: NextRequest) {
               image_url: "",
               raw_answer: "",
               answer: "",
+              is_descriptive: false,
               solution_drive_id: file.drive_id,
               status: "error",
             };

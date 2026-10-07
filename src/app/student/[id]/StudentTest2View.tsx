@@ -1793,17 +1793,31 @@ export default function StudentTest2View({
           {/* 결과 요약 카드 */}
           <div className="bg-gradient-to-br from-violet-900/30 via-slate-900/40 to-slate-900/60 border border-violet-500/30 rounded-[40px] p-8 md:p-12 shadow-3xl text-center space-y-6">
             <div className="space-y-2">
-              <span className="px-4 py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-black rounded-full inline-block">
-                채점 완료
-              </span>
+              {submissionResult.has_pending_review ? (
+                <span className="px-4 py-1.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-black rounded-full inline-flex items-center gap-1.5 animate-pulse">
+                  <Clock size={12} />
+                  <span>서술형 {submissionResult.pending_count || 1}문항 채점 대기 중</span>
+                </span>
+              ) : (
+                <span className="px-4 py-1.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-black rounded-full inline-block">
+                  채점 완료
+                </span>
+              )}
               <h2 className="text-3xl md:text-5xl font-black text-white">
                 {submissionResult.exam_title}
               </h2>
+              {submissionResult.has_pending_review && (
+                <p className="text-xs text-amber-300/80 font-medium max-w-lg mx-auto pt-1">
+                  💡 서술형 문제는 선생님께서 직접 검토 후 최종 점수가 업데이트됩니다.
+                </p>
+              )}
             </div>
 
             <div className="flex justify-center items-center gap-8 md:gap-16 pt-4">
               <div>
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">내 점수</p>
+                <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">
+                  {submissionResult.has_pending_review ? '현재 가채점 점수' : '내 점수'}
+                </p>
                 <p className="text-5xl md:text-7xl font-black text-violet-400 mt-1">
                   {submissionResult.score}
                   <span className="text-2xl text-slate-500 font-medium">점</span>
@@ -1826,38 +1840,61 @@ export default function StudentTest2View({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {currentExam.questions.map((q, idx) => {
                 const ansInfo = submissionResult.answers?.[q.id];
-                const isCorrect = ansInfo?.is_correct ?? false;
+                const isDescriptive = !!q.is_descriptive || !!ansInfo?.is_descriptive;
+                const isPending = ansInfo?.grading_status === 'pending' || (isDescriptive && ansInfo?.is_correct === null);
+                const isReviewed = ansInfo?.grading_status === 'reviewed';
+                const isCorrect = ansInfo?.is_correct === true;
+                const canShowSolution = ansInfo?.show_solution !== false;
                 const userAns = ansInfo?.user_answer || '(미입력)';
-                const correctAns = ansInfo?.correct_answer || q.answer || '';
+                const correctAns = canShowSolution
+                  ? (ansInfo?.correct_answer || q.answer || '')
+                  : '(선생님 채점 검토 후 공개)';
                 const spentSec = ansInfo?.time_spent_sec || questionSpentTimes[q.id] || 0;
+
+                let cardStyle = 'bg-rose-500/5 border-rose-500/20';
+                let badgeStyle = 'bg-rose-500 text-white';
+                let statusLabel = '오답';
+
+                if (isPending) {
+                  cardStyle = 'bg-amber-500/5 border-amber-500/25 ring-1 ring-amber-500/10';
+                  badgeStyle = 'bg-amber-500 text-slate-950 font-black';
+                  statusLabel = '⏳ 선생님 채점 대기';
+                } else if (isCorrect) {
+                  cardStyle = 'bg-emerald-500/5 border-emerald-500/20';
+                  badgeStyle = 'bg-emerald-500 text-white';
+                  statusLabel = isReviewed ? '⭕ 정답 (선생님 승인)' : '정답';
+                } else if (isReviewed) {
+                  statusLabel = '❌ 오답 (선생님 확인)';
+                }
 
                 return (
                   <div
                     key={q.id}
-                    className={`p-6 rounded-[28px] border transition-all ${
-                      isCorrect
-                        ? 'bg-emerald-500/5 border-emerald-500/20'
-                        : 'bg-rose-500/5 border-rose-500/20'
-                    }`}
+                    className={`p-6 rounded-[28px] border transition-all ${cardStyle}`}
                   >
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
-                        <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center ${
-                          isCorrect ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
-                        }`}>
+                        <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center ${badgeStyle}`}>
                           {idx + 1}
                         </span>
-                        <span className="text-xs font-bold text-slate-300">
-                          {isCorrect ? '정답' : '오답'}
+                        <span className={`text-xs font-bold ${
+                          isPending ? 'text-amber-300' : isCorrect ? 'text-emerald-300' : 'text-slate-300'
+                        }`}>
+                          {statusLabel}
                         </span>
+                        {isDescriptive && (
+                          <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[9px] font-black">
+                            서술형
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2.5 text-xs">
                         <span className="text-slate-400 font-mono">⏱️ {spentSec}초 소요</span>
-                        {q.solution_drive_id && (
+                        {q.solution_drive_id && canShowSolution && (
                           <button
                             onClick={() => handleOpenSolution(q.solution_drive_id)}
-                            className="px-3 py-1.5 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 text-violet-300 font-black text-[11px] transition-colors flex items-center gap-1"
+                            className="px-3 py-1.5 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 text-violet-300 font-black text-[11px] transition-colors flex items-center gap-1 cursor-pointer"
                           >
                             <BookOpen size={13} />
                             <span>해설 보기</span>
@@ -1895,13 +1932,19 @@ export default function StudentTest2View({
                     <div className="grid grid-cols-2 gap-2 text-xs pt-2 border-t border-white/5">
                       <div className="p-2 rounded-xl bg-white/5">
                         <span className="text-slate-500 block text-[10px] font-bold">내가 작성한 답</span>
-                        <span className={`font-black text-sm ${isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        <span className={`font-black text-sm ${
+                          isPending ? 'text-amber-300' : isCorrect ? 'text-emerald-400' : 'text-rose-400'
+                        }`}>
                           {userAns}
                         </span>
                       </div>
                       <div className="p-2 rounded-xl bg-white/5">
-                        <span className="text-slate-500 block text-[10px] font-bold">정답</span>
-                        <span className="font-black text-sm text-slate-200">
+                        <span className="text-slate-500 block text-[10px] font-bold">
+                          {isPending ? '정답 (채점 대기 중)' : '정답'}
+                        </span>
+                        <span className={`font-black text-sm ${
+                          !canShowSolution ? 'text-slate-500 italic text-xs' : 'text-slate-200'
+                        }`}>
                           {correctAns}
                         </span>
                       </div>

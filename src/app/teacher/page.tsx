@@ -32,16 +32,36 @@ import TestDataManagerMain from './testdatamgr/main';
 import ReviewManagerMain from './reviewmgr/main';
 // ✅ 실시간 모니터링 독립 센터 추가
 import MonitoringCenterMain from './monitoring/main';
+import DescriptiveGradingModal from './exammgr/DescriptiveGradingModal';
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
   const [activeMenu, setActiveMenu] = useState('dashboard');
+  const [pendingGradingCount, setPendingGradingCount] = useState<number>(0);
+  const [isGradingModalOpen, setIsGradingModalOpen] = useState<boolean>(false);
+
+  // 채점 대기 건수 확인
+  const checkPendingGrading = async () => {
+    try {
+      const res = await fetch('/api/test2/descriptive-grading');
+      const data = await res.json();
+      if (data.success && typeof data.pending_total === 'number') {
+        setPendingGradingCount(data.pending_total);
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     const storedName = localStorage.getItem('currentAdminName');
     if (storedName) {
       setAdminName(storedName);
     }
+
+    checkPendingGrading();
+    const interval = setInterval(checkPendingGrading, 30000); // 30초마다 폴링
+    return () => clearInterval(interval);
   }, []);
 
   const menuItems = [
@@ -94,14 +114,46 @@ export default function TeacherAdminPage() {
                     {item.icon}
                   </span>
                   <span>{item.label}</span>
+                  {item.id === 'exammgr' && pendingGradingCount > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[9px] font-black animate-pulse">
+                      {pendingGradingCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* 우측 관리자 프로필 & 로그아웃 */}
-        <div className="flex items-center gap-3 shrink-0">
+        {/* 우측 알림 버튼 & 관리자 프로필 & 로그아웃 */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* 🔔 서술형 채점 대기 알림 버튼 */}
+          <button
+            type="button"
+            onClick={() => setIsGradingModalOpen(true)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+              pendingGradingCount > 0
+                ? 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100 shadow-xs'
+                : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+            }`}
+            title="서술형 채점 검토"
+          >
+            <Bell 
+              size={15} 
+              className={pendingGradingCount > 0 ? 'text-rose-600 animate-bounce' : 'text-slate-400'} 
+            />
+            <span className="hidden md:inline">서술형 채점</span>
+            {pendingGradingCount > 0 ? (
+              <span className="px-1.5 py-0.2 bg-rose-600 text-white rounded-full text-[10px] font-black">
+                {pendingGradingCount}
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 font-medium">0</span>
+            )}
+          </button>
+
+          <div className="h-6 w-[1px] bg-slate-200 mx-0.5 hidden sm:block"></div>
+
           <div className="text-right hidden sm:block">
             <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] leading-none mb-1">
               {adminName === '곽명용' ? 'Super Administrator' : 'Authenticated Teacher'}
@@ -191,6 +243,13 @@ export default function TeacherAdminPage() {
           )}
         </div>
       </main>
+
+      {/* 🌟 서술형 문항 채점 검토 모달 */}
+      <DescriptiveGradingModal
+        isOpen={isGradingModalOpen}
+        onClose={() => setIsGradingModalOpen(false)}
+        onGradedChange={(cnt) => setPendingGradingCount(cnt)}
+      />
     </div>
   );
 }

@@ -19,16 +19,22 @@ export interface StudentSubmission {
   score: number;
   total_questions: number;
   correct_count: number;
+  has_pending_review?: boolean;
+  pending_count?: number;
   answers: {
     [questionId: string]: {
       user_answer: string;
-      is_correct: boolean;
+      is_correct: boolean | null;
       correct_answer: string;
       raw_answer: string;
       solution_drive_id: string;
       time_spent_sec?: number;
       proof_image_drive_id?: string;
       proof_image_url?: string;
+      is_descriptive?: boolean;
+      grading_status?: 'graded' | 'pending' | 'reviewed';
+      show_solution?: boolean;
+      reviewed_at?: string;
     };
   };
   proof_images?: Array<{
@@ -169,17 +175,24 @@ export async function GET(req: NextRequest) {
       const isSubmitted = !!submission;
 
       // 제출 전에는 보안을 위해 정답(answer)을 클라이언트에 노출하지 않음
-      const sanitizedQuestions = exam.questions.map((q) => ({
-        id: q.id,
-        drive_id: q.drive_id,
-        name: q.name,
-        image_url: q.image_url,
-        points: q.points,
-        // 제출 후에만 정답 및 해설 공개
-        answer: isSubmitted ? q.answer : undefined,
-        raw_answer: isSubmitted ? q.raw_answer : undefined,
-        solution_drive_id: isSubmitted ? q.solution_drive_id : undefined,
-      }));
+      const sanitizedQuestions = exam.questions.map((q) => {
+        const studentAns = submission?.answers?.[q.id];
+        // 서술형이고 채점 대기 중인데 show_solution이 허용되지 않은 경우 정답/해설 숨김
+        const isDescriptivePending = q.is_descriptive && studentAns?.grading_status === 'pending';
+        const canShowSolution = isSubmitted && (!isDescriptivePending || studentAns?.show_solution === true);
+
+        return {
+          id: q.id,
+          drive_id: q.drive_id,
+          name: q.name,
+          image_url: q.image_url,
+          points: q.points,
+          is_descriptive: !!q.is_descriptive,
+          answer: canShowSolution ? q.answer : undefined,
+          raw_answer: canShowSolution ? q.raw_answer : undefined,
+          solution_drive_id: canShowSolution ? q.solution_drive_id : undefined,
+        };
+      });
 
       return NextResponse.json({
         success: true,
@@ -212,6 +225,8 @@ export async function GET(req: NextRequest) {
               score: sub.score,
               correct_count: sub.correct_count,
               total_questions: sub.total_questions,
+              has_pending_review: !!sub.has_pending_review,
+              pending_count: sub.pending_count || 0,
               proof_images: sub.proof_images,
             }
           : null,
@@ -247,14 +262,29 @@ export async function POST(req: NextRequest) {
 
     // 채점 진행
     let correctCount = 0;
+    let pendingCount = 0;
     const gradedAnswers: StudentSubmission["answers"] = {};
     const collectedProofImages: StudentSubmission["proof_images"] = [];
 
     exam.questions.forEach((q, idx) => {
       const userAns = String(answers?.[q.id] ?? "").trim();
-      const isCorrect = checkAnswerMatch(userAns, q.answer, q.raw_answer);
+      const isDescriptive = !!q.is_descriptive;
 
-      if (isCorrect) correctCount++;
+      let isCorrect: boolean | null = false;
+      let gradingStatus: 'graded' | 'pending' | 'reviewed' = 'graded';
+
+      if (isDescriptive) {
+        // 서술형: 즉시 오답으로 확정하지 않고 선생님 채점 대기(pending)로 설정
+        isCorrect = null;
+        gradingStatus = 'pending';
+        pendingCount++;
+      } else {
+        // 일반 단답/객관식: 기존대로 즉시 일치 채점
+        const matched = checkAnswerMatch(userAns, q.answer, q.raw_answer);
+        isCorrect = matched;
+        gradingStatus = 'graded';
+        if (matched) correctCount++;
+      }
 
       const pImg = proofImages?.[q.id];
       if (pImg) {
@@ -276,6 +306,9 @@ export async function POST(req: NextRequest) {
         time_spent_sec: questionTimes?.[q.id] ? Number(questionTimes[q.id]) : 0,
         proof_image_drive_id: pImg?.drive_id || pImg?.fileId,
         proof_image_url: pImg?.remote_url || pImg?.url,
+        is_descriptive: isDescriptive,
+        grading_status: gradingStatus,
+        show_solution: !isDescriptive, // 일반 문제는 기본 공개, 서술형은 선생님 승인 시 공개
       };
     });
 
@@ -292,6 +325,8 @@ export async function POST(req: NextRequest) {
       total_questions: totalQuestions,
       correct_count: correctCount,
       answers: gradedAnswers,
+      has_pending_review: pendingCount > 0,
+      pending_count: pendingCount,
       proof_images: collectedProofImages,
     };
 

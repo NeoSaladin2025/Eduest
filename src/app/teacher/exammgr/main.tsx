@@ -39,6 +39,7 @@ import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
 import { TwinStoreData, TwinQuestionItem } from '@/lib/twinTypes';
 import ExamBundleTab from './ExamBundleTab';
 import RealtimeProctorTab from './RealtimeProctorTab';
+import DescriptiveGradingModal from './DescriptiveGradingModal';
 
 interface Student {
   id: string;
@@ -77,6 +78,7 @@ export function parseQuestionNumber(file: { question_number?: number | null; nam
 
 export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: string) => void } = {}) {
   const [activeTab, setActiveTab] = useState<'list' | 'create' | 'bundle' | 'proctor'>('list');
+  const [isGradingModalOpen, setIsGradingModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // 시험지 목록
@@ -417,6 +419,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       next[qIndex] = {
         ...next[qIndex],
         answer: newAnswer,
+      };
+      return next;
+    });
+  };
+
+  // 문항의 서술형(선생님 직접 채점) 토글
+  const handleToggleQuestionDescriptive = (qIndex: number) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      next[qIndex] = {
+        ...next[qIndex],
+        is_descriptive: !next[qIndex].is_descriptive,
       };
       return next;
     });
@@ -828,6 +842,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               <ShieldAlert size={14} className={activeTab === 'proctor' ? 'animate-bounce' : 'text-rose-500'} />
               <span>실시간 모니터링</span>
               <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+            </button>
+
+            {/* 🌟 서술형 채점 검토 버튼 */}
+            <button
+              onClick={() => setIsGradingModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-black transition-all shadow-sm bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 hover:scale-105 cursor-pointer"
+            >
+              <Sparkles size={14} className="text-amber-600" />
+              <span>서술형 채점 검토</span>
             </button>
           </div>
           <p className="text-sm font-medium text-slate-500">
@@ -1569,7 +1592,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       className="bg-white p-3.5 rounded-xl border border-violet-100 shadow-xs space-y-2.5 text-xs"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-black text-violet-700">문항 {idx + 1}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-black text-violet-700">문항 {idx + 1}</span>
+                          {q.is_descriptive ? (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-300 flex items-center gap-0.5">
+                              ✍️ 서술형
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[9px] font-bold">
+                              단답/객관식
+                            </span>
+                          )}
+                        </div>
+
                         {q.image_url ? (
                           <button
                             type="button"
@@ -1600,18 +1635,42 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         <span className="truncate">{q.name}</span>
                       </div>
 
-                      {/* 정답 입력/수정란 */}
+                      {/* 정답 입력/수정란 및 서술형 토글 */}
                       <div>
-                        <label className="block text-[10px] font-bold text-slate-400 mb-1">
-                          설정 정답 (채점 기준)
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-bold text-slate-500">
+                            설정 정답 (채점 기준)
+                          </label>
+                          <label className="flex items-center gap-1 text-[10px] text-slate-500 font-bold cursor-pointer hover:text-amber-700 select-none">
+                            <input
+                              type="checkbox"
+                              checked={!!q.is_descriptive}
+                              onChange={() => handleToggleQuestionDescriptive(idx)}
+                              className="w-3 h-3 text-amber-600 rounded focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                            />
+                            <span>서술형 지정</span>
+                          </label>
+                        </div>
                         <input
                           type="text"
                           value={q.answer}
                           onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
                           placeholder="정답 (예: 5 또는 83)"
-                          className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 focus:outline-none focus:border-violet-500 font-black text-slate-800 text-xs"
+                          className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
+                            q.is_descriptive
+                              ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                              : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                          }`}
                         />
+                        <div className="mt-1 text-[9px] text-slate-400">
+                          {q.is_descriptive ? (
+                            <span className="text-amber-600 font-bold">
+                              ⏳ 학생 제출 시 [채점 대기]로 등록되어 선생님이 직접 승인합니다.
+                            </span>
+                          ) : (
+                            <span>⚡ 학생 제출 시 자동 일치 채점됩니다.</span>
+                          )}
+                        </div>
                       </div>
 
                       {q.raw_answer && q.raw_answer !== q.answer && (
@@ -2346,6 +2405,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           </div>
         </div>
       )}
+
+      {/* 🌟 서술형 문항 채점 검토 모달 */}
+      <DescriptiveGradingModal
+        isOpen={isGradingModalOpen}
+        onClose={() => setIsGradingModalOpen(false)}
+        onGradedChange={() => loadInitialData()}
+      />
 
     </div>
   );

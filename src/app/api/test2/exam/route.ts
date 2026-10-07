@@ -22,6 +22,7 @@ export interface ExamQuestion {
   folder_name?: string | null;
   question_number?: number | null;
   display_name?: string | null;
+  is_descriptive?: boolean;
 }
 
 export interface ExamPaper {
@@ -195,6 +196,10 @@ export async function POST(req: NextRequest) {
         raw_answer: String(q.raw_answer ?? "").trim(),
         solution_drive_id: q.solution_drive_id || q.drive_id,
         points: q.points || Math.round(100 / questions.length),
+        folder_name: q.folder_name || null,
+        question_number: typeof q.question_number === 'number' ? q.question_number : null,
+        display_name: q.display_name || null,
+        is_descriptive: !!q.is_descriptive,
       })),
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
       is_wrong_review: !!is_wrong_review,
