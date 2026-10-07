@@ -15,11 +15,34 @@ export type ExamLibraryNode = ExamLibraryRow & {
   files: ExamLibraryNode[];
 };
 
-export function buildExamLibraryTree(items: ExamLibraryRow[]): ExamLibraryNode[] {
+export function buildExamLibraryTree(items: ExamLibraryRow[], excludeTwins: boolean = true): ExamLibraryNode[] {
+  let targetItems = items;
+  if (excludeTwins) {
+    const twinIds = new Set<string>();
+    items.forEach((item) => {
+      if (item.name && item.name.includes('쌍둥이')) {
+        twinIds.add(item.drive_id);
+      }
+    });
+
+    let added = true;
+    while (added) {
+      added = false;
+      items.forEach((item) => {
+        if (item.parent_id && twinIds.has(item.parent_id) && !twinIds.has(item.drive_id)) {
+          twinIds.add(item.drive_id);
+          added = true;
+        }
+      });
+    }
+
+    targetItems = items.filter((item) => !twinIds.has(item.drive_id));
+  }
+
   const map: Record<string, ExamLibraryNode> = {};
   const roots: ExamLibraryNode[] = [];
 
-  items.forEach((item) => {
+  targetItems.forEach((item) => {
     map[item.drive_id] = {
       ...item,
       id: item.drive_id,
@@ -28,7 +51,7 @@ export function buildExamLibraryTree(items: ExamLibraryRow[]): ExamLibraryNode[]
     };
   });
 
-  items.forEach((item) => {
+  targetItems.forEach((item) => {
     const node = map[item.drive_id];
     if (item.parent_id && map[item.parent_id]) {
       if (item.type === 'folder') map[item.parent_id].subFolders.push(node);

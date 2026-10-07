@@ -1315,10 +1315,17 @@ export default function StudentTest2View({
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <span className="px-3 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-black rounded-full flex items-center gap-1.5">
-                            <RotateCcw size={12} />
-                            오답 클리닉
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-3 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-black rounded-full flex items-center gap-1.5">
+                              <RotateCcw size={12} />
+                              오답 클리닉
+                            </span>
+                            {exam.title?.includes('쌍둥이') && (
+                              <span className="px-2.5 py-1 bg-gradient-to-r from-purple-500/30 to-indigo-500/30 text-purple-200 border border-purple-500/40 text-[10px] font-black rounded-full flex items-center gap-1 shadow-sm">
+                                <span>👯 쌍둥이 변형</span>
+                              </span>
+                            )}
+                          </div>
                           {isSubmitted ? (
                             <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
                               <CheckCircle2 size={13} />

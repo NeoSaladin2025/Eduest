@@ -20,7 +20,8 @@ export async function GET(request: Request) {
       .from('exam_library')
       .select('*')
       .eq('grade', grade)
-      .eq('type', 'folder');
+      .eq('type', 'folder')
+      .not('name', 'ilike', '%쌍둥이%');
 
     if (error) throw error;
 

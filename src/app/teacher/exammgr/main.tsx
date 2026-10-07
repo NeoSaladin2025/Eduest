@@ -36,6 +36,7 @@ import {
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
+import { TwinStoreData, TwinQuestionItem } from '@/lib/twinTypes';
 import ExamBundleTab from './ExamBundleTab';
 import RealtimeProctorTab from './RealtimeProctorTab';
 
@@ -130,8 +131,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 🌟 학생별 응시 상세 모달 (문항별 맞음/틀림/모름 및 소요시간)
   const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any } | null>(null);
-  const [creatingWrongExam, setCreatingWrongExam] = useState<string | null>(null);
   const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
+
+  // 👯 쌍둥이 저장소 및 오답 맞춤 시험지 모달 상태
+  const [twinStore, setTwinStore] = useState<TwinStoreData | null>(null);
+  const [wrongExamModal, setWrongExamModal] = useState<{
+    student: Student;
+    submission: any;
+    exam: ExamPaper;
+    wrongQuestions: ExamQuestion[];
+  } | null>(null);
+  const [wrongExamMode, setWrongExamMode] = useState<'twin' | 'original'>('twin');
+  const [creatingWrongExamModal, setCreatingWrongExamModal] = useState(false);
 
   // 🌟 [사용자 요청] 시험지 목록 필터링 상태 (검색어, 학년 필터, 시험지 종류 필터)
   const [examSearchInput, setExamSearchInput] = useState('');
@@ -163,6 +174,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       if (studentList) {
         setStudents(studentList);
       }
+
+      // 3) 쌍둥이 메타데이터 로드
+      await loadTwins();
     } catch (e) {
       console.error('Failed to load initial data:', e);
     } finally {
@@ -564,8 +578,82 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setDetailStudent({ student: st, submission: sub });
   };
 
-  // 🌟 오답 처리 (틀린 문제들만 모아 학생 맞춤 오답 시험지 생성 및 배정)
-  const handleCreateWrongExam = async (st: Student | undefined, sub: any) => {
+  // 1-1. 쌍둥이 데이터 로드
+  const loadTwins = async () => {
+    try {
+      const res = await fetch('/api/test2/twins');
+      const data = await res.json();
+      if (data.success && data.store) {
+        setTwinStore(data.store);
+      }
+    } catch (e) {
+      console.error('Failed to load twin store in exammgr:', e);
+    }
+  };
+
+  // 🌟 학생에게 배정할 다음 회차 쌍둥이 찾기 (1안: 학생 이력 검사 후 자동 승급 출제)
+  const getNextAvailableTwinForStudent = (
+    q: ExamQuestion,
+    studentId: string
+  ): { roundName: string; item: TwinQuestionItem } | null => {
+    if (!twinStore) return null;
+    const qNum = q.question_number ?? parseQuestionNumber(q);
+    if (!qNum || isNaN(qNum)) return null;
+
+    // 1. 해당 문항의 원본 회차 폴더 매칭
+    let matchedFolderData = null;
+    for (const fData of Object.values(twinStore.folders || {})) {
+      if (
+        fData.parent_folder_name === q.folder_name ||
+        (q.folder_name && fData.parent_folder_name.includes(q.folder_name)) ||
+        (q.name && fData.parent_folder_name.includes(q.name))
+      ) {
+        matchedFolderData = fData;
+        break;
+      }
+    }
+
+    if (!matchedFolderData || !matchedFolderData.rounds) return null;
+
+    // 2. 해당 문항의 보유 쌍둥이 목록 (1차, 2차, 3차... 오름차순)
+    const availableTwins: Array<{ roundName: string; item: TwinQuestionItem }> = [];
+    Object.entries(matchedFolderData.rounds).forEach(([rName, rData]) => {
+      const it = rData.items?.find(item => item.question_number === qNum);
+      if (it) {
+        availableTwins.push({ roundName: rName, item: it });
+      }
+    });
+
+    if (availableTwins.length === 0) return null;
+    availableTwins.sort((a, b) => parseRoundNumber(a.roundName) - parseRoundNumber(b.roundName));
+
+    // 3. 학생이 이미 응시했던 시험지들 중 이 문항의 어떤 쌍둥이를 풀었는지 검사
+    const solvedTwinRounds = new Set<string>();
+    exams.forEach(ex => {
+      if (ex.assigned_student_ids?.includes(studentId)) {
+        ex.questions?.forEach(eq => {
+          if (
+            (eq as any).parent_question_id === q.id ||
+            ((eq as any).is_twin && eq.question_number === qNum && (eq as any).folder_name === q.folder_name)
+          ) {
+            if ((eq as any).twin_round) {
+              solvedTwinRounds.add((eq as any).twin_round);
+            }
+          }
+        });
+      }
+    });
+
+    // 4. 아직 풀지 않은 가장 빠른 회차 쌍둥이 선택
+    const unSolved = availableTwins.find(at => !solvedTwinRounds.has(at.roundName));
+    if (unSolved) return unSolved;
+
+    // 만약 모든 쌍둥이를 다 풀었다면, 가장 마지막 회차(또는 1차) 제공
+    return availableTwins[availableTwins.length - 1];
+  };
+
+  // 🌟 오답 맞춤 시험지 생성 모달 열기
+  const handleCreateWrongExam = (st: Student | undefined, sub: any) => {
     if (!st || !sub || !resultsModalExam) return;
 
     // 틀린 문항 필터링 (정답이 아니거나 '모름'인 문항)
@@ -583,33 +671,73 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       return;
     }
 
-    const wrongTitle = `[오답] ${resultsModalExam.title} (${st.name})`;
-    const confirmCreate = confirm(
-      `'${st.name}' 학생의 틀린 문항 총 ${wrongQuestions.length}문항으로 맞춤 오답 시험지를 생성하시겠습니까?\n\n생성될 시험지: "${wrongTitle}"\n배정 대상: ${st.name}`
-    );
-    if (!confirmCreate) return;
+    setWrongExamModal({
+      student: st,
+      submission: sub,
+      exam: resultsModalExam,
+      wrongQuestions,
+    });
+    setWrongExamMode('twin'); // 기본값: 쌍둥이(변형) 문제 모드
+  };
+
+  // 🌟 맞춤 오답 시험지 실제 생성 및 배정
+  const handleConfirmCreateWrongExam = async () => {
+    if (!wrongExamModal) return;
+    const { student, exam, wrongQuestions } = wrongExamModal;
 
     try {
-      setCreatingWrongExam(st.id);
+      setCreatingWrongExamModal(true);
+
+      let finalQuestions: ExamQuestion[] = [];
+      let examTitle = '';
+
+      if (wrongExamMode === 'twin') {
+        examTitle = `[오답·쌍둥이] ${exam.title} (${student.name})`;
+        finalQuestions = wrongQuestions.map(q => {
+          const assignedTwin = getNextAvailableTwinForStudent(q, student.id);
+          if (assignedTwin) {
+            return {
+              ...q,
+              id: `twin_${assignedTwin.item.drive_id}_${Date.now()}`,
+              name: `[${assignedTwin.roundName} 쌍둥이] ${q.name}`,
+              image_url: assignedTwin.item.image_url || q.image_url,
+              answer: assignedTwin.item.answer || q.answer,
+              raw_answer: assignedTwin.item.raw_answer || q.raw_answer,
+              solution_drive_id: assignedTwin.item.solution_drive_id || q.solution_drive_id,
+              is_twin: true,
+              twin_round: assignedTwin.roundName,
+              parent_question_id: q.id,
+            };
+          }
+          // 쌍둥이가 없는 문항은 원본 문제로 출제 (Fallback)
+          return q;
+        });
+      } else {
+        examTitle = `[오답] ${exam.title} (${student.name})`;
+        finalQuestions = [...wrongQuestions];
+      }
+
       const res = await fetch('/api/test2/exam', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: wrongTitle,
-          grade: resultsModalExam.grade,
-          duration_min: Math.max(10, wrongQuestions.length * 3),
-          questions: wrongQuestions,
-          assigned_student_ids: [st.id],
+          title: examTitle,
+          grade: exam.grade,
+          duration_min: Math.max(10, finalQuestions.length * 3),
+          questions: finalQuestions,
+          assigned_student_ids: [student.id],
           is_wrong_review: true,
-          parent_exam_id: resultsModalExam.id,
+          parent_exam_id: exam.id,
         }),
       });
 
       const data = await res.json();
       if (data.success) {
         alert(
-          `🎉 '${st.name}' 학생의 오답 시험지(${wrongQuestions.length}문항)가 성공적으로 생성 및 배정되었습니다!\n학생 화면의 [오답 시험지] 탭에서 확인 및 응시할 수 있습니다.`
+          `🎉 '${student.name}' 학생의 ${wrongExamMode === 'twin' ? '쌍둥이 변형 ' : ''}오답 시험지(${finalQuestions.length}문항)가 성공적으로 생성 및 배정되었습니다!\n학생 화면의 [오답 시험지] 탭에서 응시할 수 있습니다.`
         );
+        setWrongExamModal(null);
+        setDetailStudent(null);
         loadInitialData();
       } else {
         alert(`오답 시험지 생성 실패: ${data.error}`);
@@ -618,7 +746,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       console.error('Failed to create wrong exam:', e);
       alert('오답 시험지 생성 중 오류가 발생했습니다.');
     } finally {
-      setCreatingWrongExam(null);
+      setCreatingWrongExamModal(false);
     }
   };
 
@@ -1723,12 +1851,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   </button>
                                   <button
                                     onClick={() => handleCreateWrongExam(st, sub)}
-                                    disabled={creatingWrongExam === st?.id}
+                                    disabled={creatingWrongExamModal}
                                     className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 disabled:opacity-50"
                                     title="학생이 틀린 문제만 모아 오답 시험지 생성 및 배정"
                                   >
-                                    <RotateCcw size={12} className={creatingWrongExam === st?.id ? 'animate-spin' : ''} />
-                                    <span>{creatingWrongExam === st?.id ? '생성 중...' : '오답 처리'}</span>
+                                    <RotateCcw size={12} className={creatingWrongExamModal ? 'animate-spin' : ''} />
+                                    <span>{creatingWrongExamModal ? '생성 중...' : '오답 처리'}</span>
                                   </button>
                                 </div>
                               )}
@@ -1797,11 +1925,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleCreateWrongExam(detailStudent.student, detailStudent.submission)}
-                  disabled={creatingWrongExam === detailStudent.student.id}
+                  disabled={creatingWrongExamModal}
                   className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/20 transition-all flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  <RotateCcw size={14} className={creatingWrongExam === detailStudent.student.id ? 'animate-spin' : ''} />
-                  <span>{creatingWrongExam === detailStudent.student.id ? '생성 중...' : '오답 시험지 생성'}</span>
+                  <RotateCcw size={14} className={creatingWrongExamModal ? 'animate-spin' : ''} />
+                  <span>{creatingWrongExamModal ? '생성 중...' : '오답 시험지 생성'}</span>
                 </button>
                 <button
                   onClick={() => setDetailStudent(null)}
@@ -2012,6 +2140,207 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 className="px-5 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
               >
                 닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. 👯 맞춤 오답 시험지 생성 모달 (쌍둥이 변형 vs 원본 선택) */}
+      {wrongExamModal && (
+        <div className="fixed inset-0 z-[75] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95 max-h-[90vh] flex flex-col">
+            {/* 헤더 */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 bg-rose-100 text-rose-700 font-black rounded-lg text-xs">
+                    오답 클리닉
+                  </span>
+                  <h3 className="text-lg font-black text-slate-800">
+                    맞춤 오답 시험지 생성 & 배정
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500">
+                  대상 학생: <strong className="text-slate-700 font-bold">{wrongExamModal.student.name}</strong> ({wrongExamModal.student.grade}) • 
+                  원본 시험: <strong className="text-slate-700 font-bold">{wrongExamModal.exam.title}</strong>
+                </p>
+              </div>
+              <button
+                onClick={() => setWrongExamModal(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 본문 스크롤 영역 */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {/* 1. 시험지 출제 방식 선택 라디오 카드 */}
+              <div className="space-y-2">
+                <label className="text-xs font-black text-slate-700 block">
+                  출제 방식 선택
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* 옵션 1: 쌍둥이 변형 문제 */}
+                  <div
+                    onClick={() => setWrongExamMode('twin')}
+                    className={`p-4 rounded-2xl border-2 cursor-pointer transition-all space-y-1.5 select-none ${
+                      wrongExamMode === 'twin'
+                        ? 'border-purple-600 bg-purple-50/60 shadow-sm shadow-purple-200'
+                        : 'border-slate-200 bg-slate-50/60 hover:bg-slate-100 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">👯</span>
+                        <strong className="text-xs font-black text-purple-950">
+                          쌍둥이(변형) 문제로 출제
+                        </strong>
+                      </div>
+                      <span className="px-2 py-0.5 bg-purple-600 text-white rounded text-[10px] font-black">
+                        추천
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      학생이 답과 풀이를 단순 암기하는 것을 방지하고, 개념 이해를 확인하도록 <strong>숫자/조건이 변형된 쌍둥이 문제</strong>로 교체 출제합니다.
+                    </p>
+                    <div className="text-[10px] text-purple-700 font-bold pt-0.5">
+                      ✨ 이전 풀이 이력 확인 후 다음 회차 쌍둥이 자동 승급
+                    </div>
+                  </div>
+
+                  {/* 옵션 2: 원본 문제 그대로 */}
+                  <div
+                    onClick={() => setWrongExamMode('original')}
+                    className={`p-4 rounded-2xl border-2 cursor-pointer transition-all space-y-1.5 select-none ${
+                      wrongExamMode === 'original'
+                        ? 'border-indigo-600 bg-indigo-50/60 shadow-sm shadow-indigo-200'
+                        : 'border-slate-200 bg-slate-50/60 hover:bg-slate-100 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">📄</span>
+                      <strong className="text-xs font-black text-slate-800">
+                        원본 문제 그대로 출제
+                      </strong>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      학생이 시험에서 틀렸던 원래 문제 그대로 다시 복습 시험지를 생성하여 배정합니다.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. C안 안내 배너: 쌍둥이 없는 문항 Fallback 알림 */}
+              {wrongExamMode === 'twin' && (() => {
+                const total = wrongExamModal.wrongQuestions.length;
+                const twinCount = wrongExamModal.wrongQuestions.filter(q => !!getNextAvailableTwinForStudent(q, wrongExamModal.student.id)).length;
+                const noTwinCount = total - twinCount;
+
+                if (noTwinCount > 0) {
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3.5 flex items-start gap-2.5 text-xs text-amber-900">
+                      <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-black text-amber-800">
+                          쌍둥이 미등록 문항 자동 원본 대체 안내
+                        </p>
+                        <p className="text-[11px] text-amber-700 leading-relaxed">
+                          틀린 {total}문항 중 <strong>{noTwinCount}개 문항</strong>은 아직 쌍둥이 문제가 등록되지 않아 <strong>원본 문제로 대체 출제</strong>됩니다. (쌍둥이 {twinCount}문항 + 원본 {noTwinCount}문항)
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 flex items-center gap-2 text-xs text-emerald-800">
+                    <Check size={15} className="text-emerald-600 shrink-0" />
+                    <span>모든 틀린 문항({total}문항)에 대한 쌍둥이 문제가 완벽하게 준비되어 있습니다! 🎯</span>
+                  </div>
+                );
+              })()}
+
+              {/* 3. 출제 대상 문항 상세 리스트 */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-600 px-0.5">
+                  <span>출제될 문항 목록 (총 {wrongExamModal.wrongQuestions.length}문항)</span>
+                  <span className="text-[11px] text-slate-400">
+                    시험 시간: {Math.max(10, wrongExamModal.wrongQuestions.length * 3)}분 자동 설정
+                  </span>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl divide-y divide-slate-100 max-h-[220px] overflow-y-auto">
+                  {wrongExamModal.wrongQuestions.map((q, idx) => {
+                    const assignedTwin = wrongExamMode === 'twin' ? getNextAvailableTwinForStudent(q, wrongExamModal.student.id) : null;
+                    const qNum = q.question_number ?? parseQuestionNumber(q);
+
+                    return (
+                      <div key={q.id || idx} className="p-2.5 flex items-center justify-between text-xs hover:bg-white transition-colors">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-5 h-5 rounded-md bg-slate-200 text-slate-700 font-black text-[10px] flex items-center justify-center shrink-0">
+                            {idx + 1}
+                          </span>
+                          {qNum && (
+                            <span className="px-1.5 py-0.2 bg-violet-100 text-violet-700 font-bold rounded text-[10px] shrink-0">
+                              {qNum}번
+                            </span>
+                          )}
+                          <span className="font-bold text-slate-700 truncate max-w-[200px]">
+                            {q.name}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {wrongExamMode === 'twin' ? (
+                            assignedTwin ? (
+                              <span className="px-2 py-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-md text-[10px] font-black shadow-2xs flex items-center gap-1">
+                                <span>👯 [{assignedTwin.roundName} 쌍둥이]</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold">
+                                원본 문제로 대체
+                              </span>
+                            )
+                          ) : (
+                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-bold">
+                              원본 문제
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 하단 액션 버튼 */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setWrongExamModal(null)}
+                className="px-4 py-2.5 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCreateWrongExam}
+                disabled={creatingWrongExamModal}
+                className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-700 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-200 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {creatingWrongExamModal ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>생성 및 배정 중...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} />
+                    <span>{wrongExamMode === 'twin' ? '쌍둥이 오답 시험지 생성 및 배정' : '원본 오답 시험지 생성 및 배정'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

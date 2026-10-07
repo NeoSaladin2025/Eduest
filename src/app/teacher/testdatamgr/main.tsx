@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { ExamLibraryNode } from '@/lib/examLibraryTree';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
+import { TwinStoreData, DetectedTwinFolder, TwinQuestionItem } from '@/lib/twinTypes';
 
 const GRADES = ['중1', '중2', '중3', '고1', '고2', '고3'];
 
@@ -129,6 +130,130 @@ export default function TestDataManagerMain() {
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  // 👯 쌍둥이 문제 상태
+  const [twinStore, setTwinStore] = useState<TwinStoreData | null>(null);
+  const [detectedTwinFolders, setDetectedTwinFolders] = useState<DetectedTwinFolder[]>([]);
+  const [isScanningTwins, setIsScanningTwins] = useState(false);
+  const [isSyncingTwins, setIsSyncingTwins] = useState(false);
+  const [activeTwinDropdown, setActiveTwinDropdown] = useState<{ folderId: string; qNum: number } | null>(null);
+
+  // 쌍둥이 저장소 로드
+  const loadTwinStore = async (grade: string) => {
+    try {
+      const res = await fetch(`/api/test2/twins?grade=${encodeURIComponent(grade)}`);
+      const data = await res.json();
+      if (data.success && data.store) {
+        setTwinStore(data.store);
+      }
+    } catch (e) {
+      console.error('Failed to load twin store:', e);
+    }
+  };
+
+  // 👯 구글 드라이브 쌍둥이 전체 스캔 (신규 감지)
+  const handleScanTwins = async () => {
+    try {
+      setIsScanningTwins(true);
+      const res = await fetch(`/api/test2/twins?grade=${encodeURIComponent(selectedGrade)}&scan=true`);
+      const data = await res.json();
+      if (data.success) {
+        if (data.store) setTwinStore(data.store);
+        const detected: DetectedTwinFolder[] = data.detected || [];
+        setDetectedTwinFolders(detected);
+        const newCount = detected.filter(d => d.has_new).length;
+        if (newCount > 0) {
+          alert(`✨ ${newCount}개 폴더에서 새로운 쌍둥이 문제 회차가 감지되었습니다!\n좌측 트리의 하이라이트된 폴더를 확인하고 [쌍둥이 동기화]를 진행해주세요.`);
+        } else {
+          alert(`🔎 감지된 신규 쌍둥이가 없습니다. (총 ${detected.length}개 폴더에 쌍둥이 폴더 연결됨)`);
+        }
+      } else {
+        alert(`쌍둥이 스캔 실패: ${data.error}`);
+      }
+    } catch (e: any) {
+      alert(`쌍둥이 스캔 중 오류 발생: ${e.message}`);
+    } finally {
+      setIsScanningTwins(false);
+    }
+  };
+
+  // 👯 쌍둥이 동기화 (특정 폴더 또는 선택된 폴더들)
+  const handleSyncTwins = async (targetParentFolderIds?: string[]) => {
+    try {
+      setIsSyncingTwins(true);
+      const res = await fetch('/api/test2/twins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'sync_twins',
+          grade: selectedGrade,
+          parentFolderIds: targetParentFolderIds,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`🎉 ${data.message || '쌍둥이 문제가 성공적으로 동기화되었습니다!'}`);
+        if (data.store) setTwinStore(data.store);
+        setDetectedTwinFolders(prev => prev.map(d => {
+          if (!targetParentFolderIds || targetParentFolderIds.includes(d.parent_folder_id)) {
+            return { ...d, has_new: false };
+          }
+          return d;
+        }));
+      } else {
+        alert(`쌍둥이 동기화 실패: ${data.error}`);
+      }
+    } catch (e: any) {
+      alert(`쌍둥이 동기화 중 오류 발생: ${e.message}`);
+    } finally {
+      setIsSyncingTwins(false);
+    }
+  };
+
+  // 특정 원본 회차 폴더의 특정 문항 번호에 연결된 쌍둥이 목록 조회
+  const getQuestionTwins = (folderDriveId: string, qNum: number | null): Array<{ roundName: string; item: TwinQuestionItem }> => {
+    if (!twinStore || !folderDriveId || qNum === null) return [];
+    const folderData = twinStore.folders[folderDriveId];
+    if (!folderData || !folderData.rounds) return [];
+
+    const results: Array<{ roundName: string; item: TwinQuestionItem }> = [];
+    Object.entries(folderData.rounds).forEach(([rName, rData]) => {
+      const matched = rData.items?.find(it => it.question_number === qNum);
+      if (matched) {
+        results.push({ roundName: rName, item: matched });
+      }
+    });
+
+    return results.sort((a, b) => {
+      const numA = parseRoundNumber(a.roundName);
+      const numB = parseRoundNumber(b.roundName);
+      return numA - numB;
+    });
+  };
+
+  // 시험 DB 카테고리 아이템의 쌍둥이 목록 조회
+  const getBankItemTwins = (item: TestBankItem): Array<{ roundName: string; item: TwinQuestionItem }> => {
+    if (!twinStore) return [];
+    const qNum = item.question_number ?? parseQuestionNum(item.name);
+    if (qNum === null) return [];
+
+    for (const fData of Object.values(twinStore.folders || {})) {
+      if (
+        fData.parent_folder_name === item.folder_name ||
+        (item.folder_path && item.folder_path.includes(fData.parent_folder_name))
+      ) {
+        const results: Array<{ roundName: string; item: TwinQuestionItem }> = [];
+        Object.entries(fData.rounds || {}).forEach(([rName, rData]) => {
+          const matched = rData.items?.find(it => it.question_number === qNum);
+          if (matched) results.push({ roundName: rName, item: matched });
+        });
+        if (results.length > 0) {
+          return results.sort((a, b) => parseRoundNumber(a.roundName) - parseRoundNumber(b.roundName));
+        }
+      }
+    }
+    return [];
+  };
+
   // 1. 특정 학년의 원천 DB 로드
   const loadRawLibrary = async (grade: string) => {
     try {
@@ -202,10 +327,11 @@ export default function TestDataManagerMain() {
     }
   };
 
-  // 학년 변경 시 원천 DB & 시험 DB 동시 로드
+  // 학년 변경 시 원천 DB & 시험 DB & 쌍둥이 데이터 동시 로드
   useEffect(() => {
     loadRawLibrary(selectedGrade);
     loadTestBank(selectedGrade);
+    loadTwinStore(selectedGrade);
   }, [selectedGrade]);
 
   // 폴더 접기/펼치기
@@ -615,75 +741,125 @@ export default function TestDataManagerMain() {
             return (
               <div key={node.drive_id} className="text-xs">
                 {/* 폴더 행 */}
-                <div
-                  className={`flex items-center justify-between p-1.5 rounded-xl transition-all cursor-pointer select-none group ${
-                    isFolderSelected 
-                      ? 'bg-indigo-50/90 border border-indigo-200/90 shadow-2xs' 
-                      : 'hover:bg-slate-100 border border-transparent'
-                  }`}
-                  onClick={() => toggleFolder(node.drive_id)}
-                >
-                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                    {/* 펼침 토글 버튼 */}
-                    {hasChildren ? (
-                      isExpanded ? (
-                        <ChevronDown size={14} className="text-slate-400 shrink-0" />
-                      ) : (
-                        <ChevronRight size={14} className="text-slate-400 shrink-0" />
-                      )
-                    ) : (
-                      <div className="w-3.5 shrink-0" />
-                    )}
+                {/* 폴더 행 */}
+                {(() => {
+                  const detected = detectedTwinFolders.find(d => d.parent_folder_id === node.drive_id);
+                  const existingFolderData = twinStore?.folders?.[node.drive_id];
+                  const syncedRounds = existingFolderData ? Object.keys(existingFolderData.rounds || {}) : [];
+                  const hasNewTwin = !!detected?.has_new;
 
-                    {/* 🌟 폴더 체크박스: 클릭 시 구간 추출 대상에 포함 */}
+                  return (
                     <div
-                      onClick={(e) => toggleFolderSelect(node, e)}
-                      className="p-1 hover:bg-white/80 rounded-md cursor-pointer transition-colors shrink-0"
-                      title={isFolderSelected ? "폴더 선택 해제" : "폴더 선택 (구간 추출 대상)"}
+                      className={`flex items-center justify-between p-1.5 rounded-xl transition-all cursor-pointer select-none group ${
+                        isFolderSelected 
+                          ? 'bg-indigo-50/90 border border-indigo-200/90 shadow-2xs' 
+                          : hasNewTwin
+                          ? 'bg-purple-50/60 border border-purple-300 shadow-2xs'
+                          : 'hover:bg-slate-100 border border-transparent'
+                      }`}
+                      onClick={() => toggleFolder(node.drive_id)}
                     >
-                      {isFolderSelected ? (
-                        <CheckSquare size={16} className="text-indigo-600 shrink-0" />
-                      ) : (
-                        <Square size={16} className="text-slate-300 hover:text-indigo-500 shrink-0" />
-                      )}
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                        {/* 펼침 토글 버튼 */}
+                        {hasChildren ? (
+                          isExpanded ? (
+                            <ChevronDown size={14} className="text-slate-400 shrink-0" />
+                          ) : (
+                            <ChevronRight size={14} className="text-slate-400 shrink-0" />
+                          )
+                        ) : (
+                          <div className="w-3.5 shrink-0" />
+                        )}
+
+                        {/* 🌟 폴더 체크박스: 클릭 시 구간 추출 대상에 포함 */}
+                        <div
+                          onClick={(e) => toggleFolderSelect(node, e)}
+                          className="p-1 hover:bg-white/80 rounded-md cursor-pointer transition-colors shrink-0"
+                          title={isFolderSelected ? "폴더 선택 해제" : "폴더 선택 (구간 추출 대상)"}
+                        >
+                          {isFolderSelected ? (
+                            <CheckSquare size={16} className="text-indigo-600 shrink-0" />
+                          ) : (
+                            <Square size={16} className="text-slate-300 hover:text-indigo-500 shrink-0" />
+                          )}
+                        </div>
+
+                        {/* 폴더 아이콘 */}
+                        {isExpanded ? (
+                          <FolderOpen size={16} className={hasNewTwin ? "text-purple-600 shrink-0" : "text-amber-500 shrink-0"} />
+                        ) : (
+                          <Folder size={16} className={hasNewTwin ? "text-purple-600 shrink-0" : "text-amber-500 shrink-0"} />
+                        )}
+
+                        {/* 폴더 이름 */}
+                        <span className={`font-bold truncate ${isFolderSelected ? 'text-indigo-950 font-black' : hasNewTwin ? 'text-purple-950 font-black' : 'text-slate-700'}`}>
+                          {node.name}
+                        </span>
+
+                        {/* 카운트 배지 */}
+                        <span className="text-[10px] text-slate-400 font-normal shrink-0">
+                          ({node.subFolders?.length > 0 ? `${node.subFolders.length}폴더 ` : ''}{node.files?.length || 0}문제)
+                        </span>
+
+                        {/* 신규 쌍둥이 감지 뱃지 */}
+                        {hasNewTwin && (
+                          <span className="px-2 py-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-md text-[9px] font-black shrink-0 animate-pulse flex items-center gap-0.5 shadow-2xs">
+                            <Sparkles size={10} />
+                            NEW 쌍둥이 {detected?.detected_rounds?.length || 1}회차 감지
+                          </span>
+                        )}
+
+                        {/* 이미 동기화된 쌍둥이 뱃지 */}
+                        {!hasNewTwin && syncedRounds.length > 0 && (
+                          <span className="px-1.5 py-0.2 bg-purple-100 text-purple-700 border border-purple-200 rounded text-[9px] font-bold shrink-0">
+                            👯 쌍둥이 {syncedRounds.length}회차
+                          </span>
+                        )}
+
+                        {isFolderSelected && (
+                          <span className="px-1.5 py-0.2 bg-indigo-600 text-white rounded text-[9px] font-black shrink-0 ml-1">
+                            추출선택
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 ml-2">
+                        {/* 쌍둥이 빠른 동기화 버튼 (감지되었거나 이미 쌍둥이가 있는 경우) */}
+                        {(hasNewTwin || syncedRounds.length > 0) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSyncTwins([node.drive_id]);
+                            }}
+                            disabled={isSyncingTwins}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all flex items-center gap-1 ${
+                              hasNewTwin
+                                ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-2xs'
+                                : 'opacity-0 group-hover:opacity-100 bg-purple-50 hover:bg-purple-100 text-purple-700'
+                            }`}
+                            title="이 폴더의 쌍둥이 문제 동기화"
+                          >
+                            <RefreshCw size={10} className={isSyncingTwins ? "animate-spin" : ""} />
+                            <span>{hasNewTwin ? '쌍둥이 동기화' : '재동기화'}</span>
+                          </button>
+                        )}
+
+                        {/* 폴더 파일 일괄 담기 버튼 */}
+                        {node.files && node.files.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleSelectAllInFolder(node, currentPath); }}
+                            className="opacity-0 group-hover:opacity-100 px-2 py-0.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0 ml-1"
+                            title="이 폴더의 모든 문제를 수동 선택 바구니에 담기"
+                          >
+                            + 수동 담기
+                          </button>
+                        )}
+                      </div>
                     </div>
-
-                    {/* 폴더 아이콘 */}
-                    {isExpanded ? (
-                      <FolderOpen size={16} className="text-amber-500 shrink-0" />
-                    ) : (
-                      <Folder size={16} className="text-amber-500 shrink-0" />
-                    )}
-
-                    {/* 폴더 이름 */}
-                    <span className={`font-bold truncate ${isFolderSelected ? 'text-indigo-950 font-black' : 'text-slate-700'}`}>
-                      {node.name}
-                    </span>
-
-                    {/* 카운트 배지 */}
-                    <span className="text-[10px] text-slate-400 font-normal shrink-0">
-                      ({node.subFolders?.length > 0 ? `${node.subFolders.length}폴더 ` : ''}{node.files?.length || 0}문제)
-                    </span>
-
-                    {isFolderSelected && (
-                      <span className="px-1.5 py-0.2 bg-indigo-600 text-white rounded text-[9px] font-black shrink-0 ml-1">
-                        추출선택
-                      </span>
-                    )}
-                  </div>
-
-                  {/* 폴더 파일 일괄 담기 버튼 */}
-                  {node.files && node.files.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleSelectAllInFolder(node, currentPath); }}
-                      className="opacity-0 group-hover:opacity-100 px-2 py-0.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0 ml-2"
-                      title="이 폴더의 모든 문제를 수동 선택 바구니에 담기"
-                    >
-                      + 수동 담기
-                    </button>
-                  )}
-                </div>
+                  );
+                })()}
 
                 {/* 하위 폴더 및 파일 목록 */}
                 {isExpanded && (
@@ -695,6 +871,8 @@ export default function TestDataManagerMain() {
                         {node.files.map(fileNode => {
                           const isSelected = selectedRawFiles.some(f => f.drive_id === fileNode.drive_id);
                           const qNum = parseQuestionNum(fileNode.name);
+                          const twins = getQuestionTwins(node.drive_id, qNum);
+                          const isDropdownOpen = activeTwinDropdown?.folderId === node.drive_id && activeTwinDropdown?.qNum === qNum;
 
                           return (
                             <div
@@ -713,7 +891,7 @@ export default function TestDataManagerMain() {
                                 isSelected ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200' : 'hover:bg-slate-100 text-slate-600'
                               }`}
                             >
-                              <div className="flex items-center gap-2 truncate">
+                              <div className="flex items-center gap-2 truncate flex-1 min-w-0">
                                 {isSelected ? (
                                   <CheckSquare size={15} className="text-indigo-600 shrink-0" />
                                 ) : (
@@ -728,16 +906,59 @@ export default function TestDataManagerMain() {
                                 )}
                                 
                                 <span className="truncate">{fileNode.name}</span>
+
+                                {/* 👯 쌍둥이 보유 뱃지 및 드롭다운 (스샷 1번 영역) */}
+                                {twins.length > 0 && (
+                                  <div className="relative shrink-0 ml-1" onClick={e => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: node.drive_id, qNum: qNum! })}
+                                      className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                      title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                                    >
+                                      <span>👯 쌍둥이 {twins.length}개</span>
+                                      <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+                                    </button>
+
+                                    {/* 회차별 쌍둥이 팝업 드롭다운 */}
+                                    {isDropdownOpen && (
+                                      <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
+                                        <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
+                                          <span>쌍둥이 문제 회차</span>
+                                          <span className="text-purple-600">{twins.length}개 보유</span>
+                                        </div>
+                                        {twins.map(tw => (
+                                          <button
+                                            key={tw.roundName}
+                                            type="button"
+                                            onClick={() => {
+                                              setActiveTwinDropdown(null);
+                                              handleOpenPreview(tw.item.drive_id);
+                                            }}
+                                            className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group"
+                                          >
+                                            <span>[{tw.roundName} 쌍둥이]</span>
+                                            <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
+                                              <Eye size={11} /> 열기
+                                            </span>
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
 
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); handleOpenPreview(fileNode.drive_id); }}
-                                className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors shrink-0"
-                                title="문제 미리보기"
-                              >
-                                <Eye size={13} />
-                              </button>
+                              <div className="flex items-center gap-1 shrink-0 ml-2">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleOpenPreview(fileNode.drive_id); }}
+                                  className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors shrink-0"
+                                  title="원본 문제/해설 미리보기"
+                                >
+                                  <Eye size={13} />
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -942,7 +1163,51 @@ export default function TestDataManagerMain() {
               </p>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* 👯 쌍둥이 스캔 버튼 */}
+              <button
+                type="button"
+                onClick={handleScanTwins}
+                disabled={isScanningTwins}
+                className="px-3 py-1.5 text-xs bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-black rounded-xl transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="구글 드라이브에서 새로운 쌍둥이 문제 폴더가 있는지 감지합니다"
+              >
+                {isScanningTwins ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    <span>스캔 중...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={13} />
+                    <span>👯 쌍둥이 스캔</span>
+                  </>
+                )}
+              </button>
+
+              {/* 선택된 폴더 쌍둥이 동기화 버튼 */}
+              {selectedFolderIds.size > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleSyncTwins(Array.from(selectedFolderIds))}
+                  disabled={isSyncingTwins}
+                  className="px-3 py-1.5 text-xs bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 font-black rounded-xl transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  title="선택한 회차 폴더의 쌍둥이 문제를 동기화합니다"
+                >
+                  {isSyncingTwins ? (
+                    <>
+                      <Loader2 size={13} className="animate-spin" />
+                      <span>동기화 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={12} />
+                      <span>선택 폴더 쌍둥이 동기화</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               {/* 폴더 전체 선택/해제 */}
               <button
                 type="button"
@@ -1156,6 +1421,52 @@ export default function TestDataManagerMain() {
                         <span className="font-bold text-slate-700 truncate">
                           {item.name}
                         </span>
+
+                        {/* 👯 쌍둥이 보유 배지 & 미리보기 드롭다운 */}
+                        {(() => {
+                          const bankTwins = getBankItemTwins(item);
+                          const isDropdownOpen = activeTwinDropdown?.folderId === `bank_${item.id}` && activeTwinDropdown?.qNum === (displayNum || 0);
+
+                          if (bankTwins.length === 0) return null;
+                          return (
+                            <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: `bank_${item.id}`, qNum: displayNum || 0 })}
+                                className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                              >
+                                <span>👯 쌍둥이 {bankTwins.length}개</span>
+                                <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+                              </button>
+
+                              {isDropdownOpen && (
+                                <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
+                                  <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
+                                    <span>쌍둥이 문제 회차</span>
+                                    <span className="text-purple-600">{bankTwins.length}개 보유</span>
+                                  </div>
+                                  {bankTwins.map(tw => (
+                                    <button
+                                      key={tw.roundName}
+                                      type="button"
+                                      onClick={() => {
+                                        setActiveTwinDropdown(null);
+                                        handleOpenPreview(tw.item.drive_id);
+                                      }}
+                                      className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group"
+                                    >
+                                      <span>[{tw.roundName} 쌍둥이]</span>
+                                      <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
+                                        <Eye size={11} /> 열기
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* 상위 경로 보조 표시 (툴팁) */}
                         {item.folder_path && (
