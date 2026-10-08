@@ -2230,17 +2230,31 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <span>서술형 지정</span>
                           </label>
                         </div>
-                        <input
-                          type="text"
-                          value={q.answer}
-                          onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
-                          placeholder="정답 (예: 5 또는 83)"
-                          className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
-                            q.is_descriptive
-                              ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
-                              : 'border-slate-200 text-slate-800 focus:border-violet-500'
-                          }`}
-                        />
+                        {q.answer && q.answer.includes('\n') ? (
+                          <textarea
+                            value={q.answer}
+                            onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                            rows={Math.min(4, q.answer.split('\n').length)}
+                            placeholder="정답 (줄바꿈 가능)"
+                            className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs resize-y ${
+                              q.is_descriptive
+                                ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                            }`}
+                          />
+                        ) : (
+                          <input
+                            type="text"
+                            value={q.answer}
+                            onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                            placeholder="정답 (예: 5 또는 83)"
+                            className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
+                              q.is_descriptive
+                                ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                            }`}
+                          />
+                        )}
                         <div className="mt-1 text-[9px] text-slate-400">
                           {q.is_descriptive ? (
                             <span className="text-amber-600 font-bold">

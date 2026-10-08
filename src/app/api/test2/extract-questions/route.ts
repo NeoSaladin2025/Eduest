@@ -79,6 +79,49 @@ function normalizeCircledNumber(str: string): string {
   return str.replace(/[①②③④⑤❶❷❸❹❺]/g, (match) => circledMap[match] || match);
 }
 
+// HTML 특수 엔티티 디코딩
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+// HTML 태그 및 MathML 수식 정제 헬퍼
+function cleanHtmlContent(rawHtml: string): string {
+  if (!rawHtml) return "";
+
+  // 1. MathML 연산자 및 기호 앞뒤 공백 정돈 (예: ≡, =, +, -, ×, ÷ 등)
+  let processed = rawHtml
+    .replace(/<mo[^>]*>([≡=≠≤≥≈~+×÷])<\/mo>/gi, ' $1 ')
+    .replace(/<mo[^>]*>([,])<\/mo>/gi, '$1 ');
+
+  // 2. 줄바꿈 태그 보존
+  processed = processed
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+    .replace(/<(p|div|li|tr|h[1-6])[^>]*>/gi, '');
+
+  // 3. 모든 HTML 태그 제거
+  processed = processed.replace(/<[^>]+>/g, '');
+
+  // 4. HTML 엔티티 디코딩
+  processed = decodeHtmlEntities(processed);
+
+  // 5. 연속 공백 및 줄바꿈 정리
+  const lines = processed
+    .split(/\r?\n/)
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .filter(line => line.length > 0);
+
+  return lines.join('\n');
+}
+
 // HTML 분석하여 문제 이미지 URL 및 정답 추출
 function extractQuestionData(html: string, fallbackFile: { drive_id: string; name: string; question_image_drive_id?: string | null }) {
   // 1. 문제 이미지 링크 추출
@@ -127,30 +170,46 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
   }
 
   // 2. 정답 추출
-  let rawAnswer = "";
-  let cleanAnswer = "";
-  let matchedRule = "정답 패턴 미발견";
   let rawHtmlSnippet = "";
+  let matchedRule = "정답 패턴 미발견";
+  let extractedRaw = "";
+  let cleanAnswer = "";
 
-  // 2-1. final-answer-text 태그 검색
-  const mAns = html.match(/class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/[a-z0-9]+>/i);
-  if (mAns) {
-    rawAnswer = mAns[1].replace(/<[^>]+>/g, '').trim();
-    matchedRule = "class=\"final-answer-text\" 정답 태그 매칭";
-    rawHtmlSnippet = mAns[0].slice(0, 300);
+  // 2-1. final-answer-text 태그 검색 (span 또는 div의 전체 닫는 태그 매칭)
+  const mAnsSpan = html.match(/<span[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+  const mAnsDiv = html.match(/<div[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+  const mAnsBox = html.match(/<div[^>]*class=["'][^"']*final-answer-box[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+
+  if (mAnsSpan) {
+    extractedRaw = mAnsSpan[1];
+    matchedRule = "class=\"final-answer-text\" (span) 전체 태그 매칭";
+    rawHtmlSnippet = mAnsSpan[0].slice(0, 350);
+  } else if (mAnsDiv) {
+    extractedRaw = mAnsDiv[1];
+    matchedRule = "class=\"final-answer-text\" (div) 전체 태그 매칭";
+    rawHtmlSnippet = mAnsDiv[0].slice(0, 350);
+  } else if (mAnsBox) {
+    // final-answer-box 내부에서 label(FINAL ANSWER)을 제거한 본문 추출
+    const inner = mAnsBox[1].replace(/<[^>]*class=["'][^"']*final-answer-label[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/i, '');
+    extractedRaw = inner;
+    matchedRule = "class=\"final-answer-box\" 컨테이너 매칭";
+    rawHtmlSnippet = mAnsBox[0].slice(0, 350);
   } else {
     // 2-2. 정답 표기 패턴 검색
     const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
     if (mAns2) {
-      rawAnswer = mAns2[1].replace(/<[^>]+>/g, '').trim();
+      extractedRaw = mAns2[1];
       matchedRule = "텍스트 패턴 '(최종정답/정답):' 매칭";
-      rawHtmlSnippet = mAns2[0].slice(0, 300);
+      rawHtmlSnippet = mAns2[0].slice(0, 350);
     }
   }
 
   if (!rawHtmlSnippet) {
     rawHtmlSnippet = html.slice(0, 250);
   }
+
+  // HTML 태그 제거 및 수식/줄바꿈 정제
+  const rawAnswer = cleanHtmlContent(extractedRaw);
 
   // 서술형(채점 대기 필요) 답안인지 자동 판별
   function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {

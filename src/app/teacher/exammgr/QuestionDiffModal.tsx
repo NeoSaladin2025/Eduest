@@ -172,13 +172,13 @@ export default function QuestionDiffModal({
                     <span className="w-1.5 h-1.5 rounded-full bg-violet-600"></span>
                   )}
                 </div>
-                <div className="col-span-4 font-mono font-bold text-slate-700 truncate pr-2" title={currentData.answer}>
+                <div className="col-span-4 font-mono font-bold text-slate-700 whitespace-pre-line break-words pr-2" title={currentData.answer}>
                   {currentData.answer || <span className="text-slate-400 italic">미입력</span>}
                 </div>
                 <div className="col-span-1 text-center text-slate-300">
                   <ArrowRight size={13} className="mx-auto" />
                 </div>
-                <div className={`col-span-4 font-mono font-black truncate ${isAnswerDiff ? 'text-violet-700 bg-violet-50 px-2 py-1 rounded-lg border border-violet-200' : 'text-slate-800'}`} title={newData.answer}>
+                <div className={`col-span-4 font-mono font-black whitespace-pre-line break-words ${isAnswerDiff ? 'text-violet-700 bg-violet-50 px-2 py-1 rounded-lg border border-violet-200' : 'text-slate-800'}`} title={newData.answer}>
                   {newData.answer || <span className="text-slate-400 italic">정답 없음</span>}
                 </div>
               </div>
@@ -296,15 +296,15 @@ export default function QuestionDiffModal({
               </label>
             </div>
             <div className="flex gap-2">
-              <input
-                type="text"
+              <textarea
                 value={customAnswer}
                 onChange={(e) => {
                   setCustomAnswer(e.target.value);
                   setIsEditing(true);
                 }}
-                placeholder="정답 텍스트 직접 입력..."
-                className="flex-1 px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-indigo-600"
+                rows={customAnswer.includes('\n') ? Math.min(4, customAnswer.split('\n').length) : 2}
+                placeholder="정답 텍스트 직접 입력 (줄바꿈 가능)..."
+                className="flex-1 px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:border-indigo-600 font-mono resize-y"
               />
               <button
                 type="button"
@@ -313,7 +313,7 @@ export default function QuestionDiffModal({
                   setCustomIsDescriptive(newData.is_descriptive);
                   setIsEditing(false);
                 }}
-                className="px-3 py-2 rounded-xl border border-slate-300 text-[11px] font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+                className="px-3 py-2 rounded-xl border border-slate-300 text-[11px] font-bold text-slate-600 hover:bg-slate-100 transition-colors self-start"
                 title="새로 추출된 원본 값으로 리셋"
               >
                 리셋
