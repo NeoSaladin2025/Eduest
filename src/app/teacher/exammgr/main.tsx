@@ -49,6 +49,11 @@ interface Student {
 
 const GRADES = ['ALL', '중1', '중2', '중3', '고1', '고2', '고3'];
 
+// 자연어 및 소수점/숫자 스마트 정렬 헬퍼 (5.1 vs 5.2 vs 5.10 완벽 지원)
+export function compareNatural(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
 // 폴더명에서 회차 번호 추출 (예: "10차", "1차", "3차(공수2A 중간대비)" -> 10, 1, 3)
 export function parseRoundNumber(folderName?: string | null): number {
   if (!folderName) return 999999;
@@ -233,26 +238,30 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
   };
 
-  // 🌟 바구니 정렬 로직 (회차 오름차순, 회차 내림차순)
+  // 🌟 바구니 정렬 로직 (폴더/회차 자연어 오름차순, 폴더/회차 내림차순)
   const applyBasketSort = (
     items: typeof selectedFiles, 
     mode: 'round_asc' | 'round_desc'
   ) => {
     return [...items].sort((a, b) => {
-      const rA = parseRoundNumber(a.folder_name);
-      const rB = parseRoundNumber(b.folder_name);
+      // 1순위: 폴더 경로 우선 자연어 비교 (5.1 vs 5.2 vs 5.10 완벽 정렬)
+      const pathA = a.folder_path || a.folder_name || '';
+      const pathB = b.folder_path || b.folder_name || '';
 
-      if (rA !== rB) {
-        return mode === 'round_asc' ? rA - rB : rB - rA;
+      if (pathA !== pathB) {
+        const pathCmp = compareNatural(pathA, pathB);
+        return mode === 'round_asc' ? pathCmp : -pathCmp;
       }
 
+      // 2순위: 동일 폴더 내에서는 항상 문항 번호 오름차순 (1번 -> 2번 -> ...)
       const qA = parseQuestionNumber(a);
       const qB = parseQuestionNumber(b);
       if (qA !== qB) {
         return qA - qB;
       }
 
-      return a.name.localeCompare(b.name, undefined, { numeric: true });
+      // 3순위: 파일명 자연어 정렬
+      return compareNatural(a.name, b.name);
     });
   };
 
@@ -305,15 +314,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   // 특정 카테고리 안의 모든 문제 일괄 선택
   const handleSelectAllInCategory = (categoryId: string) => {
     const catItems = bankItems.filter(i => i.category_id === categoryId);
-    // 카테고리 내에서도 회차 및 문항 번호 순으로 정렬하여 바구니에 담기
+    // 카테고리 내에서도 폴더 경로 자연어 및 문항 번호 순으로 정렬하여 바구니에 담기
     const sortedCatItems = [...catItems].sort((a, b) => {
-      const rA = parseRoundNumber(a.folder_name);
-      const rB = parseRoundNumber(b.folder_name);
-      if (rA !== rB) return rA - rB;
+      const pathA = a.folder_path || a.folder_name || '';
+      const pathB = b.folder_path || b.folder_name || '';
+      if (pathA !== pathB) {
+        return compareNatural(pathA, pathB);
+      }
       const qA = parseQuestionNumber(a);
       const qB = parseQuestionNumber(b);
       if (qA !== qB) return qA - qB;
-      return a.name.localeCompare(b.name, undefined, { numeric: true });
+      return compareNatural(a.name, b.name);
     });
 
     setSelectedFiles(prev => {
@@ -1340,13 +1351,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           {/* 카테고리 안의 문제 목록 */}
                           {isExpanded && itemsInCat.length > 0 && (() => {
                             const sortedCatItems = [...itemsInCat].sort((a, b) => {
-                              const rA = parseRoundNumber(a.folder_name);
-                              const rB = parseRoundNumber(b.folder_name);
-                              if (rA !== rB) return rA - rB;
+                              const pathA = a.folder_path || a.folder_name || '';
+                              const pathB = b.folder_path || b.folder_name || '';
+                              if (pathA !== pathB) {
+                                return compareNatural(pathA, pathB);
+                              }
                               const qA = parseQuestionNumber(a);
                               const qB = parseQuestionNumber(b);
                               if (qA !== qB) return qA - qB;
-                              return a.name.localeCompare(b.name, undefined, { numeric: true });
+                              return compareNatural(a.name, b.name);
                             });
 
                             return (
@@ -1427,7 +1440,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   <div className="flex items-center justify-between bg-slate-50 border border-slate-200 p-2 rounded-xl text-xs gap-2 mb-3 flex-wrap">
                     <div className="flex items-center gap-1.5 text-slate-500 font-bold text-[11px]">
                       <ArrowUpDown size={14} className="text-violet-600" />
-                      <span>회차 정렬:</span>
+                      <span>폴더/회차 정렬:</span>
                     </div>
 
                     <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shadow-2xs">
@@ -1439,10 +1452,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             ? 'bg-violet-600 text-white shadow-2xs scale-102'
                             : 'text-slate-600 hover:text-violet-700 hover:bg-slate-50'
                         }`}
-                        title="낮은 회차부터 높은 회차 순으로 정렬 (1차 → 12차)"
+                        title="폴더/회차 오름차순 정렬 (5.1 → 5.2 ... 5.10 / 폴더 내 문항 번호 1번→2번)"
                       >
                         <ArrowUp size={12} />
-                        자동 오름차순 (1차→12차)
+                        자동 오름차순 (5.1→5.10)
                       </button>
 
                       <button
@@ -1453,10 +1466,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             ? 'bg-violet-600 text-white shadow-2xs scale-102'
                             : 'text-slate-600 hover:text-violet-700 hover:bg-slate-50'
                         }`}
-                        title="높은 회차부터 낮은 회차 순으로 정렬 (12차 → 1차)"
+                        title="폴더/회차 내림차순 정렬 (5.10 → 5.9 ... 5.1 / 폴더 내 문항 번호 1번→2번)"
                       >
                         <ArrowDown size={12} />
-                        자동 내림차순 (12차→1차)
+                        자동 내림차순
                       </button>
 
                       <button
