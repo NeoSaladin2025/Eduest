@@ -31,6 +31,7 @@ import {
   ArrowUpDown,
   ShieldAlert,
   RotateCcw,
+  RotateCw,
   BookOpen,
   Filter
 } from 'lucide-react';
@@ -41,6 +42,7 @@ import { TwinStoreData, TwinQuestionItem } from '@/lib/twinTypes';
 import ExamBundleTab from './ExamBundleTab';
 import RealtimeProctorTab from './RealtimeProctorTab';
 import DescriptiveGradingModal from './DescriptiveGradingModal';
+import QuestionDiffModal from './QuestionDiffModal';
 
 interface Student {
   id: string;
@@ -129,6 +131,14 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [extractedQuestions, setExtractedQuestions] = useState<ExamQuestion[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionDone, setExtractionDone] = useState(false);
+
+  // 🌟 문항별 단독 병렬 재추출 상태 및 비교 모달 상태
+  const [reExtractingIds, setReExtractingIds] = useState<Set<string>>(new Set());
+  const [diffModalInfo, setDiffModalInfo] = useState<{
+    questionIndex: number;
+    currentData: any;
+    newData: any;
+  } | null>(null);
 
   // 배정할 학생 IDs
   const [assignedStudentIds, setAssignedStudentIds] = useState<string[]>([]);
@@ -552,6 +562,70 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     } finally {
       setIsExtracting(false);
     }
+  };
+
+  // 🌟 특정 문항 단독 재추출 핸들러 (병렬 비동기 지원)
+  const handleReExtractSingleQuestion = async (qIndex: number) => {
+    const targetQ = extractedQuestions[qIndex];
+    if (!targetQ || !targetQ.drive_id) return;
+
+    // 해당 문항에 대응하는 selectedFiles 찾기 (fallback)
+    const matchingFile = selectedFiles.find(f => f.drive_id === targetQ.drive_id) || {
+      drive_id: targetQ.drive_id,
+      name: targetQ.name,
+      folder_name: targetQ.folder_name,
+      question_number: targetQ.question_number,
+      display_name: targetQ.display_name,
+    };
+
+    setReExtractingIds(prev => new Set(prev).add(targetQ.drive_id));
+
+    try {
+      const res = await fetch('/api/test2/extract-questions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [matchingFile] }),
+      });
+      const data = await res.json();
+
+      if (data.success && Array.isArray(data.questions) && data.questions.length > 0) {
+        const newlyExtracted = data.questions[0];
+        // 비교 모달 띄우기
+        setDiffModalInfo({
+          questionIndex: qIndex,
+          currentData: targetQ,
+          newData: newlyExtracted,
+        });
+      } else {
+        alert(`문항 ${qIndex + 1} 재추출 실패: ${data.error || '알 수 없는 오류'}`);
+      }
+    } catch (e: any) {
+      console.error(`Failed to re-extract question ${targetQ.name}:`, e);
+      alert(`문항 ${qIndex + 1} 재추출 중 네트워크 오류가 발생했습니다.`);
+    } finally {
+      setReExtractingIds(prev => {
+        const next = new Set(prev);
+        next.delete(targetQ.drive_id);
+        return next;
+      });
+    }
+  };
+
+  // 🌟 비교 모달에서 새 추출 결과(또는 수정값) 적용 핸들러
+  const handleApplyExtractedDiff = (appliedData: any) => {
+    if (!diffModalInfo) return;
+    const targetIdx = diffModalInfo.questionIndex;
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      next[targetIdx] = {
+        ...next[targetIdx],
+        answer: appliedData.answer,
+        raw_answer: appliedData.raw_answer || next[targetIdx].raw_answer,
+        is_descriptive: !!appliedData.is_descriptive,
+        image_url: appliedData.image_url || next[targetIdx].image_url,
+      };
+      return next;
+    });
   };
 
   // 선생님의 정답 수정 반영
@@ -2087,20 +2161,43 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           )}
                         </div>
 
-                        {q.image_url ? (
+                        <div className="flex items-center gap-1.5">
+                          {/* 🌟 문항별 독립 재추출 버튼 */}
                           <button
                             type="button"
-                            onClick={() => setPreviewQuestion(q)}
-                            className="text-[11px] text-violet-600 hover:underline flex items-center gap-1 font-bold"
+                            onClick={() => handleReExtractSingleQuestion(idx)}
+                            disabled={reExtractingIds.has(q.drive_id)}
+                            className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:opacity-40 flex items-center gap-1 font-bold px-1.5 py-0.5 rounded-md hover:bg-indigo-50 border border-indigo-200 transition-colors cursor-pointer"
+                            title="이 문항의 정답 및 이미지만 다시 추출합니다"
                           >
-                            <Eye size={13} />
-                            이미지 보기
+                            {reExtractingIds.has(q.drive_id) ? (
+                              <>
+                                <Loader2 size={11} className="animate-spin text-indigo-600" />
+                                <span>추출 중</span>
+                              </>
+                            ) : (
+                              <>
+                                <RotateCw size={11} />
+                                <span>재추출</span>
+                              </>
+                            )}
                           </button>
-                        ) : (
-                          <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded font-bold">
-                            이미지 없음
-                          </span>
-                        )}
+
+                          {q.image_url ? (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewQuestion(q)}
+                              className="text-[11px] text-violet-600 hover:underline flex items-center gap-1 font-bold"
+                            >
+                              <Eye size={13} />
+                              이미지 보기
+                            </button>
+                          ) : (
+                            <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded font-bold">
+                              이미지 없음
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       <div className="text-[11px] text-slate-500 truncate flex items-center gap-1.5" title={q.name}>
@@ -2894,6 +2991,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         onClose={() => setIsGradingModalOpen(false)}
         onGradedChange={() => loadInitialData()}
       />
+
+      {/* 🌟 문항 단독 재추출 전/후 비교 검토 및 디버그 모달 */}
+      {diffModalInfo && (
+        <QuestionDiffModal
+          isOpen={!!diffModalInfo}
+          questionIndex={diffModalInfo.questionIndex}
+          currentData={diffModalInfo.currentData}
+          newData={diffModalInfo.newData}
+          onApply={handleApplyExtractedDiff}
+          onClose={() => setDiffModalInfo(null)}
+        />
+      )}
 
     </div>
   );

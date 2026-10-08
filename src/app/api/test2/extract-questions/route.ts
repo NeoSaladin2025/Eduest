@@ -31,7 +31,7 @@ const DEFAULT_GAS_LIBRARY_URL =
   "https://script.google.com/macros/s/AKfycbwkwjuyV5qS0jhuKVJG1jqqNCDURmsWCXveAiSB5mJKksMZ9Td5ijzx4c4JJEvDsRwVTA/exec";
 
 // 파일 내용(HTML) 로드
-async function fetchHtmlContent(fileId: string): Promise<string | null> {
+async function fetchHtmlContent(fileId: string): Promise<{ html: string | null; fetchSource: 'drive_api' | 'gas_fallback' | 'failed' }> {
   const drive = getDriveClient();
   if (drive) {
     try {
@@ -40,7 +40,7 @@ async function fetchHtmlContent(fileId: string): Promise<string | null> {
         { responseType: "text" }
       );
       if (typeof res.data === "string") {
-        return res.data;
+        return { html: res.data, fetchSource: 'drive_api' };
       }
     } catch (err: any) {
       console.warn(`Drive get failed for ${fileId}, trying GAS fallback:`, err?.message);
@@ -61,13 +61,13 @@ async function fetchHtmlContent(fileId: string): Promise<string | null> {
     });
     const json = await gasRes.json();
     if (json.success && json.data) {
-      return json.data;
+      return { html: json.data, fetchSource: 'gas_fallback' };
     }
   } catch (gasErr: any) {
     console.error(`GAS fetch failed for ${fileId}:`, gasErr);
   }
 
-  return null;
+  return { html: null, fetchSource: 'failed' };
 }
 
 // 원형 숫자 기호 변환
@@ -83,12 +83,14 @@ function normalizeCircledNumber(str: string): string {
 function extractQuestionData(html: string, fallbackFile: { drive_id: string; name: string; question_image_drive_id?: string | null }) {
   // 1. 문제 이미지 링크 추출
   let imageUrl = "";
+  let imageSource = "이미지 미발견";
 
   // 1-1. report-export-problem-src data-src
   const mDataSrc = html.match(/id=["']report-export-problem-src["'][^>]*data-src=["']([^"']+)["']/i)
                 || html.match(/data-src=["']([^"']+)["'][^>]*id=["']report-export-problem-src["']/i);
   if (mDataSrc && mDataSrc[1].trim()) {
     imageUrl = mDataSrc[1].trim();
+    imageSource = "report-export-problem-src 태그 (data-src 속성)";
   }
 
   // 1-2. report-original-problem-img src
@@ -96,6 +98,7 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     const mImg = html.match(/class=["'][^"']*report-original-problem-img[^"']*["'][^>]*src=["']([^"']+)["']/i);
     if (mImg && mImg[1].trim()) {
       imageUrl = mImg[1].trim();
+      imageSource = "report-original-problem-img 태그 (src 속성)";
     }
   }
 
@@ -104,12 +107,14 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     const mModalImg = html.match(/id=["']report-problem-modal-img["'][^>]*src=["']([^"']+)["']/i);
     if (mModalImg && mModalImg[1].trim() && !mModalImg[1].includes('data:image/gif')) {
       imageUrl = mModalImg[1].trim();
+      imageSource = "report-problem-modal-img 태그 (src 속성)";
     }
   }
 
   // 1-4. question_image_drive_id 보조 fallback
   if (!imageUrl && fallbackFile.question_image_drive_id) {
     imageUrl = `https://lh3.googleusercontent.com/d/${fallbackFile.question_image_drive_id}`;
+    imageSource = "DB 등록된 question_image_drive_id 사용";
   }
 
   // 1-5. HTML 내 Drive ID 추출 시도 (예: Source: 0001.png 주변이나 주석)
@@ -117,53 +122,64 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     const driveMatch = html.match(/https?:\/\/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]{25,})/i);
     if (driveMatch) {
       imageUrl = driveMatch[0];
+      imageSource = "HTML 내부 Google Drive 직접 이미지 링크 매칭";
     }
   }
 
   // 2. 정답 추출
   let rawAnswer = "";
   let cleanAnswer = "";
+  let matchedRule = "정답 패턴 미발견";
+  let rawHtmlSnippet = "";
 
   // 2-1. final-answer-text 태그 검색
   const mAns = html.match(/class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/[a-z0-9]+>/i);
   if (mAns) {
     rawAnswer = mAns[1].replace(/<[^>]+>/g, '').trim();
+    matchedRule = "class=\"final-answer-text\" 정답 태그 매칭";
+    rawHtmlSnippet = mAns[0].slice(0, 300);
   } else {
     // 2-2. 정답 표기 패턴 검색
     const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
     if (mAns2) {
       rawAnswer = mAns2[1].replace(/<[^>]+>/g, '').trim();
+      matchedRule = "텍스트 패턴 '(최종정답/정답):' 매칭";
+      rawHtmlSnippet = mAns2[0].slice(0, 300);
     }
   }
 
-// 서술형(채점 대기 필요) 답안인지 자동 판별
-function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
-  if (!cleanAnswer && !rawAnswer) return false;
-  const target = (cleanAnswer || rawAnswer).trim();
+  if (!rawHtmlSnippet) {
+    rawHtmlSnippet = html.slice(0, 250);
+  }
 
-  // 1. 객관식 1~5는 단답형
-  if (/^[1-5]$/.test(target)) return false;
+  // 서술형(채점 대기 필요) 답안인지 자동 판별
+  function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
+    if (!cleanAnswer && !rawAnswer) return false;
+    const target = (cleanAnswer || rawAnswer).trim();
 
-  // 2. 순수 단일 숫자(정수, 음수, 소수)는 단답형 (예: 83, -12, 0.5)
-  if (/^-?\d+(\.\d+)?$/.test(target)) return false;
+    // 1. 객관식 1~5는 단답형
+    if (/^[1-5]$/.test(target)) return false;
 
-  // 3. 소문항 패턴 ((1), (2), ①, ② 등) 포함 시 서술형
-  if (/\([1-9]\)|[①②③④⑤❶❷❸❹❺]|\[[1-9]\]|\b[1-9]\)/.test(rawAnswer)) return true;
+    // 2. 순수 단일 숫자(정수, 음수, 소수)는 단답형 (예: 83, -12, 0.5)
+    if (/^-?\d+(\.\d+)?$/.test(target)) return false;
 
-  // 4. 서술/풀이 라벨(문제:, 정답:, 이므로, 따라서 등) 포함 시 서술형
-  if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) return true;
+    // 3. 소문항 패턴 ((1), (2), ①, ② 등) 포함 시 서술형
+    if (/\([1-9]\)|[①②③④⑤❶❷❸❹❺]|\[[1-9]\]|\b[1-9]\)/.test(rawAnswer)) return true;
 
-  // 5. 줄바꿈이 포함된 경우 서술형
-  if (/\r|\n/.test(rawAnswer)) return true;
+    // 4. 서술/풀이 라벨(문제:, 정답:, 이므로, 따라서 등) 포함 시 서술형
+    if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) return true;
 
-  // 6. 띄어쓰기가 포함된 경우 (선생님 요청 핵심 기준)
-  if (/\s+/.test(target)) return true;
+    // 5. 줄바꿈이 포함된 경우 서술형
+    if (/\r|\n/.test(rawAnswer)) return true;
 
-  // 7. 텍스트 길이가 12자 이상인 경우
-  if (target.length >= 12) return true;
+    // 6. 띄어쓰기가 포함된 경우 (선생님 요청 핵심 기준)
+    if (/\s+/.test(target)) return true;
 
-  return false;
-}
+    // 7. 텍스트 길이가 12자 이상인 경우
+    if (target.length >= 12) return true;
+
+    return false;
+  }
 
   if (rawAnswer) {
     // 객관식 번호(①~⑤ 또는 1~5) 추출 시도
@@ -182,9 +198,12 @@ function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
 
   return {
     imageUrl,
+    imageSource,
     rawAnswer: rawAnswer || "정답 정보 없음",
     answer: finalAns,
     is_descriptive: isDescriptive,
+    matchedRule,
+    rawHtmlSnippet,
   };
 }
 
@@ -206,7 +225,7 @@ export async function POST(req: NextRequest) {
       const chunkResults = await Promise.all(
         chunk.map(async (file: any, index: number) => {
           try {
-            const html = await fetchHtmlContent(file.drive_id);
+            const { html, fetchSource } = await fetchHtmlContent(file.drive_id);
             if (!html) {
               return {
                 id: `q_${file.drive_id}`,
@@ -215,15 +234,23 @@ export async function POST(req: NextRequest) {
                 image_url: file.question_image_drive_id ? `https://lh3.googleusercontent.com/d/${file.question_image_drive_id}` : "",
                 raw_answer: "",
                 answer: "",
+                is_descriptive: false,
                 solution_drive_id: file.drive_id,
                 status: "html_fetch_failed",
+                debug_info: {
+                  matched_rule: "HTML 불러오기 실패",
+                  image_source: "없음",
+                  raw_html_snippet: "HTML 본문을 가져오지 못했습니다.",
+                  fetch_source: fetchSource,
+                },
               };
             }
 
-            const { imageUrl, rawAnswer, answer, is_descriptive } = extractQuestionData(html, file);
+            const { imageUrl, imageSource, rawAnswer, answer, is_descriptive, matchedRule, rawHtmlSnippet } = extractQuestionData(html, file);
 
             // 이미지 URL이 없는데 동일 폴더에 png가 있는지 DB 조회 시도
             let finalImageUrl = imageUrl;
+            let finalImageSource = imageSource;
             if (!finalImageUrl) {
               const stem = file.name.replace(/\.[^/.]+$/, "");
               const { data: pngRecord } = await supabase
@@ -236,6 +263,7 @@ export async function POST(req: NextRequest) {
 
               if (pngRecord?.drive_id) {
                 finalImageUrl = `https://lh3.googleusercontent.com/d/${pngRecord.drive_id}`;
+                finalImageSource = "DB에서 일치하는 PNG 파일 조회 성공";
               }
             }
 
@@ -252,6 +280,12 @@ export async function POST(req: NextRequest) {
               is_descriptive: !!is_descriptive,
               solution_drive_id: file.drive_id,
               status: "success",
+              debug_info: {
+                matched_rule: matchedRule,
+                image_source: finalImageSource,
+                raw_html_snippet: rawHtmlSnippet,
+                fetch_source: fetchSource,
+              },
             };
           } catch (e: any) {
             console.error(`Error processing question ${file.name}:`, e);
@@ -268,6 +302,12 @@ export async function POST(req: NextRequest) {
               is_descriptive: false,
               solution_drive_id: file.drive_id,
               status: "error",
+              debug_info: {
+                matched_rule: "에러 발생",
+                image_source: "없음",
+                raw_html_snippet: `오류: ${e?.message || '알 수 없는 오류'}`,
+                fetch_source: "failed",
+              },
             };
           }
         })

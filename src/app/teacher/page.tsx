@@ -50,8 +50,26 @@ export default function TeacherAdminPage() {
   const [pendingGradingCount, setPendingGradingCount] = useState<number>(0);
   const [isNotificationHubOpen, setIsNotificationHubOpen] = useState<boolean>(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   const navRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseEnterDropdown = (groupId: string) => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setOpenDropdown(groupId);
+  };
+
+  const handleMouseLeaveDropdown = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+    }
+    closeTimerRef.current = setTimeout(() => {
+      setOpenDropdown(null);
+    }, 150);
+  };
 
   // 채점 대기 건수 확인
   const checkPendingGrading = async () => {
@@ -74,7 +92,10 @@ export default function TeacherAdminPage() {
 
     checkPendingGrading();
     const interval = setInterval(checkPendingGrading, 30000); // 30초마다 폴링
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
   }, []);
 
   // 드롭다운 외부 클릭 시 닫기
@@ -228,12 +249,15 @@ export default function TeacherAdminPage() {
                 <div 
                   key={group.id} 
                   className="relative"
-                  onMouseEnter={() => setOpenDropdown(group.id)}
-                  onMouseLeave={() => setOpenDropdown(null)}
+                  onMouseEnter={() => handleMouseEnterDropdown(group.id)}
+                  onMouseLeave={handleMouseLeaveDropdown}
                 >
                   <button
                     type="button"
-                    onClick={() => setOpenDropdown(isOpen ? null : group.id)}
+                    onClick={() => {
+                      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+                      setOpenDropdown(isOpen ? null : group.id);
+                    }}
                     className={`flex items-center gap-1.5 px-3 py-1.5 md:px-3.5 md:py-2 rounded-xl text-xs md:text-[13px] font-bold transition-all duration-150 whitespace-nowrap cursor-pointer ${
                       isChildActive
                         ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/70 font-black'
@@ -257,9 +281,9 @@ export default function TeacherAdminPage() {
                     )}
                   </button>
 
-                  {/* 드롭다운 플로팅 패널 */}
+                  {/* 드롭다운 플로팅 패널 (투명 가상 브릿지로 틈새 마우스 이탈 완전 방지) */}
                   {isOpen && (
-                    <div className="absolute top-full left-0 mt-1.5 w-60 bg-white rounded-2xl shadow-xl border border-slate-200/80 p-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                    <div className="absolute top-full left-0 mt-1.5 w-60 bg-white rounded-2xl shadow-xl border border-slate-200/80 p-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150 before:content-[''] before:absolute before:-top-3 before:left-0 before:w-full before:h-3">
                       <div className="space-y-1">
                         {group.children.map((sub) => {
                           const isSubActive = activeMenu === sub.id;
