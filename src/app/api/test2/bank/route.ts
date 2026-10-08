@@ -202,6 +202,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, message: "카테고리가 삭제되었습니다.", categories: updatedCategories });
     }
 
+    // 4. 아이템 순서 재배치 저장 (reorder_items)
+    if (action === "reorder_items") {
+      const { categoryId, orderedItemIds } = body;
+      if (!categoryId || !Array.isArray(orderedItemIds)) {
+        return NextResponse.json({ success: false, error: "categoryId와 orderedItemIds가 필요합니다." }, { status: 400 });
+      }
+
+      const itemMap = new Map(items.map((i) => [i.id, i]));
+      const otherCategoryItems = items.filter((i) => i.category_id !== categoryId);
+
+      const reorderedThisCategory: TestBankItem[] = [];
+      const seenIds = new Set<string>();
+
+      orderedItemIds.forEach((id: string) => {
+        const found = itemMap.get(id);
+        if (found && found.category_id === categoryId) {
+          reorderedThisCategory.push(found);
+          seenIds.add(id);
+        }
+      });
+
+      // 혹시 누락된 해당 카테고리 아이템이 있다면 뒤에 보존
+      items.filter((i) => i.category_id === categoryId && !seenIds.has(i.id)).forEach((item) => {
+        reorderedThisCategory.push(item);
+      });
+
+      const updatedItems = [...otherCategoryItems, ...reorderedThisCategory];
+      await saveItems(updatedItems);
+
+      return NextResponse.json({ success: true, message: "순서가 성공적으로 저장되었습니다.", items: updatedItems });
+    }
+
+    // 5. 복수 아이템 일괄 삭제 (delete_batch)
+    if (action === "delete_batch") {
+      const { itemIds } = body;
+      if (!Array.isArray(itemIds) || itemIds.length === 0) {
+        return NextResponse.json({ success: false, error: "삭제할 itemIds가 필요합니다." }, { status: 400 });
+      }
+
+      const deleteSet = new Set(itemIds);
+      const filtered = items.filter((i) => !deleteSet.has(i.id));
+      await saveItems(filtered);
+
+      return NextResponse.json({ success: true, message: `${itemIds.length}개 문제가 삭제되었습니다.`, items: filtered });
+    }
+
     return NextResponse.json({ success: false, error: "지원하지 않는 action입니다." }, { status: 400 });
   } catch (error: any) {
     console.error("Bank POST error:", error);

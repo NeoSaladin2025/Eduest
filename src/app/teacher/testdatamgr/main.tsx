@@ -14,6 +14,8 @@ import {
   CheckSquare, 
   Square, 
   ArrowRight, 
+  ArrowUp,
+  ArrowDown,
   Sparkles, 
   Loader2, 
   Check, 
@@ -46,6 +48,48 @@ export interface RawFileSelection {
   folder_path?: string;
   question_number?: number | null;
   display_name?: string;
+}
+
+// 자연어 및 소수점/숫자 스마트 정렬 헬퍼 (5.1 vs 5.2 vs 5.10 완벽 지원)
+export function compareNatural(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+export type GroupLevel = 'leaf' | 'parent1' | 'parent2';
+export type SortOption = 'folder_asc' | 'folder_desc' | 'custom';
+
+export interface BankItemGroup {
+  key: string;
+  title: string;
+  fullPath: string;
+  items: TestBankItem[];
+}
+
+// 다단계 폴더(최하위, 상위 1단계, 상위 2단계) 그룹 정보 파싱
+export function getItemGroupInfo(
+  item: TestBankItem,
+  level: GroupLevel
+): { groupKey: string; groupTitle: string; fullPath: string } {
+  const rawPath = item.folder_path || item.folder_name || '기타';
+  const segments = rawPath.split(/\s*>\s*/).filter(Boolean);
+
+  if (segments.length === 0) {
+    const name = item.folder_name || '기타';
+    return { groupKey: name, groupTitle: name, fullPath: name };
+  }
+
+  if (level === 'parent2' && segments.length >= 3) {
+    const title = segments[segments.length - 3];
+    const key = segments.slice(0, segments.length - 2).join(' > ');
+    return { groupKey: key, groupTitle: title, fullPath: rawPath };
+  } else if ((level === 'parent1' || level === 'parent2') && segments.length >= 2) {
+    const title = segments[segments.length - 2];
+    const key = segments.slice(0, segments.length - 1).join(' > ');
+    return { groupKey: key, groupTitle: title, fullPath: rawPath };
+  } else {
+    const title = segments[segments.length - 1];
+    return { groupKey: rawPath, groupTitle: title, fullPath: rawPath };
+  }
 }
 
 // 파일명에서 가장 마지막 연속된 숫자를 문항 번호로 파싱 (예: "0001.html" -> 1, "10차_05.html" -> 5)
@@ -102,10 +146,14 @@ export default function TestDataManagerMain() {
   // 🌟 폴더 체크박스 다중 선택 상태 (회차 폴더들 다중 선택용)
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
 
-  // 🌟 추출 번호 범위 리스트 상태 (시작번호 ~ 종료번호, +로 추가)
-  const [numberRanges, setNumberRanges] = useState<NumberRange[]>([
-    { id: '1', start: '1', end: '10' },
-  ]);
+  // 🌟 추출 번호 범위 리스트 상태 (시작번호 ~ 종료번호, +로 추가. 기본값은 비어있음 -> 전체 문항 추출)
+  const [numberRanges, setNumberRanges] = useState<NumberRange[]>([]);
+
+  // 🌟 시험 DB 정렬 및 묶음 상태
+  const [sortOption, setSortOption] = useState<SortOption>('folder_asc');
+  const [groupLevel, setGroupLevel] = useState<GroupLevel>('leaf');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [isReordering, setIsReordering] = useState(false);
 
   // 개별 파일 직접 체크 선택 상태 (기존 방식 지원)
   const [selectedRawFiles, setSelectedRawFiles] = useState<RawFileSelection[]>([]);
@@ -387,12 +435,13 @@ export default function TestDataManagerMain() {
     setSelectedFolderIds(new Set());
   };
 
-  // 🌟 추출 번호 범위 관리 함수들
+  // 🌟 추출 번호 범위 관리 함수들 (비어있으면 전체 문제 추출)
   const addNumberRange = () => {
-    setNumberRanges(prev => [
-      ...prev,
-      { id: String(Date.now()), start: '', end: '' }
-    ]);
+    setNumberRanges(prev => {
+      const nextStart = prev.length === 0 ? '1' : '';
+      const nextEnd = prev.length === 0 ? '10' : '';
+      return [...prev, { id: String(Date.now()), start: nextStart, end: nextEnd }];
+    });
   };
 
   const updateNumberRange = (id: string, field: 'start' | 'end', val: string) => {
@@ -400,11 +449,7 @@ export default function TestDataManagerMain() {
   };
 
   const removeNumberRange = (id: string) => {
-    if (numberRanges.length <= 1) {
-      setNumberRanges([{ id: '1', start: '', end: '' }]);
-    } else {
-      setNumberRanges(prev => prev.filter(r => r.id !== id));
-    }
+    setNumberRanges(prev => prev.filter(r => r.id !== id));
   };
 
   // 🌟 실시간 매칭 문항 수집 (선택된 폴더 + 번호 범위에 매칭되는 문제들)
@@ -459,15 +504,17 @@ export default function TestDataManagerMain() {
     };
 
     traverse(rawTree, []);
-    // 회차 오름차순, 문항 번호 오름차순으로 안정 정렬
+    // 🌟 폴더 경로 우선 자연어 정렬 후, 동일 폴더 내에서는 문항 번호 오름차순으로 안정 정렬
     results.sort((a, b) => {
-      const rA = parseRoundNumber(a.folder_name);
-      const rB = parseRoundNumber(b.folder_name);
-      if (rA !== rB) return rA - rB;
+      const pathA = a.folder_path || a.folder_name || '';
+      const pathB = b.folder_path || b.folder_name || '';
+      if (pathA !== pathB) {
+        return compareNatural(pathA, pathB);
+      }
       const qA = a.question_number ?? 999999;
       const qB = b.question_number ?? 999999;
       if (qA !== qB) return qA - qB;
-      return a.name.localeCompare(b.name, undefined, { numeric: true });
+      return compareNatural(a.name, b.name);
     });
     return results;
   }, [rawTree, selectedFolderIds, numberRanges, selectedGrade]);
@@ -707,20 +754,147 @@ export default function TestDataManagerMain() {
     }
   };
 
-  // 현재 선택된 카테고리의 아이템 목록 (회차 오름차순, 문항 번호 오름차순 정렬)
+  // 현재 선택된 카테고리의 아이템 목록
   const currentCategoryItems = useMemo(() => {
     if (!selectedCategoryId) return [];
-    const items = bankItems.filter(item => item.category_id === selectedCategoryId);
-    return [...items].sort((a, b) => {
-      const rA = parseRoundNumber(a.folder_name);
-      const rB = parseRoundNumber(b.folder_name);
-      if (rA !== rB) return rA - rB;
-      const qA = a.question_number ?? parseQuestionNum(a.name) ?? 999999;
-      const qB = b.question_number ?? parseQuestionNum(b.name) ?? 999999;
-      if (qA !== qB) return qA - qB;
-      return a.name.localeCompare(b.name, undefined, { numeric: true });
-    });
+    return bankItems.filter(item => item.category_id === selectedCategoryId);
   }, [bankItems, selectedCategoryId]);
+
+  // 🌟 폴더별 다단계 묶음 및 정렬된 그룹 목록
+  const groupedCategoryItems = useMemo(() => {
+    let items = [...currentCategoryItems];
+
+    if (sortOption === 'folder_asc') {
+      items.sort((a, b) => {
+        const pathA = a.folder_path || a.folder_name || '';
+        const pathB = b.folder_path || b.folder_name || '';
+        if (pathA !== pathB) {
+          return compareNatural(pathA, pathB);
+        }
+        const qA = a.question_number ?? parseQuestionNum(a.name) ?? 999999;
+        const qB = b.question_number ?? parseQuestionNum(b.name) ?? 999999;
+        if (qA !== qB) return qA - qB;
+        return compareNatural(a.name, b.name);
+      });
+    } else if (sortOption === 'folder_desc') {
+      items.sort((a, b) => {
+        const pathA = a.folder_path || a.folder_name || '';
+        const pathB = b.folder_path || b.folder_name || '';
+        if (pathA !== pathB) {
+          return compareNatural(pathB, pathA);
+        }
+        const qA = a.question_number ?? parseQuestionNum(a.name) ?? 999999;
+        const qB = b.question_number ?? parseQuestionNum(b.name) ?? 999999;
+        if (qA !== qB) return qA - qB;
+        return compareNatural(a.name, b.name);
+      });
+    }
+    // sortOption === 'custom'인 경우 기존 배열 순서 그대로 유지!
+
+    const groups: BankItemGroup[] = [];
+    const groupMap = new Map<string, BankItemGroup>();
+
+    items.forEach(item => {
+      const { groupKey, groupTitle, fullPath } = getItemGroupInfo(item, groupLevel);
+      let g = groupMap.get(groupKey);
+      if (!g) {
+        g = {
+          key: groupKey,
+          title: groupTitle,
+          fullPath,
+          items: [],
+        };
+        groupMap.set(groupKey, g);
+        groups.push(g);
+      }
+      g.items.push(item);
+    });
+
+    return groups;
+  }, [currentCategoryItems, sortOption, groupLevel]);
+
+  // 🌟 폴더 블록 단위 위/아래 이동
+  const handleMoveGroup = async (groupIndex: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? groupIndex - 1 : groupIndex + 1;
+    if (targetIndex < 0 || targetIndex >= groupedCategoryItems.length) return;
+
+    const newGroups = [...groupedCategoryItems];
+    const temp = newGroups[groupIndex];
+    newGroups[groupIndex] = newGroups[targetIndex];
+    newGroups[targetIndex] = temp;
+
+    const reorderedCatItems = newGroups.flatMap(g => g.items);
+
+    // 로컬 상태 즉시 반영 & 정렬 옵션을 'custom'으로 전환
+    setBankItems(prev => {
+      const others = prev.filter(i => i.category_id !== selectedCategoryId);
+      return [...others, ...reorderedCatItems];
+    });
+    setSortOption('custom');
+
+    // Supabase 영구 저장
+    if (selectedCategoryId) {
+      try {
+        setIsReordering(true);
+        await fetch('/api/test2/bank', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'reorder_items',
+            categoryId: selectedCategoryId,
+            orderedItemIds: reorderedCatItems.map(i => i.id),
+          }),
+        });
+      } catch (e) {
+        console.error('Failed to save reordered items:', e);
+      } finally {
+        setIsReordering(false);
+      }
+    }
+  };
+
+  // 🌟 그룹 아코디언 토글
+  const toggleGroupCollapse = (groupKey: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
+
+  const handleToggleAllGroups = () => {
+    if (collapsedGroups.size > 0) {
+      setCollapsedGroups(new Set()); // 모두 펼치기
+    } else {
+      setCollapsedGroups(new Set(groupedCategoryItems.map(g => g.key))); // 모두 접기
+    }
+  };
+
+  // 🌟 폴더 그룹 내 전체 문제 일괄 삭제
+  const handleDeleteGroupItems = async (group: BankItemGroup) => {
+    if (!confirm(`'${group.title}' 폴더의 모든 문제 (${group.items.length}개)를 카테고리에서 삭제하시겠습니까?`)) {
+      return;
+    }
+
+    const idsToDelete = new Set(group.items.map(i => i.id));
+    setBankItems(prev => prev.filter(i => !idsToDelete.has(i.id)));
+
+    if (selectedCategoryId) {
+      try {
+        await fetch('/api/test2/bank', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'delete_batch',
+            itemIds: group.items.map(i => i.id),
+          }),
+        });
+      } catch (e) {
+        console.error('Failed to delete group items:', e);
+      }
+    }
+  };
 
   const activeCategory = useMemo(() => {
     return categories.find(c => c.id === selectedCategoryId) || null;
@@ -1064,49 +1238,56 @@ export default function TestDataManagerMain() {
             </div>
 
             <div className="flex items-center gap-2.5 flex-wrap">
-              {numberRanges.map((range, idx) => (
-                <div
-                  key={range.id}
-                  className="flex items-center gap-1.5 bg-white border border-indigo-200 px-3 py-1.5 rounded-2xl shadow-2xs group"
-                >
-                  <span className="text-[11px] font-bold text-slate-400">구간 {idx + 1}:</span>
-                  <input
-                    type="number"
-                    min="1"
-                    placeholder="시작"
-                    value={range.start}
-                    onChange={e => updateNumberRange(range.id, 'start', e.target.value)}
-                    className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
-                  />
-                  <span className="text-xs font-black text-slate-400">~</span>
-                  <input
-                    type="number"
-                    min="1"
-                    placeholder="종료"
-                    value={range.end}
-                    onChange={e => updateNumberRange(range.id, 'end', e.target.value)}
-                    className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
-                  />
-                  <span className="text-xs font-bold text-slate-600">번</span>
-
-                  <button
-                    type="button"
-                    onClick={() => removeNumberRange(range.id)}
-                    className="ml-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-colors"
-                    title="이 구간 삭제"
-                  >
-                    ✕
-                  </button>
+              {numberRanges.length === 0 ? (
+                <div className="flex items-center gap-2 px-3.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs font-bold text-emerald-700 shadow-2xs">
+                  <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+                  <span>전체 문항 추출 모드 (선택된 폴더의 모든 번호가 일괄 추출됩니다)</span>
                 </div>
-              ))}
+              ) : (
+                numberRanges.map((range, idx) => (
+                  <div
+                    key={range.id}
+                    className="flex items-center gap-1.5 bg-white border border-indigo-200 px-3 py-1.5 rounded-2xl shadow-2xs group"
+                  >
+                    <span className="text-[11px] font-bold text-slate-400">구간 {idx + 1}:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="시작"
+                      value={range.start}
+                      onChange={e => updateNumberRange(range.id, 'start', e.target.value)}
+                      className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
+                    />
+                    <span className="text-xs font-black text-slate-400">~</span>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="종료"
+                      value={range.end}
+                      onChange={e => updateNumberRange(range.id, 'end', e.target.value)}
+                      className="w-14 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-center font-black text-indigo-700 text-xs focus:outline-none focus:border-indigo-600 focus:bg-white transition-colors"
+                    />
+                    <span className="text-xs font-bold text-slate-600">번</span>
+
+                    <button
+                      type="button"
+                      onClick={() => removeNumberRange(range.id)}
+                      className="ml-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-colors cursor-pointer"
+                      title="이 구간 삭제 (전체 추출 모드로 복귀)"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
 
               <button
                 type="button"
                 onClick={addNumberRange}
-                className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-dashed border-indigo-300 rounded-2xl text-xs font-black transition-all flex items-center gap-1 shadow-2xs"
+                className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-dashed border-indigo-300 rounded-2xl text-xs font-black transition-all flex items-center gap-1 shadow-2xs cursor-pointer"
               >
                 <Plus size={14} strokeWidth={3} />
-                구간 추가
+                <span>{numberRanges.length === 0 ? '번호 구간 설정' : '구간 추가'}</span>
               </button>
             </div>
           </div>
@@ -1365,15 +1546,74 @@ export default function TestDataManagerMain() {
 
           {/* 🌟 선택된 카테고리에 등록된 시험 문제 리스트 (회차 정보 및 문항 번호 강조 표시) */}
           <div className="flex-1 flex flex-col space-y-3">
-            <div className="flex items-center justify-between text-xs text-slate-500 font-bold px-1">
-              <span className="flex items-center gap-1.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-600 font-bold px-1">
+              <span className="flex items-center gap-1.5 flex-wrap">
                 <span>등록된 문제 ({currentCategoryItems.length}개)</span>
                 {activeCategory && <span className="text-indigo-600 font-black">[{activeCategory.name}]</span>}
+                {isReordering && (
+                  <span className="flex items-center gap-1 text-[11px] text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 animate-pulse">
+                    <Loader2 size={10} className="animate-spin" /> 순서 저장 중...
+                  </span>
+                )}
               </span>
               <span className="text-[11px] text-slate-400">* [테스트 관리] 시험지 제작 시 라이브러리에 연동됩니다</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto max-h-[420px] space-y-2 pr-1 scrollbar-thin">
+            {/* 🌟 신규 컨트롤 툴바: 정렬 기준 / 묶음 단위 / 모두 접기&펼치기 */}
+            {currentCategoryItems.length > 0 && (
+              <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* 정렬 셀렉트 */}
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 px-2.5 py-1.5 rounded-xl shadow-2xs">
+                    <span className="text-[11px] text-slate-400 font-bold">정렬:</span>
+                    <select
+                      value={sortOption}
+                      onChange={e => setSortOption(e.target.value as SortOption)}
+                      className="bg-transparent font-black text-slate-700 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="folder_asc">📁 폴더명 오름차순 (5.1 → 5.10)</option>
+                      <option value="folder_desc">📁 폴더명 내림차순 (5.10 → 5.1)</option>
+                      <option value="custom">✋ 사용자 직접 배치 순서</option>
+                    </select>
+                  </div>
+
+                  {/* 묶음 단위 셀렉트 (얼터너티브 다단계) */}
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 px-2.5 py-1.5 rounded-xl shadow-2xs">
+                    <span className="text-[11px] text-slate-400 font-bold">묶음 기준:</span>
+                    <select
+                      value={groupLevel}
+                      onChange={e => setGroupLevel(e.target.value as GroupLevel)}
+                      className="bg-transparent font-black text-indigo-700 text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="leaf">📂 최하위 폴더 (소단원 / 회차)</option>
+                      <option value="parent1">📁 바로 위 1단계 (단원)</option>
+                      <option value="parent2">🏢 그 위 2단계 (교재 / 출판사)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* 모두 접기 / 펼치기 버튼 */}
+                <button
+                  type="button"
+                  onClick={handleToggleAllGroups}
+                  className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-xl text-[11px] font-bold transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+                >
+                  {collapsedGroups.size > 0 ? (
+                    <>
+                      <FolderOpen size={12} className="text-indigo-600" />
+                      <span>모두 펼치기</span>
+                    </>
+                  ) : (
+                    <>
+                      <Folder size={12} className="text-slate-500" />
+                      <span>모두 접기</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto max-h-[440px] space-y-3 pr-1 scrollbar-thin">
               {currentCategoryItems.length === 0 ? (
                 <div className="py-20 text-center text-xs text-slate-400 space-y-2">
                   <CheckSquare size={28} className="mx-auto opacity-30" />
@@ -1383,115 +1623,182 @@ export default function TestDataManagerMain() {
                   </p>
                 </div>
               ) : (
-                currentCategoryItems.map((item, idx) => {
-                  const fallbackNum = parseQuestionNum(item.name);
-                  const displayNum = item.question_number ?? fallbackNum;
+                groupedCategoryItems.map((group, groupIdx) => {
+                  const isCollapsed = collapsedGroups.has(group.key);
 
                   return (
                     <div
-                      key={item.id}
-                      className="flex items-center justify-between p-3 rounded-2xl border border-slate-200 bg-white hover:bg-indigo-50/40 transition-colors text-xs shadow-2xs group"
+                      key={group.key}
+                      className="rounded-2xl border border-slate-200/90 bg-white overflow-hidden shadow-2xs transition-all"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                        {/* 번호 인덱스 */}
-                        <span className="w-6 h-6 rounded-lg bg-slate-100 text-slate-600 font-black flex items-center justify-center text-[11px] shrink-0 border border-slate-200">
-                          {idx + 1}
-                        </span>
+                      {/* 🗂️ 폴더 그룹 헤더 카드 (순서 이동 버튼 포함) */}
+                      <div className="flex items-center justify-between p-2.5 sm:p-3 bg-gradient-to-r from-slate-50/90 via-indigo-50/30 to-slate-50/90 border-b border-slate-100">
+                        <div
+                          className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer select-none"
+                          onClick={() => toggleGroupCollapse(group.key)}
+                        >
+                          <div className="w-5 h-5 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 shadow-2xs shrink-0">
+                            {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                          </div>
 
-                        {/* 🌟 회차 정보 배지 (가장 중요!) */}
-                        {item.folder_name ? (
-                          <span className="px-2.5 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-black shrink-0 flex items-center gap-1 shadow-2xs">
-                            <Folder size={12} className="text-indigo-600" />
-                            <span>{item.folder_name}</span>
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {isCollapsed ? (
+                              <Folder size={15} className="text-slate-400 shrink-0" />
+                            ) : (
+                              <FolderOpen size={15} className="text-indigo-600 shrink-0" />
+                            )}
+                            <span className="font-black text-slate-800 text-xs truncate">
+                              {group.title}
+                            </span>
+                            {group.fullPath && group.fullPath !== group.title && (
+                              <span className="text-[10px] text-slate-400 truncate hidden md:inline" title={group.fullPath}>
+                                ({group.fullPath})
+                              </span>
+                            )}
+                          </div>
+
+                          <span className="px-2 py-0.5 bg-indigo-100/80 text-indigo-700 border border-indigo-200/80 rounded-full text-[10px] font-black shrink-0">
+                            {group.items.length}문제
                           </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-slate-100 text-slate-400 rounded-md text-[10px] shrink-0">
-                            회차 미지정
-                          </span>
-                        )}
+                        </div>
 
-                        {/* 🌟 문제 번호 배지 */}
-                        {displayNum ? (
-                          <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
-                            {displayNum}번
-                          </span>
-                        ) : null}
+                        {/* 🌟 폴더 블록 단위 위/아래 이동 및 일괄 삭제 */}
+                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                          <button
+                            type="button"
+                            onClick={() => handleMoveGroup(groupIdx, 'up')}
+                            disabled={groupIdx === 0}
+                            className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30 disabled:hover:bg-white disabled:hover:text-slate-600 transition-colors cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                            title="폴더 블록을 위로 이동"
+                          >
+                            <ArrowUp size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleMoveGroup(groupIdx, 'down')}
+                            disabled={groupIdx === groupedCategoryItems.length - 1}
+                            className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 disabled:opacity-30 disabled:hover:bg-white disabled:hover:text-slate-600 transition-colors cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                            title="폴더 블록을 아래로 이동"
+                          >
+                            <ArrowDown size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGroupItems(group)}
+                            className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors ml-0.5 cursor-pointer"
+                            title="이 폴더의 문제 일괄 제거"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
 
-                        {/* 파일명 */}
-                        <span className="font-bold text-slate-700 truncate">
-                          {item.name}
-                        </span>
+                      {/* 📄 폴더 내 문제 아이템 목록 */}
+                      {!isCollapsed && (
+                        <div className="p-2 space-y-1.5 bg-white">
+                          {group.items.map((item, itemIdx) => {
+                            const fallbackNum = parseQuestionNum(item.name);
+                            const displayNum = item.question_number ?? fallbackNum;
 
-                        {/* 👯 쌍둥이 보유 배지 & 미리보기 드롭다운 */}
-                        {(() => {
-                          const bankTwins = getBankItemTwins(item);
-                          const isDropdownOpen = activeTwinDropdown?.folderId === `bank_${item.id}` && activeTwinDropdown?.qNum === (displayNum || 0);
-
-                          if (bankTwins.length === 0) return null;
-                          return (
-                            <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: `bank_${item.id}`, qNum: displayNum || 0 })}
-                                className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
-                                title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                            return (
+                              <div
+                                key={item.id}
+                                className="flex items-center justify-between p-2 rounded-xl border border-slate-100 bg-slate-50/40 hover:bg-indigo-50/50 hover:border-indigo-100 transition-colors text-xs group"
                               >
-                                <span>👯 쌍둥이 {bankTwins.length}개</span>
-                                <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
-                              </button>
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  {/* 번호 인덱스 */}
+                                  <span className="w-5 h-5 rounded-md bg-white text-slate-500 font-bold flex items-center justify-center text-[10px] shrink-0 border border-slate-200">
+                                    {itemIdx + 1}
+                                  </span>
 
-                              {isDropdownOpen && (
-                                <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
-                                  <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
-                                    <span>쌍둥이 문제 회차</span>
-                                    <span className="text-purple-600">{bankTwins.length}개 보유</span>
-                                  </div>
-                                  {bankTwins.map(tw => (
-                                    <button
-                                      key={tw.roundName}
-                                      type="button"
-                                      onClick={() => {
-                                        setActiveTwinDropdown(null);
-                                        handleOpenPreview(tw.item.drive_id);
-                                      }}
-                                      className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group"
-                                    >
-                                      <span>[{tw.roundName} 쌍둥이]</span>
-                                      <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
-                                        <Eye size={11} /> 열기
-                                      </span>
-                                    </button>
-                                  ))}
+                                  {/* 회차 정보 배지 */}
+                                  {item.folder_name && item.folder_name !== group.title ? (
+                                    <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-black shrink-0 flex items-center gap-0.5">
+                                      <Folder size={10} className="text-indigo-600" />
+                                      <span>{item.folder_name}</span>
+                                    </span>
+                                  ) : null}
+
+                                  {/* 문제 번호 배지 */}
+                                  {displayNum ? (
+                                    <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
+                                      {displayNum}번
+                                    </span>
+                                  ) : null}
+
+                                  {/* 파일명 */}
+                                  <span className="font-bold text-slate-700 truncate">
+                                    {item.name}
+                                  </span>
+
+                                  {/* 쌍둥이 배지 & 미리보기 드롭다운 */}
+                                  {(() => {
+                                    const bankTwins = getBankItemTwins(item);
+                                    const isDropdownOpen = activeTwinDropdown?.folderId === `bank_${item.id}` && activeTwinDropdown?.qNum === (displayNum || 0);
+
+                                    if (bankTwins.length === 0) return null;
+                                    return (
+                                      <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
+                                        <button
+                                          type="button"
+                                          onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: `bank_${item.id}`, qNum: displayNum || 0 })}
+                                          className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                                          title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                                        >
+                                          <span>👯 쌍둥이 {bankTwins.length}개</span>
+                                          <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+                                        </button>
+
+                                        {isDropdownOpen && (
+                                          <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
+                                            <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
+                                              <span>쌍둥이 문제 회차</span>
+                                              <span className="text-purple-600">{bankTwins.length}개 보유</span>
+                                            </div>
+                                            {bankTwins.map(tw => (
+                                              <button
+                                                key={tw.roundName}
+                                                type="button"
+                                                onClick={() => {
+                                                  setActiveTwinDropdown(null);
+                                                  handleOpenPreview(tw.item.drive_id);
+                                                }}
+                                                className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group cursor-pointer"
+                                              >
+                                                <span>[{tw.roundName} 쌍둥이]</span>
+                                                <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
+                                                  <Eye size={11} /> 열기
+                                                </span>
+                                              </button>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        })()}
 
-                        {/* 상위 경로 보조 표시 (툴팁) */}
-                        {item.folder_path && (
-                          <span className="text-[10px] text-slate-400 truncate hidden xl:inline" title={item.folder_path}>
-                            ({item.folder_path})
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1 shrink-0 ml-2">
-                        <button
-                          onClick={() => handleOpenPreview(item.drive_id)}
-                          className="px-2.5 py-1.5 bg-slate-50 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1"
-                        >
-                          <Eye size={12} />
-                          보기
-                        </button>
-                        <button
-                          onClick={() => handleDeleteBankItem(item)}
-                          className="p-1.5 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-xl transition-colors ml-0.5"
-                          title="카테고리에서 제거"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
+                                <div className="flex items-center gap-1 shrink-0 ml-2">
+                                  <button
+                                    onClick={() => handleOpenPreview(item.drive_id)}
+                                    className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                  >
+                                    <Eye size={11} />
+                                    보기
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteBankItem(item)}
+                                    className="p-1 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+                                    title="카테고리에서 제거"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })
