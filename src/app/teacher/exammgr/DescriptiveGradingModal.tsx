@@ -15,7 +15,8 @@ import {
   Loader2,
   ExternalLink,
   ChevronRight,
-  FileQuestion
+  FileQuestion,
+  FileText
 } from 'lucide-react';
 
 export interface PendingGradingItem {
@@ -35,6 +36,7 @@ export interface PendingGradingItem {
   points: number;
   submitted_at: string;
   proof_image_url?: string;
+  is_direct_paper?: boolean;
 }
 
 interface DescriptiveGradingModalProps {
@@ -204,9 +206,16 @@ export default function DescriptiveGradingModal({
                         <User size={13} className="text-violet-600" />
                         <span>{it.student_name}</span>
                       </div>
-                      <span className="px-1.5 py-0.5 rounded-md bg-violet-100 text-violet-800 font-black text-[10px]">
-                        문항 {it.question_number}번
-                      </span>
+                      <div className="flex items-center gap-1">
+                        {(it.is_direct_paper || it.user_answer === '__DIRECT_PAPER__') && (
+                          <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 font-black text-[10px] flex items-center gap-0.5">
+                            <FileText size={10} /> 종이
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded-md bg-violet-100 text-violet-800 font-black text-[10px]">
+                          문항 {it.question_number}번
+                        </span>
+                      </div>
                     </div>
 
                     <p className="text-[11px] text-slate-500 truncate font-medium" title={it.exam_title}>
@@ -288,7 +297,19 @@ export default function DescriptiveGradingModal({
                     </div>
 
                     <div className="p-3.5 bg-white rounded-xl border border-indigo-100 text-slate-900 font-black text-sm whitespace-pre-wrap leading-relaxed shadow-2xs">
-                      {currentItem.user_answer ? currentItem.user_answer : (
+                      {currentItem.is_direct_paper || currentItem.user_answer === '__DIRECT_PAPER__' ? (
+                        <div className="flex items-start gap-2.5 text-amber-800 bg-amber-50 p-3 rounded-lg border border-amber-200">
+                          <FileText size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-black text-xs text-amber-900">📄 종이 시험지 직접 제출</div>
+                            <div className="text-[11px] text-amber-700 font-normal mt-0.5 leading-relaxed">
+                              학생이 실물 시험지를 직접 제출했습니다. 종이 시험지의 풀이를 확인 후 아래에서 정답 인정 또는 오답 확정을 선택하세요.
+                            </div>
+                          </div>
+                        </div>
+                      ) : currentItem.user_answer ? (
+                        currentItem.user_answer
+                      ) : (
                         <span className="text-slate-400 italic font-normal">(제출된 텍스트 답안 없음)</span>
                       )}
                     </div>

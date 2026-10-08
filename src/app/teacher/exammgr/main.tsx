@@ -33,9 +33,12 @@ import {
   RotateCcw,
   RotateCw,
   BookOpen,
-  Filter
+  Filter,
+  Lock,
+  Unlock,
+  Camera
 } from 'lucide-react';
-import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
+import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
 import { TwinStoreData, TwinQuestionItem } from '@/lib/twinTypes';
@@ -113,6 +116,41 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [examGrade, setExamGrade] = useState('고1');
   const [examDuration, setExamDuration] = useState(50);
   const [isNoTimeLimit, setIsNoTimeLimit] = useState(false);
+
+  // ── [신규] 화면 이탈 방지(잠금) 및 풀이 인증샷 기본값 & 디폴트 기억 상태 ──
+  const [examEnableLockdown, setExamEnableLockdown] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('eduest_pref_lockdown') === 'true';
+    }
+    return false; // 기본 OFF (자율 응시)
+  });
+  const [examRequireProof, setExamRequireProof] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('eduest_pref_proof') === 'true';
+    }
+    return false; // 기본 OFF
+  });
+  const [rememberPreference, setRememberPreference] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('eduest_pref_remember');
+      return saved === null ? true : saved === 'true';
+    }
+    return true; // 기본값 기억 활성화
+  });
+
+  const handleUpdateLockdownPref = (newVal: boolean) => {
+    setExamEnableLockdown(newVal);
+    if (rememberPreference && typeof window !== 'undefined') {
+      localStorage.setItem('eduest_pref_lockdown', String(newVal));
+    }
+  };
+
+  const handleUpdateProofPref = (newVal: boolean) => {
+    setExamRequireProof(newVal);
+    if (rememberPreference && typeof window !== 'undefined') {
+      localStorage.setItem('eduest_pref_proof', String(newVal));
+    }
+  };
   
   // 선택된 문제들 (바구니)
   const [selectedFiles, setSelectedFiles] = useState<{
@@ -148,6 +186,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   // 학생 배정 수정 모달
   const [assignModalExam, setAssignModalExam] = useState<ExamPaper | null>(null);
   const [modalAssignedIds, setModalAssignedIds] = useState<string[]>([]);
+  const [modalStudentOverrides, setModalStudentOverrides] = useState<Record<string, StudentOverrideConfig>>({});
   const [modalSaving, setModalSaving] = useState(false);
 
   // 응시 결과 현황 모달
@@ -644,9 +683,77 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const handleToggleQuestionDescriptive = (qIndex: number) => {
     setExtractedQuestions(prev => {
       const next = [...prev];
+      const isDesc = !next[qIndex].is_descriptive;
       next[qIndex] = {
         ...next[qIndex],
-        is_descriptive: !next[qIndex].is_descriptive,
+        is_descriptive: isDesc,
+        question_type: isDesc ? 'DESCRIPTIVE' : (/^[1-5]$/.test(next[qIndex].answer) ? 'MULTIPLE' : 'SHORT'),
+      };
+      return next;
+    });
+  };
+
+  // 문항 유형 직접 변경 ('MULTIPLE' | 'SHORT' | 'DESCRIPTIVE')
+  const handleChangeQuestionType = (qIndex: number, newType: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE') => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      next[qIndex] = {
+        ...next[qIndex],
+        question_type: newType,
+        is_descriptive: newType === 'DESCRIPTIVE',
+      };
+      return next;
+    });
+  };
+
+  // 소문항 추가
+  const handleAddSubQuestion = (qIndex: number) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      const currentSubs = next[qIndex].sub_questions || [];
+      const nextNum = currentSubs.length + 1;
+      const newSub: ExamSubQuestion = {
+        label: `(${nextNum})`,
+        answer: '',
+      };
+      const updatedSubs = [...currentSubs, newSub];
+      next[qIndex] = {
+        ...next[qIndex],
+        sub_questions: updatedSubs,
+        question_type: next[qIndex].question_type === 'MULTIPLE' ? 'SHORT' : next[qIndex].question_type,
+      };
+      return next;
+    });
+  };
+
+  // 소문항 수정
+  const handleUpdateSubQuestion = (qIndex: number, subIndex: number, field: 'label' | 'answer', val: string) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      const subs = [...(next[qIndex].sub_questions || [])];
+      if (subs[subIndex]) {
+        subs[subIndex] = {
+          ...subs[subIndex],
+          [field]: val,
+        };
+      }
+      next[qIndex] = {
+        ...next[qIndex],
+        sub_questions: subs,
+      };
+      return next;
+    });
+  };
+
+  // 소문항 삭제
+  const handleRemoveSubQuestion = (qIndex: number, subIndex: number) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      const subs = [...(next[qIndex].sub_questions || [])];
+      subs.splice(subIndex, 1);
+      next[qIndex] = {
+        ...next[qIndex],
+        sub_questions: subs.length > 0 ? subs : undefined,
       };
       return next;
     });
@@ -700,6 +807,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           duration_min: isNoTimeLimit ? 0 : Math.max(0, examDuration),
           questions: extractedQuestions,
           assigned_student_ids: assignedStudentIds,
+          enable_lockdown: examEnableLockdown,
+          require_proof_image: examRequireProof,
         }),
       });
 
@@ -744,10 +853,53 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
+  // 시험지 이탈 잠금 모드 원클릭 토글
+  const handleToggleExamLockdown = async (exam: ExamPaper) => {
+    const nextVal = !exam.enable_lockdown;
+    try {
+      const res = await fetch('/api/test2/exam', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: exam.id,
+          enable_lockdown: nextVal,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExams(prev => prev.map(e => e.id === exam.id ? { ...e, enable_lockdown: nextVal } : e));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // 풀이 인증샷 필수 여부 원클릭 토글
+  const handleToggleExamProof = async (exam: ExamPaper) => {
+    const nextVal = !exam.require_proof_image;
+    try {
+      const res = await fetch('/api/test2/exam', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: exam.id,
+          require_proof_image: nextVal,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExams(prev => prev.map(e => e.id === exam.id ? { ...e, require_proof_image: nextVal } : e));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // 배정 모달 열기
   const handleOpenAssignModal = (exam: ExamPaper) => {
     setAssignModalExam(exam);
     setModalAssignedIds(exam.assigned_student_ids || []);
+    setModalStudentOverrides(exam.student_overrides || {});
   };
 
   // 배정 모달 저장
@@ -761,12 +913,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         body: JSON.stringify({
           examId: assignModalExam.id,
           assigned_student_ids: modalAssignedIds,
+          student_overrides: modalStudentOverrides,
         }),
       });
       const data = await res.json();
       if (data.success) {
         setExams(prev =>
-          prev.map(e => (e.id === assignModalExam.id ? { ...e, assigned_student_ids: modalAssignedIds } : e))
+          prev.map(e => (e.id === assignModalExam.id ? { ...e, assigned_student_ids: modalAssignedIds, student_overrides: modalStudentOverrides } : e))
         );
         alert('학생 배정이 업데이트되었습니다.');
         setAssignModalExam(null);
@@ -1306,8 +1459,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     <div className="space-y-4">
                       {/* 카드 상단 배지 */}
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`px-3 py-1 border text-[11px] font-black rounded-lg ${
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`px-2.5 py-1 border text-[11px] font-black rounded-lg ${
                             isWrong
                               ? 'bg-rose-50 text-rose-700 border-rose-200'
                               : 'bg-violet-50 text-violet-700 border border-violet-200'
@@ -1315,13 +1468,43 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             {exam.grade}
                           </span>
                           {isWrong && (
-                            <span className="px-2.5 py-0.5 bg-rose-500 text-white text-[10px] font-black rounded-md flex items-center gap-1">
+                            <span className="px-2 py-0.5 bg-rose-500 text-white text-[10px] font-black rounded-md flex items-center gap-1">
                               <RotateCcw size={10} />
-                              오답 클리닉
+                              오답
                             </span>
                           )}
+
+                          {/* 🔒 이탈 잠금 모드 원클릭 토글 */}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleToggleExamLockdown(exam); }}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-black border flex items-center gap-1 transition-all cursor-pointer ${
+                              exam.enable_lockdown
+                                ? 'bg-violet-600 text-white border-violet-700 shadow-2xs'
+                                : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+                            }`}
+                            title={exam.enable_lockdown ? '화면 이탈 잠금 ON (클릭 시 자율 응시로 전환)' : '화면 이탈 잠금 OFF (클릭 시 잠금 모드로 전환)'}
+                          >
+                            {exam.enable_lockdown ? <Lock size={10} /> : <Unlock size={10} />}
+                            <span>{exam.enable_lockdown ? '잠금 ON' : '잠금 OFF'}</span>
+                          </button>
+
+                          {/* 📷 풀이 인증샷 원클릭 토글 */}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleToggleExamProof(exam); }}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-black border flex items-center gap-1 transition-all cursor-pointer ${
+                              exam.require_proof_image
+                                ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-2xs font-extrabold'
+                                : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+                            }`}
+                            title={exam.require_proof_image ? '풀이 인증샷 필수 ON (클릭 시 OFF 전환)' : '풀이 인증샷 OFF (클릭 시 필수 인증으로 전환)'}
+                          >
+                            <Camera size={10} />
+                            <span>{exam.require_proof_image ? '인증 ON' : '인증 OFF'}</span>
+                          </button>
                         </div>
-                        <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold">
+                        <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold shrink-0">
                           <Clock size={14} />
                           <span>{exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}</span>
                         </div>
@@ -1486,6 +1669,69 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   />
                 )}
               </div>
+            </div>
+
+            {/* 🌟 [신규] 시험 보안 및 진행 옵션 (이탈 잠금, 풀이 인증샷, 기본값 유지) */}
+            <div className="pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4 bg-slate-50/80 p-4 rounded-2xl border border-slate-200">
+              <div className="flex flex-wrap items-center gap-6">
+                {/* 이탈 방지 잠금 토글 */}
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={examEnableLockdown}
+                    onChange={e => handleUpdateLockdownPref(e.target.checked)}
+                    className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    {examEnableLockdown ? <Lock size={15} className="text-violet-600" /> : <Unlock size={15} className="text-slate-400" />}
+                    <span className={`text-xs font-black ${examEnableLockdown ? 'text-violet-700' : 'text-slate-600'}`}>
+                      화면 이탈 방지(잠금)
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
+                      examEnableLockdown ? 'bg-violet-100 text-violet-700' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      {examEnableLockdown ? 'ON (학원 정규)' : 'OFF (자율 응시)'}
+                    </span>
+                  </div>
+                </label>
+
+                {/* 풀이 인증샷 필수 토글 */}
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={examRequireProof}
+                    onChange={e => handleUpdateProofPref(e.target.checked)}
+                    className="w-4 h-4 text-amber-600 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <Camera size={15} className={examRequireProof ? 'text-amber-600' : 'text-slate-400'} />
+                    <span className={`text-xs font-black ${examRequireProof ? 'text-amber-800' : 'text-slate-600'}`}>
+                      풀이과정 사진 인증
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
+                      examRequireProof ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      {examRequireProof ? 'ON (필수 제출)' : 'OFF (자율)'}
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* 기본값(디폴트) 유지 체크박스 */}
+              <label className="flex items-center gap-1.5 cursor-pointer select-none text-[11px] text-slate-500 hover:text-slate-800 font-bold bg-white px-3 py-1.5 rounded-xl border border-slate-200 shadow-2xs">
+                <input
+                  type="checkbox"
+                  checked={rememberPreference}
+                  onChange={e => {
+                    setRememberPreference(e.target.checked);
+                    if (typeof window !== 'undefined') {
+                      localStorage.setItem('eduest_pref_remember', String(e.target.checked));
+                    }
+                  }}
+                  className="w-3.5 h-3.5 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
+                />
+                <span>📌 이 설정을 다음 시험지 생성 기본값으로 계속 유지</span>
+              </label>
             </div>
           </div>
 
@@ -2200,75 +2446,195 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-slate-500 truncate flex items-center gap-1.5" title={q.name}>
-                        {q.folder_name && (
-                          <span className="px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shrink-0">
-                            {q.folder_name}
-                          </span>
-                        )}
-                        {q.question_number && (
-                          <span className="px-1 py-0.2 bg-violet-100 text-violet-800 rounded text-[9px] font-bold shrink-0">
-                            {q.question_number}번
-                          </span>
-                        )}
-                        <span className="truncate">{q.name}</span>
+                      {/* 문항 헤더: 번호 및 유형 세그먼트 */}
+                      <div className="flex items-center justify-between gap-1 flex-wrap">
+                        <span className="font-black text-violet-700">문항 {idx + 1}</span>
+
+                        {/* 유형 선택 버튼 세트 */}
+                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-black">
+                          <button
+                            type="button"
+                            onClick={() => handleChangeQuestionType(idx, 'MULTIPLE')}
+                            className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                              q.question_type === 'MULTIPLE' || (!q.question_type && !q.is_descriptive && /^[1-5]$/.test(q.answer))
+                                ? 'bg-indigo-600 text-white shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            객관식
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleChangeQuestionType(idx, 'SHORT')}
+                            className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                              q.question_type === 'SHORT' || (!q.question_type && !q.is_descriptive && !/^[1-5]$/.test(q.answer))
+                                ? 'bg-violet-600 text-white shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            단답형
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleChangeQuestionType(idx, 'DESCRIPTIVE')}
+                            className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                              q.question_type === 'DESCRIPTIVE' || q.is_descriptive
+                                ? 'bg-amber-500 text-slate-950 font-extrabold shadow-2xs'
+                                : 'text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            서술형
+                          </button>
+                        </div>
                       </div>
 
-                      {/* 정답 입력/수정란 및 서술형 토글 */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[10px] font-bold text-slate-500">
-                            설정 정답 (채점 기준)
-                          </label>
-                          <label className="flex items-center gap-1 text-[10px] text-slate-500 font-bold cursor-pointer hover:text-amber-700 select-none">
-                            <input
-                              type="checkbox"
-                              checked={!!q.is_descriptive}
-                              onChange={() => handleToggleQuestionDescriptive(idx)}
-                              className="w-3 h-3 text-amber-600 rounded focus:ring-amber-500 accent-amber-600 cursor-pointer"
-                            />
-                            <span>서술형 지정</span>
-                          </label>
-                        </div>
-                        {q.answer && q.answer.includes('\n') ? (
-                          <textarea
-                            value={q.answer}
-                            onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
-                            rows={Math.min(4, q.answer.split('\n').length)}
-                            placeholder="정답 (줄바꿈 가능)"
-                            className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs resize-y ${
-                              q.is_descriptive
-                                ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
-                                : 'border-slate-200 text-slate-800 focus:border-violet-500'
-                            }`}
-                          />
-                        ) : (
-                          <input
-                            type="text"
-                            value={q.answer}
-                            onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
-                            placeholder="정답 (예: 5 또는 83)"
-                            className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
-                              q.is_descriptive
-                                ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
-                                : 'border-slate-200 text-slate-800 focus:border-violet-500'
-                            }`}
-                          />
-                        )}
-                        <div className="mt-1 text-[9px] text-slate-400">
-                          {q.is_descriptive ? (
-                            <span className="text-amber-600 font-bold">
-                              ⏳ 학생 제출 시 [채점 대기]로 등록되어 선생님이 직접 승인합니다.
+                      <div className="flex items-center justify-between text-[11px] text-slate-500">
+                        <div className="truncate flex items-center gap-1.5 min-w-0" title={q.name}>
+                          {q.folder_name && (
+                            <span className="px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shrink-0">
+                              {q.folder_name}
                             </span>
-                          ) : (
-                            <span>⚡ 학생 제출 시 자동 일치 채점됩니다.</span>
+                          )}
+                          {q.question_number && (
+                            <span className="px-1 py-0.2 bg-violet-100 text-violet-800 rounded text-[9px] font-bold shrink-0">
+                              {q.question_number}번
+                            </span>
+                          )}
+                          <span className="truncate">{q.name}</span>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0 ml-1">
+                          <button
+                            type="button"
+                            onClick={() => handleReExtractSingleQuestion(idx)}
+                            disabled={reExtractingIds.has(q.drive_id)}
+                            className="text-[10px] text-indigo-600 hover:text-indigo-800 disabled:opacity-40 flex items-center gap-0.5 font-bold px-1.5 py-0.5 rounded-md hover:bg-indigo-50 border border-indigo-200 transition-colors cursor-pointer"
+                            title="재추출"
+                          >
+                            {reExtractingIds.has(q.drive_id) ? (
+                              <Loader2 size={10} className="animate-spin text-indigo-600" />
+                            ) : (
+                              <RotateCw size={10} />
+                            )}
+                            <span>재추출</span>
+                          </button>
+
+                          {q.image_url && (
+                            <button
+                              type="button"
+                              onClick={() => setPreviewQuestion(q)}
+                              className="text-[10px] text-violet-600 hover:underline flex items-center gap-0.5 font-bold"
+                            >
+                              <Eye size={11} />
+                              보기
+                            </button>
                           )}
                         </div>
                       </div>
 
+                      {/* 🌟 소문항 목록 및 편집 UI */}
+                      {q.sub_questions && q.sub_questions.length > 0 ? (
+                        <div className="space-y-1.5 bg-violet-50/60 p-2.5 rounded-xl border border-violet-200/80">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black text-violet-800 flex items-center gap-1">
+                              <span>소문항 분할 입력 ({q.sub_questions.length}개)</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleAddSubQuestion(idx)}
+                              className="text-[10px] font-bold text-violet-700 hover:text-violet-900 bg-white px-1.5 py-0.5 rounded border border-violet-200 flex items-center gap-0.5"
+                            >
+                              <Plus size={10} /> 추가
+                            </button>
+                          </div>
+
+                          <div className="space-y-1">
+                            {q.sub_questions.map((sq, subIdx) => (
+                              <div key={subIdx} className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  value={sq.label}
+                                  onChange={e => handleUpdateSubQuestion(idx, subIdx, 'label', e.target.value)}
+                                  placeholder="(1)"
+                                  className="w-10 px-1.5 py-1 text-center font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
+                                />
+                                <input
+                                  type="text"
+                                  value={sq.answer}
+                                  onChange={e => handleUpdateSubQuestion(idx, subIdx, 'answer', e.target.value)}
+                                  placeholder="소문항 정답"
+                                  className="flex-1 px-2 py-1 font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSubQuestion(idx, subIdx)}
+                                  className="p-1 text-slate-400 hover:text-rose-500 rounded"
+                                  title="소문항 삭제"
+                                >
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="text-[9px] text-slate-500 font-bold">
+                            * 전체 일치 시 정답 인정 (오답 시 소문항별 결과 피드백)
+                          </div>
+                        </div>
+                      ) : (
+                        /* 소문항이 없는 단일 정답 입력란 */
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[10px] font-bold text-slate-500">
+                              설정 정답 (채점 기준)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => handleAddSubQuestion(idx)}
+                              className="text-[10px] text-violet-600 hover:text-violet-800 font-bold flex items-center gap-0.5"
+                            >
+                              <Plus size={10} /> 소문항 분할
+                            </button>
+                          </div>
+                          {q.answer && q.answer.includes('\n') ? (
+                            <textarea
+                              value={q.answer}
+                              onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                              rows={Math.min(3, q.answer.split('\n').length)}
+                              placeholder="정답 (줄바꿈 가능)"
+                              className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs resize-y ${
+                                q.question_type === 'DESCRIPTIVE' || q.is_descriptive
+                                  ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                  : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                              }`}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={q.answer}
+                              onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                              placeholder="정답 (예: 5 또는 83)"
+                              className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
+                                q.question_type === 'DESCRIPTIVE' || q.is_descriptive
+                                  ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                  : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                              }`}
+                            />
+                          )}
+                          <div className="mt-1 text-[9px] text-slate-400">
+                            {q.question_type === 'DESCRIPTIVE' || q.is_descriptive ? (
+                              <span className="text-amber-600 font-bold">
+                                ⏳ 학생 제출 시 [채점 대기] (종이 직접 제출 지원)
+                              </span>
+                            ) : (
+                              <span>⚡ 학생 제출 시 자동 일치 채점됩니다.</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       {q.raw_answer && q.raw_answer !== q.answer && (
                         <div className="text-[10px] text-slate-400 truncate" title={q.raw_answer}>
-                          원본 텍스트: {q.raw_answer}
+                          원본: {q.raw_answer}
                         </div>
                       )}
                     </div>
@@ -2391,9 +2757,32 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </button>
             </div>
 
+            <div className="flex items-center justify-between text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+              <span className="text-slate-500 font-bold">시험지 기본 설정:</span>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                  assignModalExam.enable_lockdown ? 'bg-violet-100 text-violet-700' : 'bg-slate-200 text-slate-600'
+                }`}>
+                  🔒 잠금: {assignModalExam.enable_lockdown ? 'ON' : 'OFF'}
+                </span>
+                <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                  assignModalExam.require_proof_image ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'
+                }`}>
+                  📷 인증샷: {assignModalExam.require_proof_image ? 'ON' : 'OFF'}
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  (배정 후 학생 옆 아이콘으로 개별 조절 가능)
+                </span>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[350px] overflow-y-auto p-1 scrollbar-thin">
               {students.map(st => {
                 const isChecked = modalAssignedIds.includes(st.id);
+                const stOverride = modalStudentOverrides[st.id] || {};
+                const stLockdown = stOverride.enable_lockdown !== undefined ? stOverride.enable_lockdown : !!assignModalExam.enable_lockdown;
+                const stProof = stOverride.require_proof_image !== undefined ? stOverride.require_proof_image : !!assignModalExam.require_proof_image;
+
                 return (
                   <div
                     key={st.id}
@@ -2403,15 +2792,62 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       );
                     }}
                     className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between text-xs ${
-                      isChecked ? 'bg-violet-50 border-violet-500 font-bold' : 'bg-slate-50 border-slate-200'
+                      isChecked ? 'bg-violet-50/80 border-violet-500 font-bold shadow-2xs' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
                     }`}
                   >
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <span className="text-[10px] text-slate-400 block">{st.grade}</span>
-                      <span className="font-black text-slate-800">{st.name}</span>
+                      <span className="font-black text-slate-800 truncate block">{st.name}</span>
                     </div>
-                    <div className={`w-4 h-4 rounded flex items-center justify-center ${isChecked ? 'bg-violet-600 text-white' : 'border border-slate-300 bg-white'}`}>
-                      {isChecked && <Check size={12} strokeWidth={3} />}
+
+                    <div className="flex items-center gap-1.5 shrink-0 ml-1">
+                      {isChecked && (
+                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                          {/* 개별 잠금 토글 */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalStudentOverrides(prev => {
+                                const cur = prev[st.id] || {};
+                                return {
+                                  ...prev,
+                                  [st.id]: { ...cur, enable_lockdown: !stLockdown },
+                                };
+                              });
+                            }}
+                            className={`p-1 rounded transition-colors ${
+                              stLockdown ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-400 hover:text-slate-700'
+                            }`}
+                            title={`이 학생 이탈 잠금: ${stLockdown ? 'ON' : 'OFF'} (클릭 시 변경)`}
+                          >
+                            <Lock size={11} />
+                          </button>
+
+                          {/* 개별 인증샷 토글 */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalStudentOverrides(prev => {
+                                const cur = prev[st.id] || {};
+                                return {
+                                  ...prev,
+                                  [st.id]: { ...cur, require_proof_image: !stProof },
+                                };
+                              });
+                            }}
+                            className={`p-1 rounded transition-colors ${
+                              stProof ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-200 text-slate-400 hover:text-slate-700'
+                            }`}
+                            title={`이 학생 풀이 인증샷: ${stProof ? 'ON' : 'OFF'} (클릭 시 변경)`}
+                          >
+                            <Camera size={11} />
+                          </button>
+                        </div>
+                      )}
+
+                      <div className={`w-4 h-4 rounded flex items-center justify-center ${isChecked ? 'bg-violet-600 text-white' : 'border border-slate-300 bg-white'}`}>
+                        {isChecked && <Check size={12} strokeWidth={3} />}
+                      </div>
                     </div>
                   </div>
                 );

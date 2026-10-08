@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { detectSubQuestions, detectQuestionType } from "@/lib/extractQuestionUtils";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -253,7 +254,9 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
   }
 
   const finalAns = cleanAnswer || rawAnswer || "";
-  const isDescriptive = isDescriptiveAnswer(cleanAnswer, rawAnswer);
+  const subQuestions = detectSubQuestions(rawAnswer);
+  const questionType = detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
+  const isDescriptive = questionType === 'DESCRIPTIVE';
 
   return {
     imageUrl,
@@ -261,6 +264,8 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
     rawAnswer: rawAnswer || "정답 정보 없음",
     answer: finalAns,
     is_descriptive: isDescriptive,
+    question_type: questionType,
+    sub_questions: subQuestions.length > 0 ? subQuestions : undefined,
     matchedRule,
     rawHtmlSnippet,
   };
@@ -305,7 +310,7 @@ export async function POST(req: NextRequest) {
               };
             }
 
-            const { imageUrl, imageSource, rawAnswer, answer, is_descriptive, matchedRule, rawHtmlSnippet } = extractQuestionData(html, file);
+            const { imageUrl, imageSource, rawAnswer, answer, is_descriptive, question_type, sub_questions, matchedRule, rawHtmlSnippet } = extractQuestionData(html, file);
 
             // 이미지 URL이 없는데 동일 폴더에 png가 있는지 DB 조회 시도
             let finalImageUrl = imageUrl;
@@ -337,6 +342,8 @@ export async function POST(req: NextRequest) {
               raw_answer: rawAnswer,
               answer: answer,
               is_descriptive: !!is_descriptive,
+              question_type: question_type,
+              sub_questions: sub_questions,
               solution_drive_id: file.drive_id,
               status: "success",
               debug_info: {

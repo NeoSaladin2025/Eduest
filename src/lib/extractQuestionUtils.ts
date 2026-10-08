@@ -76,33 +76,85 @@ export function normalizeCircledNumber(str: string): string {
   return str.replace(/[①②③④⑤❶❷❸❹❺]/g, (match) => circledMap[match] || match);
 }
 
-// 서술형(채점 대기 필요) 답안인지 자동 판별
-export function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
-  if (!cleanAnswer && !rawAnswer) return false;
+export interface SubQuestionItem {
+  label: string;
+  answer: string;
+}
+
+// 소문항 ((1), (2) 등) 자동 감지 및 분할 추출
+export function detectSubQuestions(text: string): SubQuestionItem[] {
+  if (!text) return [];
+  const str = text.trim();
+
+  // (1), (2) / ①, ② / [1], [2] / 1), 2) / (가), (나) 등 소문항 분할 패턴
+  const regex = /(?:^|\s|,|;|\n|\r)(?:\(([1-9]|가|나|다|라)\)|([①②③④⑤❶❷❸❹❺])|\[([1-9])\]|([1-9]\)))\s*([^(),;\n\r①②③④⑤❶❷❸❹❺]+)/g;
+  const items: SubQuestionItem[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(str)) !== null) {
+    let label = '';
+    if (match[1]) label = `(${match[1]})`;
+    else if (match[2]) label = match[2];
+    else if (match[3]) label = `[${match[3]}]`;
+    else if (match[4]) label = match[4];
+
+    const ans = (match[5] || '').trim();
+    if (label && ans) {
+      items.push({ label, answer: ans });
+    }
+  }
+
+  // 2개 이상의 소문항이 분할 검출되었을 때만 소문항 구조로 인정
+  if (items.length >= 2) {
+    return items;
+  }
+
+  return [];
+}
+
+// 문제 유형 ('MULTIPLE' | 'SHORT' | 'DESCRIPTIVE') 자동 판별
+export function detectQuestionType(
+  cleanAnswer: string,
+  rawAnswer: string,
+  subQuestions: SubQuestionItem[] = []
+): 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE' {
   const target = (cleanAnswer || rawAnswer).trim();
 
-  // 1. 객관식 1~5는 단답형
-  if (/^[1-5]$/.test(target)) return false;
+  // 1. 객관식 1~5 단일 번호 (소문항이 없는 경우)
+  if (subQuestions.length === 0 && /^[1-5]$/.test(target)) {
+    return 'MULTIPLE';
+  }
 
-  // 2. 순수 단일 숫자(정수, 음수, 소수)는 단답형 (예: 83, -12, 0.5)
-  if (/^-?\d+(\.\d+)?$/.test(target)) return false;
+  // 2. 소문항이 2개 이상 있는 경우
+  if (subQuestions.length >= 2) {
+    // 소문항 각각의 답이 긴 설명/풀이인지 검사
+    const hasLongDescriptive = subQuestions.some(
+      (sq) => /문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(sq.answer) || sq.answer.length >= 25
+    );
+    return hasLongDescriptive ? 'DESCRIPTIVE' : 'SHORT';
+  }
 
-  // 3. 소문항 패턴 ((1), (2), ①, ② 등) 포함 시 서술형
-  if (/\([1-9]\)|[①②③④⑤❶❷❸❹❺]|\[[1-9]\]|\b[1-9]\)/.test(rawAnswer)) return true;
+  // 3. 서술형 판별 (긴 풀이 문장, 유도 과정 등)
+  if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) {
+    return 'DESCRIPTIVE';
+  }
+  if (/\r|\n/.test(rawAnswer) && rawAnswer.length >= 15) {
+    return 'DESCRIPTIVE';
+  }
+  if (target.length >= 15 && /\s+/.test(target)) {
+    return 'DESCRIPTIVE';
+  }
 
-  // 4. 서술/풀이 라벨(문제:, 정답:, 이므로, 따라서 등) 포함 시 서술형
-  if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) return true;
+  // 4. 그 외 순수 단일 숫자나 짧은 단답
+  return 'SHORT';
+}
 
-  // 5. 줄바꿈이 포함된 경우 서술형
-  if (/\r|\n/.test(rawAnswer)) return true;
-
-  // 6. 띄어쓰기가 포함된 경우 (선생님 요청 핵심 기준)
-  if (/\s+/.test(target)) return true;
-
-  // 7. 텍스트 길이가 12자 이상인 경우
-  if (target.length >= 12) return true;
-
-  return false;
+// 서술형(채점 대기 필요) 답안인지 자동 판별 (기존 호환 유지)
+export function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
+  if (!cleanAnswer && !rawAnswer) return false;
+  const sub = detectSubQuestions(rawAnswer);
+  const qType = detectQuestionType(cleanAnswer, rawAnswer, sub);
+  return qType === 'DESCRIPTIVE';
 }
 
 // HTML 분석하여 문제 이미지 URL 및 정답 추출
@@ -179,12 +231,16 @@ export function extractQuestionData(
   }
 
   const finalAns = cleanAnswer || rawAnswer || "";
-  const isDescriptive = isDescriptiveAnswer(cleanAnswer, rawAnswer);
+  const subQuestions = detectSubQuestions(rawAnswer);
+  const questionType = detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
+  const isDescriptive = questionType === 'DESCRIPTIVE';
 
   return {
     imageUrl,
     rawAnswer: rawAnswer || "정답 정보 없음",
     answer: finalAns,
     is_descriptive: isDescriptive,
+    question_type: questionType,
+    sub_questions: subQuestions.length > 0 ? subQuestions : undefined,
   };
 }

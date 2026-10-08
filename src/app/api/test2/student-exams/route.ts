@@ -32,6 +32,11 @@ export interface StudentSubmission {
       proof_image_drive_id?: string;
       proof_image_url?: string;
       is_descriptive?: boolean;
+      question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
+      sub_questions?: Array<{ label: string; answer?: string }>;
+      sub_answers?: Record<string, string>;
+      sub_results?: Record<string, boolean>;
+      is_direct_paper?: boolean;
       grading_status?: 'graded' | 'pending' | 'reviewed';
       show_solution?: boolean;
       reviewed_at?: string;
@@ -180,6 +185,7 @@ export async function GET(req: NextRequest) {
         // 서술형이고 채점 대기 중인데 show_solution이 허용되지 않은 경우 정답/해설 숨김
         const isDescriptivePending = q.is_descriptive && studentAns?.grading_status === 'pending';
         const canShowSolution = isSubmitted && (!isDescriptivePending || studentAns?.show_solution === true);
+        const qType = q.question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(String(q.answer).trim()) ? 'MULTIPLE' : 'SHORT'));
 
         return {
           id: q.id,
@@ -187,7 +193,12 @@ export async function GET(req: NextRequest) {
           name: q.name,
           image_url: q.image_url,
           points: q.points,
-          is_descriptive: !!q.is_descriptive,
+          is_descriptive: qType === 'DESCRIPTIVE' || !!q.is_descriptive,
+          question_type: qType,
+          sub_questions: q.sub_questions ? q.sub_questions.map((sq) => ({
+            label: sq.label,
+            answer: canShowSolution ? sq.answer : undefined,
+          })) : undefined,
           answer: canShowSolution ? q.answer : undefined,
           raw_answer: canShowSolution ? q.raw_answer : undefined,
           solution_drive_id: canShowSolution ? q.solution_drive_id : undefined,
@@ -218,6 +229,8 @@ export async function GET(req: NextRequest) {
         is_wrong_review: e.is_wrong_review,
         is_special: e.is_special,
         require_proof_image: e.require_proof_image,
+        enable_lockdown: e.enable_lockdown,
+        student_overrides: e.student_overrides,
         is_submitted: !!sub,
         submission: sub
           ? {
@@ -267,17 +280,54 @@ export async function POST(req: NextRequest) {
     const collectedProofImages: StudentSubmission["proof_images"] = [];
 
     exam.questions.forEach((q, idx) => {
-      const userAns = String(answers?.[q.id] ?? "").trim();
-      const isDescriptive = !!q.is_descriptive;
+      const rawUserAns = answers?.[q.id];
+      let userAns = typeof rawUserAns === 'string' ? rawUserAns.trim() : (rawUserAns ? JSON.stringify(rawUserAns) : "");
+      const isDirectPaper = userAns === '__DIRECT_PAPER__' || (typeof rawUserAns === 'object' && rawUserAns?.is_direct_paper);
+      const isDescriptive = q.question_type === 'DESCRIPTIVE' || !!q.is_descriptive;
+      const subQuestions = q.sub_questions;
 
       let isCorrect: boolean | null = false;
       let gradingStatus: 'graded' | 'pending' | 'reviewed' = 'graded';
+      let subAnswers: Record<string, string> | undefined = undefined;
+      let subResults: Record<string, boolean> | undefined = undefined;
 
       if (isDescriptive) {
         // 서술형: 즉시 오답으로 확정하지 않고 선생님 채점 대기(pending)로 설정
         isCorrect = null;
         gradingStatus = 'pending';
         pendingCount++;
+        if (isDirectPaper) {
+          userAns = '종이 직접 제출';
+        }
+      } else if (subQuestions && subQuestions.length >= 2) {
+        // 소문항이 2개 이상 있는 경우
+        let parsedSub: Record<string, string> = {};
+        if (typeof rawUserAns === 'object' && rawUserAns !== null) {
+          parsedSub = rawUserAns;
+        } else {
+          try {
+            parsedSub = JSON.parse(rawUserAns);
+          } catch {
+            parsedSub = {};
+          }
+        }
+        subAnswers = parsedSub;
+        subResults = {};
+
+        let allMatched = true;
+        subQuestions.forEach((sq) => {
+          const studentSubVal = parsedSub[sq.label] || '';
+          const matched = checkAnswerMatch(studentSubVal, sq.answer, sq.answer);
+          subResults![sq.label] = matched;
+          if (!matched) {
+            allMatched = false;
+          }
+        });
+
+        // 사용자 규칙: 부분점수 없음. 모든 소문항 일치 시에만 정답 인정
+        isCorrect = allMatched;
+        gradingStatus = 'graded';
+        if (allMatched) correctCount++;
       } else {
         // 일반 단답/객관식: 기존대로 즉시 일치 채점
         const matched = checkAnswerMatch(userAns, q.answer, q.raw_answer);
@@ -307,6 +357,11 @@ export async function POST(req: NextRequest) {
         proof_image_drive_id: pImg?.drive_id || pImg?.fileId,
         proof_image_url: pImg?.remote_url || pImg?.url,
         is_descriptive: isDescriptive,
+        question_type: q.question_type || (isDescriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(q.answer) ? 'MULTIPLE' : 'SHORT')),
+        sub_questions: subQuestions,
+        sub_answers: subAnswers,
+        sub_results: subResults,
+        is_direct_paper: isDirectPaper,
         grading_status: gradingStatus,
         show_solution: !isDescriptive, // 일반 문제는 기본 공개, 서술형은 선생님 승인 시 공개
       };

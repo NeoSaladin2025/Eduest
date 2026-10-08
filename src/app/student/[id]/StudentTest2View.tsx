@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   HelpCircle,
   Lock,
+  Unlock,
   Layers,
   PlayCircle,
   Star,
@@ -178,7 +179,7 @@ export default function StudentTest2View({
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
   // 답안 및 소요시간 관리
-  const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
+  const [userAnswers, setUserAnswers] = useState<Record<string, any>>({});
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
 
@@ -586,6 +587,22 @@ export default function StudentTest2View({
     };
   }, [studentId]);
 
+  // 시험지별 이탈 잠금 활성화 여부 계산 (학생 개별 오버라이드 우선)
+  const getExamLockdownActive = (exam: any) => {
+    const studentOverride = exam.student_overrides?.[studentId];
+    return studentOverride?.enable_lockdown !== undefined
+      ? Boolean(studentOverride.enable_lockdown)
+      : Boolean(exam.enable_lockdown);
+  };
+
+  // 시험지별 풀이 사진 인증 필수 여부 계산 (학생 개별 오버라이드 우선)
+  const getExamRequireProof = (exam: any) => {
+    const studentOverride = exam.student_overrides?.[studentId];
+    return studentOverride?.require_proof_image !== undefined
+      ? Boolean(studentOverride.require_proof_image)
+      : Boolean(exam.require_proof_image);
+  };
+
   // 2. 시험 시작하기
   const handleStartExam = async (examId: string, bundle?: ExamBundle, roundNum = 1) => {
     try {
@@ -745,6 +762,57 @@ export default function StudentTest2View({
     broadcastProctorStatus('TESTING');
   };
 
+  // 소문항 ((1), (2)) 개별 답안 변경 처리
+  const handleSubAnswerChange = (questionId: string, subLabel: string, value: string) => {
+    if (isLocked) return;
+
+    setUserAnswers(prev => {
+      let currentVal = prev[questionId];
+      let subMap: Record<string, string> = {};
+      if (typeof currentVal === 'object' && currentVal !== null) {
+        subMap = { ...currentVal };
+      } else if (typeof currentVal === 'string') {
+        try {
+          subMap = JSON.parse(currentVal);
+        } catch {
+          subMap = {};
+        }
+      }
+      subMap[subLabel] = value;
+      const next = { ...prev, [questionId]: subMap };
+      if (currentExam) {
+        localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(next));
+      }
+      return next;
+    });
+
+    const now = Date.now();
+    const elapsedSec = Math.max(1, Math.round((now - questionEnteredAtRef.current) / 1000));
+    questionEnteredAtRef.current = now;
+    setQuestionSpentTimes(prev => {
+      const updated = { ...prev, [questionId]: (prev[questionId] || 0) + elapsedSec };
+      if (currentExam) {
+        localStorage.setItem(`test2_qtimes_${studentId}_${currentExam.id}`, JSON.stringify(updated));
+      }
+      return updated;
+    });
+    broadcastProctorStatus('TESTING');
+  };
+
+  // 문항 마킹 완료 여부 판정 헬퍼
+  const isQuestionAnswered = (q: any) => {
+    const ans = userAnswers[q.id];
+    if (!ans) return false;
+    if (ans === '__DIRECT_PAPER__' || ans === '모름') return true;
+    if (q.sub_questions && q.sub_questions.length >= 2) {
+      if (typeof ans === 'object' && ans !== null) {
+        return q.sub_questions.every((sq: any) => Boolean(ans[sq.label]?.trim()));
+      }
+      return Boolean(ans);
+    }
+    return typeof ans === 'string' && ans.trim().length > 0;
+  };
+
   // 문항 전환 시 풀이 시작 시각 갱신
   const handleNavigateQuestion = (targetIdx: number) => {
     // 이전 문항에서 머문 시간 누적 (만약 답안을 마킹하지 않고 넘어가더라도 풀이 시간으로 인정)
@@ -776,13 +844,14 @@ export default function StudentTest2View({
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam) return;
 
-    // 🔥 스페셜 시험이거나 풀이 인증샷 첨부 시험인 경우 카메라/사진 앱 전환을 허용하기 위해 화면 이탈 잠금 해제
-    const isSpecialTest = Boolean(
-      currentExam.is_special ||
-      currentExam.require_proof_image ||
-      (currentExam.title && currentExam.title.includes('[스페셜]'))
-    );
-    if (isSpecialTest) return;
+    // 학생 개별 오버라이드 확인
+    const studentOverride = (currentExam as any).student_overrides?.[studentId];
+    const isLockdownActive = studentOverride?.enable_lockdown !== undefined
+      ? Boolean(studentOverride.enable_lockdown)
+      : Boolean((currentExam as any).enable_lockdown);
+
+    // 잠금 모드가 OFF(자율 응시)이거나 스페셜 시험인 경우 이탈 감지 패스
+    if (!isLockdownActive) return;
 
     const triggerAwayLock = () => {
       if (isLocked) return;
@@ -809,7 +878,7 @@ export default function StudentTest2View({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
     };
-  }, [viewMode, currentExam, isLocked, timeLeft, broadcastProctorStatus]);
+  }, [viewMode, currentExam, isLocked, timeLeft, broadcastProctorStatus, studentId]);
 
   // 잠금 상태일 때 2.5초마다 DB 상태 폴링 (웹소켓 유실 대비 백업 해제 감지)
   useEffect(() => {
@@ -838,14 +907,23 @@ export default function StudentTest2View({
   const handleSubmitExam = async () => {
     if (!currentExam) return;
 
-    // 📸 풀이 인증샷 필수 검증
-    const currentProofsAtStart = proofImagesRef.current;
-    if (currentExam.require_proof_image) {
-      const proofCount = Object.keys(currentProofsAtStart).length;
-      if (proofCount === 0) {
-        alert("📸 이 시험은 풀이과정 사진 인증이 필수입니다!\n\n문항별로 풀이과정 사진을 첨부한 후 제출해 주세요.");
-        setShowSubmitConfirm(false);
-        return;
+    // 📸 풀이 인증샷 필수 검증 (학생 개별 오버라이드 및 종이 직접 제출 반영)
+    const studentOverride = (currentExam as any).student_overrides?.[studentId];
+    const isProofRequired = studentOverride?.require_proof_image !== undefined
+      ? Boolean(studentOverride.require_proof_image)
+      : Boolean(currentExam.require_proof_image);
+
+    if (isProofRequired) {
+      // 모든 문항이 종이 직접 제출인지 확인
+      const allDirectPaper = currentExam.questions.every((q) => userAnswers[q.id] === '__DIRECT_PAPER__');
+      if (!allDirectPaper) {
+        const currentProofsAtStart = proofImagesRef.current;
+        const proofCount = Object.keys(currentProofsAtStart).length;
+        if (proofCount === 0) {
+          alert("📸 이 시험은 풀이과정 사진 인증이 필수입니다!\n\n문항별로 풀이과정 사진을 첨부한 후 제출해 주세요.\n(단, 서술형 종이 직접 제출 문항은 사진이 면제됩니다)");
+          setShowSubmitConfirm(false);
+          return;
+        }
       }
     }
 
@@ -1058,11 +1136,20 @@ export default function StudentTest2View({
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-black rounded-full flex items-center gap-1">
                               <Sparkles size={11} /> 스페셜
                             </span>
-                            {exam.require_proof_image && (
+                            {getExamLockdownActive(exam) ? (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Lock size={11} /> 이탈잠금
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Unlock size={11} /> 자율응시
+                              </span>
+                            )}
+                            {getExamRequireProof(exam) && (
                               <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
                                 <Camera size={11} /> 사진인증
                               </span>
@@ -1151,9 +1238,25 @@ export default function StudentTest2View({
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <span className="px-3 py-1 bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[11px] font-black rounded-full">
-                            {exam.grade}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-3 py-1 bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[11px] font-black rounded-full">
+                              {exam.grade}
+                            </span>
+                            {getExamLockdownActive(exam) ? (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Lock size={11} /> 이탈잠금
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Unlock size={11} /> 자율응시
+                              </span>
+                            )}
+                            {getExamRequireProof(exam) && (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Camera size={11} /> 사진인증
+                              </span>
+                            )}
+                          </div>
                           {isSubmitted ? (
                             <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
                               <CheckCircle2 size={13} />
@@ -1328,7 +1431,7 @@ export default function StudentTest2View({
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="px-3 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-black rounded-full flex items-center gap-1.5">
                               <RotateCcw size={12} />
                               오답 클리닉
@@ -1336,6 +1439,20 @@ export default function StudentTest2View({
                             {exam.title?.includes('쌍둥이') && (
                               <span className="px-2.5 py-1 bg-gradient-to-r from-purple-500/30 to-indigo-500/30 text-purple-200 border border-purple-500/40 text-[10px] font-black rounded-full flex items-center gap-1 shadow-sm">
                                 <span>👯 쌍둥이 변형</span>
+                              </span>
+                            )}
+                            {getExamLockdownActive(exam) ? (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Lock size={11} /> 이탈잠금
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Unlock size={11} /> 자율응시
+                              </span>
+                            )}
+                            {getExamRequireProof(exam) && (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Camera size={11} /> 사진인증
                               </span>
                             )}
                           </div>
@@ -1434,9 +1551,26 @@ export default function StudentTest2View({
                     {currentExam.title}
                   </h3>
                 </div>
-                <span className="text-[11px] font-bold text-violet-400">
-                  문항 {currentQuestionIndex + 1} / {currentExam.questions.length}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-violet-400">
+                    문항 {currentQuestionIndex + 1} / {currentExam.questions.length}
+                  </span>
+                  {(() => {
+                    const studentOverride = (currentExam as any).student_overrides?.[studentId];
+                    const isLockdownActive = studentOverride?.enable_lockdown !== undefined
+                      ? Boolean(studentOverride.enable_lockdown)
+                      : Boolean((currentExam as any).enable_lockdown);
+                    return isLockdownActive ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">
+                        <Lock size={10} /> 이탈 방지 가동 중
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                        <Unlock size={10} /> 자율 응시 모드
+                      </span>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
 
@@ -1469,7 +1603,7 @@ export default function StudentTest2View({
                 const isCurrent = currentQuestionIndex === idx;
                 const ans = userAnswers[q.id];
                 const isUnknown = ans === '모름';
-                const isAnswered = !!ans && !isUnknown;
+                const isAnswered = isQuestionAnswered(q);
 
                 return (
                   <button
@@ -1507,6 +1641,13 @@ export default function StudentTest2View({
             if (!question) return null;
             const currentAnswer = userAnswers[question.id] || '';
             const spentSec = questionSpentTimes[question.id] || 0;
+            const qType = (question as any).question_type || (question.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(question.answer) ? 'MULTIPLE' : 'SHORT'));
+            const hasSubQuestions = Array.isArray(question.sub_questions) && question.sub_questions.length >= 2;
+            const isDirectPaperChecked = currentAnswer === '__DIRECT_PAPER__';
+            const studentOverride = (currentExam as any).student_overrides?.[studentId];
+            const isProofRequired = studentOverride?.require_proof_image !== undefined
+              ? Boolean(studentOverride.require_proof_image)
+              : Boolean(currentExam.require_proof_image);
 
             return (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1568,171 +1709,282 @@ export default function StudentTest2View({
                   </div>
                 </div>
 
-                {/* 우측: 답안 입력 패널 (객관식 1~5번, 모름 버튼, 주관식) */}
+                {/* 우측: 답안 입력 패널 (객관식 / 단답형 / 서술형 직접제출 / 소문항별 동적 렌더링) */}
                 <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl flex flex-col justify-between space-y-6">
-                  <div>
-                    <h4 className="text-base font-black text-white mb-1 flex items-center gap-2">
-                      <FileCheck size={18} className="text-violet-400" />
-                      답안 마킹
-                    </h4>
-                    <p className="text-xs text-slate-400 font-medium">
-                      문제 풀이 후 정답을 선택하거나 입력하세요.
-                    </p>
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="text-base font-black text-white flex items-center gap-2">
+                            <FileCheck size={18} className="text-violet-400" />
+                            답안 마킹
+                          </h4>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                            qType === 'MULTIPLE'
+                              ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                              : qType === 'SHORT'
+                              ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          }`}>
+                            {qType === 'MULTIPLE' ? '객관식 문항' : qType === 'SHORT' ? (hasSubQuestions ? `단답형 (소문항 ${question.sub_questions!.length}개)` : '단답형 문항') : '서술형 문항'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-medium">
+                          {qType === 'MULTIPLE'
+                            ? '문제 풀이 후 정답 번호를 선택하세요.'
+                            : qType === 'SHORT'
+                            ? '문제 풀이 후 정답을 입력칸에 직접 적으세요.'
+                            : '풀이를 종이에 적어 직접 제출하거나 텍스트로 입력하세요.'}
+                        </p>
 
-                    {/* 객관식 1~5번 선택 버튼 */}
-                    <div className="mt-8 space-y-3">
-                      <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                        객관식 정답 선택
-                      </label>
-                      <div className="grid grid-cols-5 gap-2">
-                        {['1', '2', '3', '4', '5'].map((num, i) => {
-                          const symbols = ['①', '②', '③', '④', '⑤'];
-                          const isSelected = currentAnswer === num || currentAnswer === symbols[i];
-                          return (
-                            <button
-                              key={num}
-                              type="button"
-                              onClick={() => handleAnswerSelect(question.id, num)}
-                              className={`py-4 rounded-2xl font-black text-base transition-all ${
-                                isSelected
-                                  ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
-                                  : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
-                              }`}
-                            >
-                              {symbols[i]}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* 🔥 [모름] 버튼 추가 */}
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => handleAnswerSelect(question.id, '모름')}
-                        className={`w-full py-3.5 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
-                          currentAnswer === '모름'
-                            ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
-                            : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                        }`}
-                      >
-                        <HelpCircle size={16} />
-                        <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (정답 체크 및 시간 저장)'}</span>
-                      </button>
-                    </div>
-
-                    {/* 주관식 직접 입력란 */}
-                    <div className="mt-8 space-y-2">
-                      <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                        주관식 답안 직접 입력
-                      </label>
-                      <input
-                        type="text"
-                        value={currentAnswer === '모름' ? '' : currentAnswer}
-                        onChange={e => handleAnswerSelect(question.id, e.target.value)}
-                        placeholder="정답 입력 (예: 83, -2 등)"
-                        className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
-                      />
-                    </div>
-
-                    {/* 📸 [신규] 풀이과정 사진 인증샷 업로드 영역 */}
-                    <div className="mt-6 pt-5 border-t border-white/10 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
-                          <Camera size={14} />
-                          풀이 인증샷 {currentExam.require_proof_image && <span className="text-rose-400 font-extrabold">*필수</span>}
-                        </label>
-                        {proofImages[question.id] && (
-                          proofImages[question.id].isUploading ? (
-                            <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
-                              <Loader2 size={12} className="animate-spin" /> 구글 드라이브 동기화 중...
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                              <CheckCircle2 size={12} /> 구글 드라이브 저장됨
-                            </span>
-                          )
-                        )}
-                      </div>
-
-                      {proofImages[question.id] ? (
-                        <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
-                          <img
-                            src={proofImages[question.id].url}
-                            alt="풀이 인증샷"
-                            className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
-                            onClick={() => setViewingProofUrl(proofImages[question.id].url)}
-                            title="클릭하여 크게 보기"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
-                            <div className="flex items-center gap-2 mt-1">
-                              {proofImages[question.id].isUploading ? (
-                                <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
-                                  <Loader2 size={10} className="animate-spin" /> 동기화 중...
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                                  <CheckCircle2 size={10} /> 저장 완료
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => setViewingProofUrl(proofImages[question.id].url)}
-                                className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
-                              >
-                                <Maximize2 size={10} /> 크게 보기
-                              </button>
+                        {/* CASE 1: 객관식 문항인 경우 -> 1~5번 버튼만 표시 */}
+                        {qType === 'MULTIPLE' && (
+                          <div className="mt-8 space-y-3">
+                            <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                              객관식 정답 선택
+                            </label>
+                            <div className="grid grid-cols-5 gap-2">
+                              {['1', '2', '3', '4', '5'].map((num, i) => {
+                                const symbols = ['①', '②', '③', '④', '⑤'];
+                                const isSelected = currentAnswer === num || currentAnswer === symbols[i];
+                                return (
+                                  <button
+                                    key={num}
+                                    type="button"
+                                    onClick={() => handleAnswerSelect(question.id, num)}
+                                    className={`py-4 rounded-2xl font-black text-base transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
+                                        : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
+                                    }`}
+                                  >
+                                    {symbols[i]}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
+                        )}
+
+                        {/* CASE 2: 단답형 문항인 경우 */}
+                        {qType === 'SHORT' && (
+                          <>
+                            {hasSubQuestions ? (
+                              /* 2-A: 소문항 (1), (2) 분할 입력칸 */
+                              <div className="mt-6 space-y-3">
+                                <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">
+                                  <span>소문항별 답안 직접 입력</span>
+                                  <span className="text-[10px] text-violet-400 font-bold">총 {question.sub_questions!.length}문항</span>
+                                </label>
+                                <div className="space-y-2.5">
+                                  {question.sub_questions!.map((sq: any) => {
+                                    const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                                    const val = subAnsMap[sq.label] || '';
+                                    return (
+                                      <div key={sq.label} className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10">
+                                        <span className="w-10 text-center font-black text-sm text-violet-400 shrink-0">
+                                          {sq.label}
+                                        </span>
+                                        <input
+                                          type="text"
+                                          value={val}
+                                          onChange={e => handleSubAnswerChange(question.id, sq.label, e.target.value)}
+                                          placeholder="정답 입력"
+                                          className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2.5 px-3 text-white font-black text-base focus:outline-none placeholder:text-slate-600 text-center"
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : (
+                              /* 2-B: 일반 단일 단답형 입력칸 */
+                              <div className="mt-8 space-y-2">
+                                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                  단답형 답안 직접 입력
+                                </label>
+                                <input
+                                  type="text"
+                                  value={currentAnswer === '모름' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                                  onChange={e => handleAnswerSelect(question.id, e.target.value)}
+                                  placeholder="정답 입력 (예: 83, -2 등)"
+                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                                />
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* CASE 3: 서술형 문항인 경우 -> [직접 제출] 카드 및 텍스트 작성 옵션 */}
+                        {qType === 'DESCRIPTIVE' && (
+                          <div className="mt-6 space-y-4">
+                            {/* 종이 직접 제출 버튼 */}
+                            <div
+                              onClick={() => handleAnswerSelect(question.id, isDirectPaperChecked ? '' : '__DIRECT_PAPER__')}
+                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between select-none ${
+                                isDirectPaperChecked
+                                  ? 'bg-amber-500/20 border-amber-400 text-white shadow-xl shadow-amber-500/20 ring-2 ring-amber-400/50'
+                                  : 'bg-white/5 border-white/10 hover:bg-white/10 text-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black ${
+                                  isDirectPaperChecked ? 'bg-amber-500 text-slate-950' : 'bg-white/10 text-slate-400'
+                                }`}>
+                                  {isDirectPaperChecked ? <Check size={18} strokeWidth={3} /> : <FileCheck size={16} />}
+                                </div>
+                                <div>
+                                  <div className="text-xs font-black text-white">종이 시험지에 작성 후 직접 제출</div>
+                                  <div className="text-[10px] text-slate-400">웹 입력 없이 선생님께 종이 시험지로 직접 채점받습니다.</div>
+                                </div>
+                              </div>
+                              {isDirectPaperChecked && (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-950">
+                                  직접제출 선택됨
+                                </span>
+                              )}
+                            </div>
+
+                            {/* 웹 텍스트 입력창 (직접 제출이 아닐 때) */}
+                            {!isDirectPaperChecked && (
+                              <div className="space-y-1.5">
+                                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                  또는 텍스트 직접 입력
+                                </label>
+                                <textarea
+                                  rows={3}
+                                  value={currentAnswer === '모름' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                                  onChange={e => handleAnswerSelect(question.id, e.target.value)}
+                                  placeholder="서술형 풀이 또는 최종 답안을 적어주세요."
+                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl p-3 text-white font-medium text-sm focus:outline-none transition-all placeholder:text-slate-600 resize-none"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* 🔥 [모름] 버튼 */}
+                        <div className="mt-4">
                           <button
                             type="button"
-                            onClick={() => handleRemoveProof(question.id)}
-                            className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
-                            title="삭제 후 다시 촬영"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      ) : (
-                        <div>
-                          <input
-                            type="file"
-                            id={`proof-upload-${question.id}`}
-                            accept="image/*"
-                            capture="environment"
-                            className="hidden"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handleUploadProof(question.id, currentQuestionIndex + 1, f);
-                              e.target.value = '';
-                            }}
-                          />
-                          <label
-                            htmlFor={`proof-upload-${question.id}`}
-                            className={`w-full py-3.5 px-4 rounded-2xl border border-dashed flex items-center justify-center gap-2 cursor-pointer transition-all ${
-                              uploadingProofQId === question.id
-                                ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
-                                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/30 text-amber-300 hover:border-amber-400/60'
+                            onClick={() => handleAnswerSelect(question.id, '모름')}
+                            className={`w-full py-3.5 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                              currentAnswer === '모름'
+                                ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
+                                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
                             }`}
                           >
-                            {uploadingProofQId === question.id ? (
-                              <>
-                                <Loader2 size={16} className="animate-spin text-amber-400" />
-                                <span className="text-xs font-black">내 구글 드라이브에 저장 중...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Camera size={16} className="text-amber-400" />
-                                <span className="text-xs font-black">풀이과정 사진 촬영 / 업로드</span>
-                              </>
-                            )}
-                          </label>
+                            <HelpCircle size={16} />
+                            <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (정답 체크 및 시간 저장)'}</span>
+                          </button>
                         </div>
-                      )}
-                    </div>
-                  </div>
+                      </div>
+
+                      {/* 📸 풀이과정 사진 인증샷 업로드 영역 */}
+                      <div className="mt-6 pt-5 border-t border-white/10 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
+                            <Camera size={14} />
+                            풀이 인증샷 {isProofRequired && !isDirectPaperChecked && <span className="text-rose-400 font-extrabold">*필수</span>}
+                          </label>
+                          {isDirectPaperChecked ? (
+                            <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                              종이 직접 제출로 사진 면제됨
+                            </span>
+                          ) : (
+                            proofImages[question.id] && (
+                              proofImages[question.id].isUploading ? (
+                                <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                                  <Loader2 size={12} className="animate-spin" /> 구글 드라이브 동기화 중...
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                                  <CheckCircle2 size={12} /> 구글 드라이브 저장됨
+                                </span>
+                              )
+                            )
+                          )}
+                        </div>
+
+                        {isDirectPaperChecked ? (
+                          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-300 font-bold flex items-center gap-2">
+                            <span>📄</span>
+                            <span>선생님께 시험지를 직접 제출하므로 풀이 사진을 업로드하지 않아도 됩니다.</span>
+                          </div>
+                        ) : proofImages[question.id] ? (
+                          <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
+                            <img
+                              src={proofImages[question.id].url}
+                              alt="풀이 인증샷"
+                              className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
+                              onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                              title="클릭하여 크게 보기"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
+                              <div className="flex items-center gap-2 mt-1">
+                                {proofImages[question.id].isUploading ? (
+                                  <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                                    <Loader2 size={10} className="animate-spin" /> 동기화 중...
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                                    <CheckCircle2 size={10} /> 저장 완료
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                                  className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
+                                >
+                                  <Maximize2 size={10} /> 크게 보기
+                                </button>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveProof(question.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                              title="삭제 후 다시 촬영"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div>
+                            <input
+                              type="file"
+                              id={`proof-upload-${question.id}`}
+                              accept="image/*"
+                              capture="environment"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleUploadProof(question.id, currentQuestionIndex + 1, f);
+                                e.target.value = '';
+                              }}
+                            />
+                            <label
+                              htmlFor={`proof-upload-${question.id}`}
+                              className={`w-full py-3.5 px-4 rounded-2xl border border-dashed flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                                uploadingProofQId === question.id
+                                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
+                                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/30 text-amber-300 hover:border-amber-400/60'
+                              }`}
+                            >
+                              {uploadingProofQId === question.id ? (
+                                <>
+                                  <Loader2 size={16} className="animate-spin text-amber-400" />
+                                  <span className="text-xs font-black">내 구글 드라이브에 저장 중...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Camera size={16} className="text-amber-400" />
+                                  <span className="text-xs font-black">풀이과정 사진 촬영 / 업로드</span>
+                                </>
+                              )}
+                            </label>
+                          </div>
+                        )}
+                      </div>
 
                   {/* 마킹 현황 요약 */}
                   <div className="pt-4 border-t border-white/10 text-xs text-slate-400 flex items-center justify-between">
@@ -1958,7 +2210,13 @@ export default function StudentTest2View({
                         <span className={`font-black text-sm ${
                           isPending ? 'text-amber-300' : isCorrect ? 'text-emerald-400' : 'text-rose-400'
                         }`}>
-                          {userAns}
+                          {userAns === '__DIRECT_PAPER__' || ansInfo?.is_direct_paper ? (
+                            <span className="inline-flex items-center gap-1 text-amber-300 text-xs">
+                              <FileCheck size={13} /> 종이 직접 제출
+                            </span>
+                          ) : (
+                            userAns
+                          )}
                         </span>
                       </div>
                       <div className="p-2 rounded-xl bg-white/5">
@@ -1972,6 +2230,41 @@ export default function StudentTest2View({
                         </span>
                       </div>
                     </div>
+
+                    {/* 🧩 소문항별 정오답 상세 피드백 (부분점수는 없으나 문항별 맞음/틀림 피드백 제공) */}
+                    {ansInfo?.sub_results && Object.keys(ansInfo.sub_results).length > 0 && (
+                      <div className="mt-2.5 pt-2 border-t border-white/5 space-y-1.5">
+                        <div className="text-[11px] font-bold text-slate-400 flex items-center justify-between">
+                          <span>소문항별 세부 정오 결과</span>
+                          <span className="text-[10px] text-slate-500 font-normal">※ 모든 소문항 일치 시 득점</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {Object.entries(ansInfo.sub_results).map(([subLabel, isSubCorrect]) => {
+                            const subUserVal = ansInfo.sub_answers?.[subLabel] || '-';
+                            return (
+                              <div
+                                key={subLabel}
+                                className={`p-2 rounded-xl border flex items-center justify-between text-xs ${
+                                  isSubCorrect
+                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="font-black shrink-0">{subLabel}</span>
+                                  <span className="truncate text-[11px] text-slate-300" title={subUserVal}>
+                                    {subUserVal}
+                                  </span>
+                                </div>
+                                <span className="font-bold text-[10px] shrink-0 ml-1">
+                                  {isSubCorrect ? '⭕ 정답' : '❌ 오답'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* 📸 제출된 풀이 인증샷 보기 버튼 */}
                     {ansInfo?.proof_image_url && (

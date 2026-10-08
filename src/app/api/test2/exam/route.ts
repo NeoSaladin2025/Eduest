@@ -10,6 +10,11 @@ const supabase = createClient(
 const RECORD_DRIVE_ID = "test2_exam_papers_data";
 const SUBMISSIONS_RECORD_DRIVE_ID = "test2_student_submissions_data";
 
+export interface ExamSubQuestion {
+  label: string;
+  answer: string;
+}
+
 export interface ExamQuestion {
   id: string;
   drive_id: string;
@@ -23,6 +28,13 @@ export interface ExamQuestion {
   question_number?: number | null;
   display_name?: string | null;
   is_descriptive?: boolean;
+  question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
+  sub_questions?: ExamSubQuestion[];
+}
+
+export interface StudentOverrideConfig {
+  enable_lockdown?: boolean;
+  require_proof_image?: boolean;
 }
 
 export interface ExamPaper {
@@ -35,6 +47,8 @@ export interface ExamPaper {
   is_wrong_review?: boolean;
   is_special?: boolean;
   require_proof_image?: boolean;
+  enable_lockdown?: boolean;
+  student_overrides?: Record<string, StudentOverrideConfig>;
   parent_exam_id?: string;
   created_at: string;
   updated_at: string;
@@ -173,7 +187,19 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { title, grade, duration_min, questions, assigned_student_ids, is_wrong_review, is_special, require_proof_image, parent_exam_id } = body;
+    const { 
+      title, 
+      grade, 
+      duration_min, 
+      questions, 
+      assigned_student_ids, 
+      is_wrong_review, 
+      is_special, 
+      require_proof_image, 
+      enable_lockdown,
+      student_overrides,
+      parent_exam_id 
+    } = body;
 
     if (!title || !questions || !Array.isArray(questions) || questions.length === 0) {
       return NextResponse.json(
@@ -187,24 +213,32 @@ export async function POST(req: NextRequest) {
       title: title.trim(),
       grade: grade || "공통",
       duration_min: Number(duration_min) || 50,
-      questions: questions.map((q: any, idx: number) => ({
-        id: q.id || `q_${idx + 1}_${Date.now()}`,
-        drive_id: q.drive_id,
-        name: q.name,
-        image_url: q.image_url || "",
-        answer: String(q.answer ?? "").trim(),
-        raw_answer: String(q.raw_answer ?? "").trim(),
-        solution_drive_id: q.solution_drive_id || q.drive_id,
-        points: q.points || Math.round(100 / questions.length),
-        folder_name: q.folder_name || null,
-        question_number: typeof q.question_number === 'number' ? q.question_number : null,
-        display_name: q.display_name || null,
-        is_descriptive: !!q.is_descriptive,
-      })),
+      questions: questions.map((q: any, idx: number) => {
+        const ans = String(q.answer ?? "").trim();
+        const derivedType = q.question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ans) ? 'MULTIPLE' : 'SHORT'));
+        return {
+          id: q.id || `q_${idx + 1}_${Date.now()}`,
+          drive_id: q.drive_id,
+          name: q.name,
+          image_url: q.image_url || "",
+          answer: ans,
+          raw_answer: String(q.raw_answer ?? "").trim(),
+          solution_drive_id: q.solution_drive_id || q.drive_id,
+          points: q.points || Math.round(100 / questions.length),
+          folder_name: q.folder_name || null,
+          question_number: typeof q.question_number === 'number' ? q.question_number : null,
+          display_name: q.display_name || null,
+          is_descriptive: derivedType === 'DESCRIPTIVE' || !!q.is_descriptive,
+          question_type: derivedType,
+          sub_questions: Array.isArray(q.sub_questions) && q.sub_questions.length > 0 ? q.sub_questions : undefined,
+        };
+      }),
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
       is_wrong_review: !!is_wrong_review,
       is_special: !!is_special,
       require_proof_image: !!require_proof_image,
+      enable_lockdown: !!enable_lockdown,
+      student_overrides: typeof student_overrides === 'object' && student_overrides !== null ? student_overrides : {},
       parent_exam_id: parent_exam_id || undefined,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -226,7 +260,17 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const body = await req.json();
-    const { examId, title, grade, duration_min, questions, assigned_student_ids } = body;
+    const { 
+      examId, 
+      title, 
+      grade, 
+      duration_min, 
+      questions, 
+      assigned_student_ids,
+      require_proof_image,
+      enable_lockdown,
+      student_overrides
+    } = body;
 
     if (!examId) {
       return NextResponse.json({ success: false, error: "examId가 필요합니다." }, { status: 400 });
@@ -245,9 +289,21 @@ export async function PUT(req: NextRequest) {
       title: title !== undefined ? title.trim() : current.title,
       grade: grade !== undefined ? grade : current.grade,
       duration_min: duration_min !== undefined ? Number(duration_min) : current.duration_min,
-      questions: questions !== undefined ? questions : current.questions,
+      questions: questions !== undefined ? questions.map((q: any) => {
+        const ans = String(q.answer ?? "").trim();
+        const derivedType = q.question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ans) ? 'MULTIPLE' : 'SHORT'));
+        return {
+          ...q,
+          is_descriptive: derivedType === 'DESCRIPTIVE' || !!q.is_descriptive,
+          question_type: derivedType,
+          sub_questions: Array.isArray(q.sub_questions) && q.sub_questions.length > 0 ? q.sub_questions : undefined,
+        };
+      }) : current.questions,
       assigned_student_ids:
         assigned_student_ids !== undefined ? assigned_student_ids : current.assigned_student_ids,
+      require_proof_image: require_proof_image !== undefined ? !!require_proof_image : current.require_proof_image,
+      enable_lockdown: enable_lockdown !== undefined ? !!enable_lockdown : current.enable_lockdown,
+      student_overrides: student_overrides !== undefined ? student_overrides : current.student_overrides,
       updated_at: new Date().toISOString(),
     };
 

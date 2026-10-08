@@ -112,6 +112,7 @@ export async function GET() {
       points: number;
       submitted_at: string;
       proof_image_url?: string;
+      is_direct_paper?: boolean;
     }> = [];
 
     // 최신 제출순으로 정렬
@@ -146,6 +147,7 @@ export async function GET() {
             points: examQ?.points || 0,
             submitted_at: sub.submitted_at,
             proof_image_url: ans.proof_image_url,
+            is_direct_paper: !!ans.is_direct_paper || ans.user_answer === "__DIRECT_PAPER__",
           });
         }
       }
