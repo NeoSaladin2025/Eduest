@@ -482,7 +482,7 @@ export default function ExamBundleTab({ exams, students }: ExamBundleTabProps) {
                               {exam.title}
                             </span>
                             <p className="text-[10px] text-slate-400 mt-0.5">
-                              {exam.questions.length}문항 • {exam.duration_min}분
+                              {exam.questions.length}문항 • {exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}
                             </p>
                           </div>
                           <button

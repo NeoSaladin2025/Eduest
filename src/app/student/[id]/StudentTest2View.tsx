@@ -631,7 +631,8 @@ export default function StudentTest2View({
 
           // 남은 시간 복원 또는 기본 설정 (분 -> 초)
           const savedTime = localStorage.getItem(`test2_time_${studentId}_${examId}`);
-          const initialDurationSec = (data.exam.duration_min || 60) * 60;
+          const isUnlimited = typeof data.exam.duration_min === 'number' && data.exam.duration_min <= 0;
+          const initialDurationSec = isUnlimited ? 0 : (data.exam.duration_min || 60) * 60;
           const initialTime = savedTime ? parseInt(savedTime, 10) : initialDurationSec;
           setTimeLeft(initialTime);
 
@@ -646,7 +647,7 @@ export default function StudentTest2View({
               .update({
                 test_status: 'TESTING',
                 test_remaining_sec: initialTime,
-                test_duration_min: data.exam.duration_min || 60,
+                test_duration_min: data.exam.duration_min ?? 0,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', studentId)
@@ -669,6 +670,18 @@ export default function StudentTest2View({
     if (viewMode !== 'taking' || !currentExam || isLocked || isPaused) return;
 
     const timer = setInterval(() => {
+      // 🌟 제한시간 없는 무제한 시험인 경우 강제 종료 없음 (소요 시간 카운트업)
+      if (typeof currentExam.duration_min === 'number' && currentExam.duration_min <= 0) {
+        setTimeLeft(prev => {
+          const next = prev + 1;
+          if (next % 5 === 0) {
+            localStorage.setItem(`test2_time_${studentId}_${currentExam.id}`, String(next));
+          }
+          return next;
+        });
+        return;
+      }
+
       setTimeLeft(prev => {
         if (prev <= 1) {
           clearInterval(timer);
@@ -1073,7 +1086,7 @@ export default function StudentTest2View({
                             {exam.title}
                           </h3>
                           <p className="text-xs text-slate-400 font-bold mt-2">
-                            총 {exam.question_count}문항 • 제한시간 {exam.duration_min}분
+                            총 {exam.question_count}문항 • {exam.duration_min > 0 ? `제한시간 ${exam.duration_min}분` : '제한시간 무제한'}
                           </p>
                         </div>
 
@@ -1159,7 +1172,7 @@ export default function StudentTest2View({
                             {exam.title}
                           </h3>
                           <p className="text-xs text-slate-500 font-bold mt-2">
-                            총 {exam.question_count}문항 • 제한시간 {exam.duration_min}분
+                            총 {exam.question_count}문항 • {exam.duration_min > 0 ? `제한시간 ${exam.duration_min}분` : '제한시간 무제한'}
                           </p>
                         </div>
 
@@ -1344,7 +1357,7 @@ export default function StudentTest2View({
                             {exam.title}
                           </h3>
                           <p className="text-xs text-slate-500 font-bold mt-2">
-                            오답 문항 총 {exam.question_count}문제 • 제한시간 {exam.duration_min}분
+                            오답 문항 총 {exam.question_count}문제 • {exam.duration_min > 0 ? `제한시간 ${exam.duration_min}분` : '제한시간 무제한'}
                           </p>
                         </div>
 
@@ -1427,18 +1440,28 @@ export default function StudentTest2View({
               </div>
             </div>
 
-            {/* 🔥 상단 실시간 제한시간 자동 카운트다운 타이머 */}
-            <div className={`px-5 py-2.5 rounded-2xl flex items-center gap-2.5 border font-mono font-black text-sm md:text-base shadow-lg transition-all ${
-              timeLeft < 300 
-                ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' 
-                : 'bg-white/10 text-white border-white/10'
-            }`}>
-              <Clock size={19} className={timeLeft < 300 ? 'text-rose-400' : 'text-violet-400'} />
-              <div className="flex flex-col text-left">
-                <span className="text-[9px] uppercase tracking-wider text-slate-400 font-sans">남은 제한시간</span>
-                <span className="tracking-widest">{formatRemainingTime(timeLeft)}</span>
+            {/* 🔥 상단 실시간 제한시간 자동 카운트다운 타이머 또는 무제한 표시 */}
+            {currentExam.duration_min <= 0 ? (
+              <div className="px-5 py-2.5 rounded-2xl flex items-center gap-2.5 border font-mono font-black text-sm md:text-base shadow-lg bg-emerald-500/20 text-emerald-300 border-emerald-500/40">
+                <Clock size={19} className="text-emerald-400" />
+                <div className="flex flex-col text-left">
+                  <span className="text-[9px] uppercase tracking-wider text-emerald-300/80 font-sans">시험 진행 (무제한)</span>
+                  <span className="tracking-wide text-xs md:text-sm font-sans font-black">자율 학습 모드</span>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className={`px-5 py-2.5 rounded-2xl flex items-center gap-2.5 border font-mono font-black text-sm md:text-base shadow-lg transition-all ${
+                timeLeft < 300 
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' 
+                  : 'bg-white/10 text-white border-white/10'
+              }`}>
+                <Clock size={19} className={timeLeft < 300 ? 'text-rose-400' : 'text-violet-400'} />
+                <div className="flex flex-col text-left">
+                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-sans">남은 제한시간</span>
+                  <span className="tracking-widest">{formatRemainingTime(timeLeft)}</span>
+                </div>
+              </div>
+            )}
 
             {/* 문항 번호 네비게이션 칩 */}
             <div className="flex items-center gap-1.5 overflow-x-auto max-w-full md:max-w-md py-1 scrollbar-hide">

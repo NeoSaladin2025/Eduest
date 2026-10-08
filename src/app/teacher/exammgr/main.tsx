@@ -102,6 +102,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [examTitle, setExamTitle] = useState('');
   const [examGrade, setExamGrade] = useState('고1');
   const [examDuration, setExamDuration] = useState(50);
+  const [isNoTimeLimit, setIsNoTimeLimit] = useState(false);
   
   // 선택된 문제들 (바구니)
   const [selectedFiles, setSelectedFiles] = useState<{
@@ -479,6 +480,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       alert('먼저 [문제 이미지 및 정답 추출]을 실행해주세요.');
       return;
     }
+    if (!isNoTimeLimit && (!examDuration || examDuration <= 0)) {
+      alert('제한 시간을 분 단위로 입력하거나 [제한시간 없음]을 체크해주세요.');
+      return;
+    }
 
     try {
       setLoading(true);
@@ -488,7 +493,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         body: JSON.stringify({
           title: examTitle.trim(),
           grade: examGrade,
-          duration_min: examDuration,
+          duration_min: isNoTimeLimit ? 0 : Math.max(0, examDuration),
           questions: extractedQuestions,
           assigned_student_ids: assignedStudentIds,
         }),
@@ -502,6 +507,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setExtractedQuestions([]);
         setExtractionDone(false);
         setAssignedStudentIds([]);
+        setExamDuration(50);
+        setIsNoTimeLimit(false);
         setActiveTab('list');
         loadInitialData();
       } else {
@@ -1112,7 +1119,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
                         <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold">
                           <Clock size={14} />
-                          <span>{exam.duration_min}분</span>
+                          <span>{exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}</span>
                         </div>
                       </div>
 
@@ -1239,17 +1246,41 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-500 mb-1.5">
-                  제한 시간 (분)
-                </label>
-                <input
-                  type="number"
-                  min={10}
-                  max={180}
-                  value={examDuration}
-                  onChange={e => setExamDuration(Number(e.target.value))}
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-violet-500 text-sm font-bold"
-                />
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-500">
+                    제한 시간 (분)
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isNoTimeLimit}
+                      onChange={e => setIsNoTimeLimit(e.target.checked)}
+                      className="w-3.5 h-3.5 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
+                    />
+                    <span className={`text-xs font-black transition-colors ${isNoTimeLimit ? 'text-violet-700' : 'text-slate-400'}`}>
+                      제한시간 없음 (무제한)
+                    </span>
+                  </label>
+                </div>
+
+                {isNoTimeLimit ? (
+                  <div className="w-full px-4 py-2.5 rounded-xl border border-violet-200 bg-violet-50/70 text-violet-700 text-sm font-black flex items-center justify-between">
+                    <span>✨ 무제한 (자율 학습 / 대량 문제 모음)</span>
+                    <span className="text-[11px] font-bold text-violet-500">시간 제약 없음</span>
+                  </div>
+                ) : (
+                  <input
+                    type="number"
+                    min={1}
+                    placeholder="예: 50, 300 등 자유롭게 입력"
+                    value={examDuration === 0 ? '' : examDuration}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setExamDuration(v === '' ? 0 : Math.max(1, parseInt(v, 10) || 0));
+                    }}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:border-violet-500 text-sm font-bold placeholder:font-normal placeholder:text-slate-400"
+                  />
+                )}
               </div>
             </div>
           </div>
