@@ -113,6 +113,7 @@ export async function GET() {
       submitted_at: string;
       proof_image_url?: string;
       is_direct_paper?: boolean;
+      is_photo_submission?: boolean;
     }> = [];
 
     // 최신 제출순으로 정렬
@@ -148,6 +149,7 @@ export async function GET() {
             submitted_at: sub.submitted_at,
             proof_image_url: ans.proof_image_url,
             is_direct_paper: !!ans.is_direct_paper || ans.user_answer === "__DIRECT_PAPER__",
+            is_photo_submission: !!ans.is_photo_submission || ans.user_answer === "__PHOTO_SUBMISSION__",
           });
         }
       }

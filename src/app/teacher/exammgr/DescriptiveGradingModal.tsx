@@ -16,7 +16,9 @@ import {
   ExternalLink,
   ChevronRight,
   FileQuestion,
-  FileText
+  FileText,
+  Camera,
+  Maximize2
 } from 'lucide-react';
 
 export interface PendingGradingItem {
@@ -37,6 +39,7 @@ export interface PendingGradingItem {
   submitted_at: string;
   proof_image_url?: string;
   is_direct_paper?: boolean;
+  is_photo_submission?: boolean;
 }
 
 interface DescriptiveGradingModalProps {
@@ -207,11 +210,15 @@ export default function DescriptiveGradingModal({
                         <span>{it.student_name}</span>
                       </div>
                       <div className="flex items-center gap-1">
-                        {(it.is_direct_paper || it.user_answer === '__DIRECT_PAPER__') && (
+                        {(it.is_direct_paper || it.user_answer === '__DIRECT_PAPER__') ? (
                           <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 font-black text-[10px] flex items-center gap-0.5">
                             <FileText size={10} /> 종이
                           </span>
-                        )}
+                        ) : it.user_answer === '__PHOTO_SUBMISSION__' ? (
+                          <span className="px-1.5 py-0.5 rounded-md bg-blue-100 text-blue-800 font-black text-[10px] flex items-center gap-0.5">
+                            <Camera size={10} /> 사진
+                          </span>
+                        ) : null}
                         <span className="px-1.5 py-0.5 rounded-md bg-violet-100 text-violet-800 font-black text-[10px]">
                           문항 {it.question_number}번
                         </span>
@@ -307,6 +314,16 @@ export default function DescriptiveGradingModal({
                             </div>
                           </div>
                         </div>
+                      ) : currentItem.user_answer === '__PHOTO_SUBMISSION__' ? (
+                        <div className="flex items-start gap-2.5 text-blue-800 bg-blue-50 p-3 rounded-lg border border-blue-200">
+                          <Camera size={18} className="text-blue-600 shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-black text-xs text-blue-900">📸 서술형 사진 제출 (가정 학습 등)</div>
+                            <div className="text-[11px] text-blue-700 font-normal mt-0.5 leading-relaxed">
+                              학생이 작성한 풀이 노트를 사진으로 촬영하여 제출했습니다. 아래 첨부된 풀이 사진을 확인 후 정답 여부를 판정하세요.
+                            </div>
+                          </div>
+                        </div>
                       ) : currentItem.user_answer ? (
                         currentItem.user_answer
                       ) : (
@@ -314,19 +331,41 @@ export default function DescriptiveGradingModal({
                       )}
                     </div>
 
-                    {currentItem.proof_image_url && (
-                      <div className="pt-2 flex items-center gap-2">
-                        <span className="text-xs font-bold text-slate-600">풀이 사진 첨부됨:</span>
+                    {currentItem.proof_image_url ? (
+                      <div className="pt-2 bg-indigo-50/80 rounded-xl p-3 border border-indigo-200/80 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={currentItem.proof_image_url}
+                            alt="학생 풀이 노트"
+                            className="w-14 h-14 object-cover rounded-lg border border-indigo-200 cursor-pointer hover:scale-105 transition-transform bg-white"
+                            onClick={() => setPreviewImage(currentItem.proof_image_url!)}
+                            title="클릭하여 크게 보기"
+                          />
+                          <div>
+                            <div className="text-xs font-black text-indigo-900 flex items-center gap-1">
+                              <Camera size={13} className="text-indigo-600" />
+                              <span>학생 풀이 노트 사진</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                              클릭하면 원본 크기로 선명하게 확대됩니다.
+                            </p>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           onClick={() => setPreviewImage(currentItem.proof_image_url!)}
-                          className="text-xs text-indigo-600 font-bold hover:underline flex items-center gap-1"
+                          className="px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 hover:text-indigo-800 rounded-xl text-xs font-black flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
                         >
-                          <Eye size={12} />
-                          학생 풀이 노트 보기
+                          <Maximize2 size={12} />
+                          <span>크게 보기</span>
                         </button>
                       </div>
-                    )}
+                    ) : currentItem.user_answer === '__PHOTO_SUBMISSION__' ? (
+                      <div className="text-[11px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-200 font-bold flex items-center gap-1.5">
+                        <AlertCircle size={13} />
+                        <span>서술형 사진 제출로 설정되었으나 첨부된 풀이 사진이 없습니다.</span>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* 2. 시스템 추출 모범 정답 */}

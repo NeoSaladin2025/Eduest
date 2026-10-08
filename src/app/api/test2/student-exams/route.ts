@@ -37,6 +37,7 @@ export interface StudentSubmission {
       sub_answers?: Record<string, string>;
       sub_results?: Record<string, boolean>;
       is_direct_paper?: boolean;
+      is_photo_submission?: boolean;
       grading_status?: 'graded' | 'pending' | 'reviewed';
       show_solution?: boolean;
       reviewed_at?: string;
@@ -362,6 +363,7 @@ export async function POST(req: NextRequest) {
         sub_answers: subAnswers,
         sub_results: subResults,
         is_direct_paper: isDirectPaper,
+        is_photo_submission: userAns === '__PHOTO_SUBMISSION__',
         grading_status: gradingStatus,
         show_solution: !isDescriptive, // 일반 문제는 기본 공개, 서술형은 선생님 승인 시 공개
       };

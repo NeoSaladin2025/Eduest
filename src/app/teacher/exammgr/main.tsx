@@ -2393,7 +2393,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       key={q.id || idx}
                       className="bg-white p-3.5 rounded-xl border border-violet-100 shadow-xs space-y-2.5 text-xs"
                     >
-                      <div className="flex items-center justify-between">
+                      {/* 문항 헤더: 번호 및 유형 세그먼트 */}
+                      <div className="flex items-center justify-between gap-1 flex-wrap">
                         <div className="flex items-center gap-1.5">
                           <span className="font-black text-violet-700">문항 {idx + 1}</span>
                           {q.is_descriptive ? (
@@ -2406,49 +2407,6 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             </span>
                           )}
                         </div>
-
-                        <div className="flex items-center gap-1.5">
-                          {/* 🌟 문항별 독립 재추출 버튼 */}
-                          <button
-                            type="button"
-                            onClick={() => handleReExtractSingleQuestion(idx)}
-                            disabled={reExtractingIds.has(q.drive_id)}
-                            className="text-[11px] text-indigo-600 hover:text-indigo-800 disabled:opacity-40 flex items-center gap-1 font-bold px-1.5 py-0.5 rounded-md hover:bg-indigo-50 border border-indigo-200 transition-colors cursor-pointer"
-                            title="이 문항의 정답 및 이미지만 다시 추출합니다"
-                          >
-                            {reExtractingIds.has(q.drive_id) ? (
-                              <>
-                                <Loader2 size={11} className="animate-spin text-indigo-600" />
-                                <span>추출 중</span>
-                              </>
-                            ) : (
-                              <>
-                                <RotateCw size={11} />
-                                <span>재추출</span>
-                              </>
-                            )}
-                          </button>
-
-                          {q.image_url ? (
-                            <button
-                              type="button"
-                              onClick={() => setPreviewQuestion(q)}
-                              className="text-[11px] text-violet-600 hover:underline flex items-center gap-1 font-bold"
-                            >
-                              <Eye size={13} />
-                              이미지 보기
-                            </button>
-                          ) : (
-                            <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded font-bold">
-                              이미지 없음
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* 문항 헤더: 번호 및 유형 세그먼트 */}
-                      <div className="flex items-center justify-between gap-1 flex-wrap">
-                        <span className="font-black text-violet-700">문항 {idx + 1}</span>
 
                         {/* 유형 선택 버튼 세트 */}
                         <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px] font-black">
@@ -2488,7 +2446,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between text-[11px] text-slate-500">
+                      {/* 문항 메타 및 액션 버튼들 (재추출, 원본 HTML, 이미지) */}
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5 border-t border-slate-100">
                         <div className="truncate flex items-center gap-1.5 min-w-0" title={q.name}>
                           {q.folder_name && (
                             <span className="px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[9px] font-bold shrink-0">
@@ -2504,12 +2463,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
 
                         <div className="flex items-center gap-1 shrink-0 ml-1">
+                          {/* 🌟 원본 HTML 보기 버튼 */}
+                          {(q.solution_drive_id || q.drive_id) && (
+                            <button
+                              type="button"
+                              onClick={() => setTeacherSolutionModalDriveId(q.solution_drive_id || q.drive_id)}
+                              className="text-[10px] text-emerald-700 hover:text-emerald-900 flex items-center gap-0.5 font-bold px-1.5 py-0.5 rounded-md hover:bg-emerald-50 border border-emerald-200 transition-colors cursor-pointer"
+                              title="원본 HTML 문제 및 해설을 열람하여 정답을 직접 대조합니다"
+                            >
+                              <FileText size={10} className="text-emerald-600" />
+                              <span>원본 HTML</span>
+                            </button>
+                          )}
+
+                          {/* 문항별 재추출 버튼 */}
                           <button
                             type="button"
                             onClick={() => handleReExtractSingleQuestion(idx)}
                             disabled={reExtractingIds.has(q.drive_id)}
                             className="text-[10px] text-indigo-600 hover:text-indigo-800 disabled:opacity-40 flex items-center gap-0.5 font-bold px-1.5 py-0.5 rounded-md hover:bg-indigo-50 border border-indigo-200 transition-colors cursor-pointer"
-                            title="재추출"
+                            title="이 문항의 정답 및 이미지만 다시 추출합니다"
                           >
                             {reExtractingIds.has(q.drive_id) ? (
                               <Loader2 size={10} className="animate-spin text-indigo-600" />
@@ -2519,15 +2492,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <span>재추출</span>
                           </button>
 
-                          {q.image_url && (
+                          {q.image_url ? (
                             <button
                               type="button"
                               onClick={() => setPreviewQuestion(q)}
                               className="text-[10px] text-violet-600 hover:underline flex items-center gap-0.5 font-bold"
+                              title="문제 이미지 미리보기"
                             >
                               <Eye size={11} />
                               보기
                             </button>
+                          ) : (
+                            <span className="text-[9px] text-amber-600 bg-amber-50 px-1 py-0.2 rounded font-bold">
+                              이미지없음
+                            </span>
                           )}
                         </div>
                       </div>

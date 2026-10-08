@@ -87,29 +87,41 @@ export function detectSubQuestions(text: string): SubQuestionItem[] {
   const str = text.trim();
 
   // (1), (2) / ①, ② / [1], [2] / 1), 2) / (가), (나) 등 소문항 분할 패턴
-  const regex = /(?:^|\s|,|;|\n|\r)(?:\(([1-9]|가|나|다|라)\)|([①②③④⑤❶❷❸❹❺])|\[([1-9])\]|([1-9]\)))\s*([^(),;\n\r①②③④⑤❶❷❸❹❺]+)/g;
-  const items: SubQuestionItem[] = [];
-  let match: RegExpExecArray | null;
+  const labelPattern = /(?:^|\s|\n|\r)(?:\(([1-9]|가|나|다|라)\)|([①②③④⑤❶❷❸❹❺])|\[([1-9])\]|([1-9]\)))(?:\s*|\.?)/g;
+  const matches: Array<{ index: number; length: number; label: string }> = [];
+  let m: RegExpExecArray | null;
 
-  while ((match = regex.exec(str)) !== null) {
+  while ((m = labelPattern.exec(str)) !== null) {
     let label = '';
-    if (match[1]) label = `(${match[1]})`;
-    else if (match[2]) label = match[2];
-    else if (match[3]) label = `[${match[3]}]`;
-    else if (match[4]) label = match[4];
+    if (m[1]) label = `(${m[1]})`;
+    else if (m[2]) label = m[2];
+    else if (m[3]) label = `[${m[3]}]`;
+    else if (m[4]) label = m[4];
 
-    const ans = (match[5] || '').trim();
-    if (label && ans) {
-      items.push({ label, answer: ans });
-    }
+    matches.push({
+      index: m.index,
+      length: m[0].length,
+      label,
+    });
   }
 
   // 2개 이상의 소문항이 분할 검출되었을 때만 소문항 구조로 인정
-  if (items.length >= 2) {
-    return items;
+  if (matches.length < 2) {
+    return [];
   }
 
-  return [];
+  const items: SubQuestionItem[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const cur = matches[i];
+    const start = cur.index + cur.length;
+    const end = (i + 1 < matches.length) ? matches[i + 1].index : str.length;
+    const ans = str.slice(start, end).trim().replace(/^[:：\s]+/, '').replace(/[,;\s]+$/, '');
+    if (ans) {
+      items.push({ label: cur.label, answer: ans });
+    }
+  }
+
+  return items.length >= 2 ? items : [];
 }
 
 // 문제 유형 ('MULTIPLE' | 'SHORT' | 'DESCRIPTIVE') 자동 판별
@@ -206,15 +218,32 @@ export function extractQuestionData(
   let rawAnswer = "";
   let cleanAnswer = "";
 
-  // 2-1. final-answer-text 태그 검색
-  const mAns = html.match(/class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/[a-z0-9]+>/i);
-  if (mAns) {
-    rawAnswer = mAns[1].replace(/<[^>]+>/g, '').trim();
+  // 2-1. final-answer-text 태그 검색 (온전한 </span>까지 매칭하여 내부 MathML 수식 태그 조기 종료 방지)
+  const mAnsSpan = html.match(/<span\b[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+  if (mAnsSpan) {
+    rawAnswer = mAnsSpan[1]
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
   } else {
-    // 2-2. 정답 표기 패턴 검색
-    const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
-    if (mAns2) {
-      rawAnswer = mAns2[1].replace(/<[^>]+>/g, '').trim();
+    // 2-2. final-answer-box 박스 전체 검색
+    const mAnsBox = html.match(/class=["'][^"']*final-answer-box[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+    if (mAnsBox) {
+      rawAnswer = mAnsBox[1]
+        .replace(/<span\b[^>]*class=["'][^"']*final-answer-label[^"']*["'][^>]*>[\s\S]*?<\/span>/gi, '')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .trim();
+    } else {
+      // 2-3. 정답 표기 패턴 검색
+      const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
+      if (mAns2) {
+        rawAnswer = mAns2[1].replace(/<[^>]+>/g, ' ').trim();
+      }
     }
   }
 

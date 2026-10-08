@@ -26,7 +26,11 @@ import {
   Star,
   Camera,
   Trash2,
-  Maximize2
+  Maximize2,
+  Plus,
+  Minus,
+  Info,
+  FileText
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
@@ -182,6 +186,12 @@ export default function StudentTest2View({
   const [userAnswers, setUserAnswers] = useState<Record<string, any>>({});
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
+
+  // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
+  const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
+
+  // 📝 서술형 문항 제출 방식 (PAPER: 종이 직접제출, PHOTO: 서술형 사진제출, TEXT: 텍스트 직접입력)
+  const [descriptiveSubmitModes, setDescriptiveSubmitModes] = useState<Record<string, 'PAPER' | 'PHOTO' | 'TEXT'>>({});
 
   // 📸 [신규] 풀이과정 사진 인증샷 상태 & 모달 (체감 0초 낙관적 UI 지원)
   const [proofImages, setProofImages] = useState<
@@ -799,14 +809,72 @@ export default function StudentTest2View({
     broadcastProctorStatus('TESTING');
   };
 
+  // 문항의 활성 소문항 라벨 목록 계산 (수동 추가된 목록 우선)
+  const getQuestionSubLabels = (q: any): string[] => {
+    if (!q) return [];
+    if (customSubLabels[q.id] !== undefined) {
+      return customSubLabels[q.id];
+    }
+    if (Array.isArray(q.sub_questions) && q.sub_questions.length >= 2) {
+      return q.sub_questions.map((sq: any) => sq.label);
+    }
+    const ans = userAnswers[q.id];
+    if (typeof ans === 'object' && ans !== null && Object.keys(ans).length >= 2) {
+      return Object.keys(ans);
+    }
+    return [];
+  };
+
+  // 소문항 칸 추가 핸들러
+  const handleAddSubQuestion = (qId: string) => {
+    const qObj = currentExam?.questions?.find(q => q.id === qId);
+    const curLabels = getQuestionSubLabels(qObj || { id: qId });
+    let nextLabels: string[];
+    if (curLabels.length === 0) {
+      nextLabels = ['(1)', '(2)'];
+    } else {
+      const nextNum = curLabels.length + 1;
+      nextLabels = [...curLabels, `(${nextNum})`];
+    }
+    setCustomSubLabels(prev => ({ ...prev, [qId]: nextLabels }));
+  };
+
+  // 소문항 칸 삭제 핸들러 (마지막 칸 제거)
+  const handleRemoveSubQuestion = (qId: string) => {
+    const qObj = currentExam?.questions?.find(q => q.id === qId);
+    const curLabels = getQuestionSubLabels(qObj || { id: qId });
+    if (curLabels.length <= 2) {
+      // 2개 이하에서 삭제 시 소문항 모드 해제 (단일 입력창 복귀)
+      setCustomSubLabels(prev => ({ ...prev, [qId]: [] }));
+      setUserAnswers(prev => {
+        const curAns = prev[qId];
+        let singleVal = '';
+        if (typeof curAns === 'object' && curAns !== null) {
+          singleVal = curAns['(1)'] || Object.values(curAns)[0] || '';
+        } else if (typeof curAns === 'string') {
+          singleVal = curAns;
+        }
+        const updated = { ...prev, [qId]: singleVal };
+        if (currentExam) {
+          localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(updated));
+        }
+        return updated;
+      });
+    } else {
+      const nextLabels = curLabels.slice(0, -1);
+      setCustomSubLabels(prev => ({ ...prev, [qId]: nextLabels }));
+    }
+  };
+
   // 문항 마킹 완료 여부 판정 헬퍼
   const isQuestionAnswered = (q: any) => {
     const ans = userAnswers[q.id];
     if (!ans) return false;
-    if (ans === '__DIRECT_PAPER__' || ans === '모름') return true;
-    if (q.sub_questions && q.sub_questions.length >= 2) {
+    if (ans === '__DIRECT_PAPER__' || ans === '__PHOTO_SUBMISSION__' || ans === '모름') return true;
+    const subLabels = getQuestionSubLabels(q);
+    if (subLabels.length >= 2) {
       if (typeof ans === 'object' && ans !== null) {
-        return q.sub_questions.every((sq: any) => Boolean(ans[sq.label]?.trim()));
+        return subLabels.every((lbl: string) => Boolean(ans[lbl]?.trim()));
       }
       return Boolean(ans);
     }
@@ -924,6 +992,28 @@ export default function StudentTest2View({
           setShowSubmitConfirm(false);
           return;
         }
+      }
+    }
+
+    // 📸 서술형 사진 제출 문항 중 사진이 누락된 문항이 있는지 확인
+    const photoSubWithoutProof = currentExam.questions.filter((q) => {
+      const ans = userAnswers[q.id];
+      if (ans === '__PHOTO_SUBMISSION__') {
+        const hasPhoto = Boolean(proofImagesRef.current[q.id]?.url);
+        return !hasPhoto;
+      }
+      return false;
+    });
+
+    if (photoSubWithoutProof.length > 0) {
+      const qNums = photoSubWithoutProof.map(q => {
+        const idx = currentExam.questions.findIndex(item => item.id === q.id);
+        return `${idx + 1}번`;
+      }).join(', ');
+      const proceed = confirm(`📸 ${qNums} 문항이 [서술형 사진 제출]로 선택되어 있으나 아직 풀이 사진이 첨부되지 않았습니다.\n\n사진 없이 그대로 제출하시겠습니까? (취소 후 문항 화면에서 풀이 사진 첨부 가능)`);
+      if (!proceed) {
+        setShowSubmitConfirm(false);
+        return;
       }
     }
 
@@ -1642,8 +1732,11 @@ export default function StudentTest2View({
             const currentAnswer = userAnswers[question.id] || '';
             const spentSec = questionSpentTimes[question.id] || 0;
             const qType = (question as any).question_type || (question.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(question.answer) ? 'MULTIPLE' : 'SHORT'));
-            const hasSubQuestions = Array.isArray(question.sub_questions) && question.sub_questions.length >= 2;
+            const subLabels = getQuestionSubLabels(question);
+            const hasSubQuestions = subLabels.length >= 2;
             const isDirectPaperChecked = currentAnswer === '__DIRECT_PAPER__';
+            const isPhotoSubmission = currentAnswer === '__PHOTO_SUBMISSION__';
+            const descriptiveMode = descriptiveSubmitModes[question.id] || (isDirectPaperChecked ? 'PAPER' : (isPhotoSubmission ? 'PHOTO' : 'TEXT'));
             const studentOverride = (currentExam as any).student_overrides?.[studentId];
             const isProofRequired = studentOverride?.require_proof_image !== undefined
               ? Boolean(studentOverride.require_proof_image)
@@ -1709,86 +1802,366 @@ export default function StudentTest2View({
                   </div>
                 </div>
 
-                {/* 우측: 답안 입력 패널 (객관식 / 단답형 / 서술형 직접제출 / 소문항별 동적 렌더링) */}
+                {/* 우측: 답안 입력 패널 (객관식 / 단답형 / 서술형 3-Way / 소문항 동적 조절) */}
                 <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl flex flex-col justify-between space-y-6">
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <h4 className="text-base font-black text-white flex items-center gap-2">
-                            <FileCheck size={18} className="text-violet-400" />
-                            답안 마킹
-                          </h4>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
-                            qType === 'MULTIPLE'
-                              ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
-                              : qType === 'SHORT'
-                              ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
-                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                          }`}>
-                            {qType === 'MULTIPLE' ? '객관식 문항' : qType === 'SHORT' ? (hasSubQuestions ? `단답형 (소문항 ${question.sub_questions!.length}개)` : '단답형 문항') : '서술형 문항'}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-400 font-medium">
-                          {qType === 'MULTIPLE'
-                            ? '문제 풀이 후 정답 번호를 선택하세요.'
-                            : qType === 'SHORT'
-                            ? '문제 풀이 후 정답을 입력칸에 직접 적으세요.'
-                            : '풀이를 종이에 적어 직접 제출하거나 텍스트로 입력하세요.'}
-                        </p>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <h4 className="text-base font-black text-white flex items-center gap-2">
+                        <FileCheck size={18} className="text-violet-400" />
+                        답안 마킹
+                      </h4>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                        qType === 'MULTIPLE'
+                          ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                          : qType === 'SHORT'
+                          ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      }`}>
+                        {qType === 'MULTIPLE'
+                          ? '객관식 문항'
+                          : qType === 'SHORT'
+                          ? (hasSubQuestions ? `단답형 (소문항 ${subLabels.length}개)` : '단답형 문항')
+                          : '서술형 문항'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-medium">
+                      {qType === 'MULTIPLE'
+                        ? '문제 풀이 후 정답 번호를 선택하세요.'
+                        : qType === 'SHORT'
+                        ? '문제 풀이 후 정답을 입력칸에 직접 적으세요.'
+                        : '종이 제출, 사진 제출, 또는 직접 입력 중 선택하세요.'}
+                    </p>
 
-                        {/* CASE 1: 객관식 문항인 경우 -> 1~5번 버튼만 표시 */}
-                        {qType === 'MULTIPLE' && (
-                          <div className="mt-8 space-y-3">
-                            <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                              객관식 정답 선택
-                            </label>
-                            <div className="grid grid-cols-5 gap-2">
-                              {['1', '2', '3', '4', '5'].map((num, i) => {
-                                const symbols = ['①', '②', '③', '④', '⑤'];
-                                const isSelected = currentAnswer === num || currentAnswer === symbols[i];
+                    {/* CASE 1: 객관식 문항인 경우 -> 1~5번 버튼만 표시 */}
+                    {qType === 'MULTIPLE' && (
+                      <div className="mt-8 space-y-3">
+                        <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                          객관식 정답 선택
+                        </label>
+                        <div className="grid grid-cols-5 gap-2">
+                          {['1', '2', '3', '4', '5'].map((num, i) => {
+                            const symbols = ['①', '②', '③', '④', '⑤'];
+                            const isSelected = currentAnswer === num || currentAnswer === symbols[i];
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                onClick={() => handleAnswerSelect(question.id, num)}
+                                className={`py-4 rounded-2xl font-black text-base transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
+                                }`}
+                              >
+                                {symbols[i]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CASE 2: 단답형 문항인 경우 (소문항 분할 또는 단일 단답형) */}
+                    {qType === 'SHORT' && (
+                      <div className="mt-6 space-y-4">
+                        {hasSubQuestions ? (
+                          /* 2-A: 소문항 (1), (2) 분할 입력칸 */
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                                <span>소문항별 답안 직접 입력</span>
+                                <span className="text-[10px] text-violet-400 font-bold">({subLabels.length}문항)</span>
+                              </label>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddSubQuestion(question.id)}
+                                  className="px-2 py-0.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 text-[10px] font-black border border-violet-500/30 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                  title="소문항 칸을 1개 더 추가합니다"
+                                >
+                                  <Plus size={11} /> 칸 추가
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSubQuestion(question.id)}
+                                  className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/20 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                  title="마지막 소문항 칸을 삭제합니다"
+                                >
+                                  <Minus size={11} /> 삭제
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* 💡 친절한 소문항 안내 툴팁 배너 */}
+                            <div className="p-2.5 rounded-xl bg-violet-950/40 border border-violet-500/20 text-[11px] text-violet-300/90 flex items-start gap-2">
+                              <Info size={14} className="text-violet-400 shrink-0 mt-0.5" />
+                              <span>
+                                문항에 (1), (2) 등 여러 문제가 있나요? 칸이 부족하면 <strong>[+ 칸 추가]</strong>를 누르고, 많으면 <strong>[- 삭제]</strong>를 누르세요.
+                              </span>
+                            </div>
+
+                            <div className="space-y-2">
+                              {subLabels.map((lbl: string) => {
+                                const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                                const val = subAnsMap[lbl] || '';
                                 return (
-                                  <button
-                                    key={num}
-                                    type="button"
-                                    onClick={() => handleAnswerSelect(question.id, num)}
-                                    className={`py-4 rounded-2xl font-black text-base transition-all cursor-pointer ${
-                                      isSelected
-                                        ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
-                                        : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
-                                    }`}
-                                  >
-                                    {symbols[i]}
-                                  </button>
+                                  <div key={lbl} className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10 focus-within:border-violet-500">
+                                    <span className="w-10 text-center font-black text-sm text-violet-400 shrink-0">
+                                      {lbl}
+                                    </span>
+                                    <input
+                                      type="text"
+                                      value={val}
+                                      onChange={e => handleSubAnswerChange(question.id, lbl, e.target.value)}
+                                      placeholder="정답 입력"
+                                      className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2 px-3 text-white font-black text-base focus:outline-none placeholder:text-slate-600 text-center"
+                                    />
+                                  </div>
                                 );
                               })}
                             </div>
                           </div>
+                        ) : (
+                          /* 2-B: 일반 단일 단답형 입력칸 + 소문항 분할 버튼 */
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                단답형 답안 직접 입력
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => handleAddSubQuestion(question.id)}
+                                className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
+                              >
+                                <Plus size={11} /> (1), (2) 소문항으로 분할
+                              </button>
+                            </div>
+
+                            <input
+                              type="text"
+                              value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                              onChange={e => handleAnswerSelect(question.id, e.target.value)}
+                              placeholder="정답 입력 (예: 83, -2 등)"
+                              className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* CASE 3: 서술형 문항인 경우 -> [종이 직접제출 / 사진 제출 / 텍스트 입력] 3-Way 선택 */}
+                    {qType === 'DESCRIPTIVE' && (
+                      <div className="mt-6 space-y-4">
+                        {/* 3-Way 선택 탭/카드 */}
+                        <div className="grid grid-cols-3 gap-1.5 p-1 bg-white/5 rounded-2xl border border-white/10 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDescriptiveSubmitModes(prev => ({ ...prev, [question.id]: 'PAPER' }));
+                              handleAnswerSelect(question.id, '__DIRECT_PAPER__');
+                            }}
+                            className={`py-2 px-1.5 rounded-xl font-black text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                              descriptiveMode === 'PAPER'
+                                ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <FileText size={15} />
+                            <span>종이 직접제출</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDescriptiveSubmitModes(prev => ({ ...prev, [question.id]: 'PHOTO' }));
+                              handleAnswerSelect(question.id, '__PHOTO_SUBMISSION__');
+                            }}
+                            className={`py-2 px-1.5 rounded-xl font-black text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                              descriptiveMode === 'PHOTO'
+                                ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <Camera size={15} />
+                            <span>서술형 사진제출</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDescriptiveSubmitModes(prev => ({ ...prev, [question.id]: 'TEXT' }));
+                              if (currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__') {
+                                handleAnswerSelect(question.id, '');
+                              }
+                            }}
+                            className={`py-2 px-1.5 rounded-xl font-black text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                              descriptiveMode === 'TEXT'
+                                ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            <FileCheck size={15} />
+                            <span>텍스트 직접입력</span>
+                          </button>
+                        </div>
+
+                        {/* [1] 종이 직접 제출 모드 */}
+                        {descriptiveMode === 'PAPER' && (
+                          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-2 animate-in fade-in">
+                            <div className="flex items-center gap-2 font-black text-xs">
+                              <FileText size={16} />
+                              <span>📄 종이 시험지 직접 제출 선택됨</span>
+                            </div>
+                            <p className="text-[11px] text-slate-300 leading-relaxed font-medium">
+                              학원에서 실물 종이 시험지에 풀이를 작성하여 선생님께 직접 제출합니다. 화면 텍스트 입력과 사진 촬영이 자동으로 면제됩니다.
+                            </p>
+                          </div>
                         )}
 
-                        {/* CASE 2: 단답형 문항인 경우 */}
-                        {qType === 'SHORT' && (
-                          <>
-                            {hasSubQuestions ? (
-                              /* 2-A: 소문항 (1), (2) 분할 입력칸 */
-                              <div className="mt-6 space-y-3">
-                                <label className="block text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center justify-between">
-                                  <span>소문항별 답안 직접 입력</span>
-                                  <span className="text-[10px] text-violet-400 font-bold">총 {question.sub_questions!.length}문항</span>
+                        {/* [2] 서술형 사진 제출 모드 (집에서 푼 종이 촬영) */}
+                        {descriptiveMode === 'PHOTO' && (
+                          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-3 animate-in fade-in">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 font-black text-xs text-amber-300">
+                                <Camera size={16} />
+                                <span>📸 서술형 풀이 사진 제출 (가정 학습용)</span>
+                              </div>
+                              {proofImages[question.id] && (
+                                <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                                  <CheckCircle2 size={11} /> 사진 등록됨
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-300 leading-relaxed font-medium">
+                              종이 노트에 작성한 풀이과정을 스마트폰 카메라로 촬영하거나 앨범에서 선택하여 업로드하세요. 선생님 채점 화면에 바로 확대 표시됩니다.
+                            </p>
+
+                            {proofImages[question.id] ? (
+                              <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
+                                <img
+                                  src={proofImages[question.id].url}
+                                  alt="서술형 풀이 사진"
+                                  className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
+                                  onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                                  title="클릭하여 크게 보기"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {proofImages[question.id].isUploading ? (
+                                      <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                                        <Loader2 size={10} className="animate-spin" /> 동기화 중...
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                                        <CheckCircle2 size={10} /> 저장 완료
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                                      className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
+                                    >
+                                      <Maximize2 size={10} /> 크게 보기
+                                    </button>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveProof(question.id)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                                  title="삭제 후 다시 촬영"
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div>
+                                <input
+                                  type="file"
+                                  id={`descriptive-proof-upload-${question.id}`}
+                                  accept="image/*"
+                                  capture="environment"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) handleUploadProof(question.id, currentQuestionIndex + 1, f);
+                                    e.target.value = '';
+                                  }}
+                                />
+                                <label
+                                  htmlFor={`descriptive-proof-upload-${question.id}`}
+                                  className="w-full py-3.5 px-4 rounded-2xl border border-dashed border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                                >
+                                  {uploadingProofQId === question.id ? (
+                                    <>
+                                      <Loader2 size={16} className="animate-spin text-amber-400" />
+                                      <span className="text-xs font-black">서술형 풀이 사진 저장 중...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Camera size={16} className="text-amber-400" />
+                                      <span className="text-xs font-black">서술형 풀이 노트 사진 촬영 / 업로드</span>
+                                    </>
+                                  )}
                                 </label>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* [3] 텍스트 직접 입력 모드 */}
+                        {descriptiveMode === 'TEXT' && (
+                          <div className="space-y-3 animate-in fade-in">
+                            {hasSubQuestions ? (
+                              /* 소문항별 textarea 입력칸 */
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                                    <span>소문항별 서술형 답안 작성</span>
+                                    <span className="text-[10px] text-amber-400 font-bold">({subLabels.length}문항)</span>
+                                  </label>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddSubQuestion(question.id)}
+                                      className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[10px] font-black border border-amber-500/30 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                      title="소문항 칸을 1개 더 추가합니다"
+                                    >
+                                      <Plus size={11} /> 칸 추가
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveSubQuestion(question.id)}
+                                      className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/20 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                      title="마지막 소문항 칸을 삭제합니다"
+                                    >
+                                      <Minus size={11} /> 삭제
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="p-2.5 rounded-xl bg-amber-950/40 border border-amber-500/20 text-[11px] text-amber-300/90 flex items-start gap-2">
+                                  <Info size={14} className="text-amber-400 shrink-0 mt-0.5" />
+                                  <span>
+                                    소문항 (1), (2) 등 칸이 부족하면 <strong>[+ 칸 추가]</strong>, 많으면 <strong>[- 삭제]</strong>를 누르세요.
+                                  </span>
+                                </div>
+
                                 <div className="space-y-2.5">
-                                  {question.sub_questions!.map((sq: any) => {
+                                  {subLabels.map((lbl: string) => {
                                     const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
-                                    const val = subAnsMap[sq.label] || '';
+                                    const val = subAnsMap[lbl] || '';
                                     return (
-                                      <div key={sq.label} className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10">
-                                        <span className="w-10 text-center font-black text-sm text-violet-400 shrink-0">
-                                          {sq.label}
-                                        </span>
-                                        <input
-                                          type="text"
+                                      <div key={lbl} className="bg-white/5 p-2.5 rounded-2xl border border-white/10 space-y-1">
+                                        <div className="font-black text-xs text-amber-400">{lbl}번 답안</div>
+                                        <textarea
+                                          rows={2}
                                           value={val}
-                                          onChange={e => handleSubAnswerChange(question.id, sq.label, e.target.value)}
-                                          placeholder="정답 입력"
-                                          className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2.5 px-3 text-white font-black text-base focus:outline-none placeholder:text-slate-600 text-center"
+                                          onChange={e => handleSubAnswerChange(question.id, lbl, e.target.value)}
+                                          placeholder={`${lbl} 서술형 풀이 또는 최종 정답 입력`}
+                                          className="w-full bg-white/5 border border-white/10 focus:border-amber-400 rounded-xl p-2.5 text-white font-medium text-xs focus:outline-none placeholder:text-slate-600 resize-none"
                                         />
                                       </div>
                                     );
@@ -1796,195 +2169,167 @@ export default function StudentTest2View({
                                 </div>
                               </div>
                             ) : (
-                              /* 2-B: 일반 단일 단답형 입력칸 */
-                              <div className="mt-8 space-y-2">
-                                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                                  단답형 답안 직접 입력
-                                </label>
-                                <input
-                                  type="text"
-                                  value={currentAnswer === '모름' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
-                                  onChange={e => handleAnswerSelect(question.id, e.target.value)}
-                                  placeholder="정답 입력 (예: 83, -2 등)"
-                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
-                                />
-                              </div>
-                            )}
-                          </>
-                        )}
-
-                        {/* CASE 3: 서술형 문항인 경우 -> [직접 제출] 카드 및 텍스트 작성 옵션 */}
-                        {qType === 'DESCRIPTIVE' && (
-                          <div className="mt-6 space-y-4">
-                            {/* 종이 직접 제출 버튼 */}
-                            <div
-                              onClick={() => handleAnswerSelect(question.id, isDirectPaperChecked ? '' : '__DIRECT_PAPER__')}
-                              className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between select-none ${
-                                isDirectPaperChecked
-                                  ? 'bg-amber-500/20 border-amber-400 text-white shadow-xl shadow-amber-500/20 ring-2 ring-amber-400/50'
-                                  : 'bg-white/5 border-white/10 hover:bg-white/10 text-slate-300'
-                              }`}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black ${
-                                  isDirectPaperChecked ? 'bg-amber-500 text-slate-950' : 'bg-white/10 text-slate-400'
-                                }`}>
-                                  {isDirectPaperChecked ? <Check size={18} strokeWidth={3} /> : <FileCheck size={16} />}
-                                </div>
-                                <div>
-                                  <div className="text-xs font-black text-white">종이 시험지에 작성 후 직접 제출</div>
-                                  <div className="text-[10px] text-slate-400">웹 입력 없이 선생님께 종이 시험지로 직접 채점받습니다.</div>
-                                </div>
-                              </div>
-                              {isDirectPaperChecked && (
-                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-slate-950">
-                                  직접제출 선택됨
-                                </span>
-                              )}
-                            </div>
-
-                            {/* 웹 텍스트 입력창 (직접 제출이 아닐 때) */}
-                            {!isDirectPaperChecked && (
+                              /* 단일 서술형 textarea + 소문항 분할 버튼 */
                               <div className="space-y-1.5">
-                                <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                                  또는 텍스트 직접 입력
-                                </label>
+                                <div className="flex items-center justify-between">
+                                  <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                    서술형 텍스트 직접 입력
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddSubQuestion(question.id)}
+                                    className="text-[10px] text-amber-300 hover:text-white bg-amber-500/20 hover:bg-amber-500/40 border border-amber-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                  >
+                                    <Plus size={11} /> (1), (2) 소문항으로 분할
+                                  </button>
+                                </div>
                                 <textarea
                                   rows={3}
-                                  value={currentAnswer === '모름' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                                  value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
                                   onChange={e => handleAnswerSelect(question.id, e.target.value)}
                                   placeholder="서술형 풀이 또는 최종 답안을 적어주세요."
-                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl p-3 text-white font-medium text-sm focus:outline-none transition-all placeholder:text-slate-600 resize-none"
+                                  className="w-full bg-white/5 border border-white/10 focus:border-amber-400 rounded-2xl p-3 text-white font-medium text-sm focus:outline-none transition-all placeholder:text-slate-600 resize-none"
                                 />
                               </div>
                             )}
                           </div>
                         )}
-
-                        {/* 🔥 [모름] 버튼 */}
-                        <div className="mt-4">
-                          <button
-                            type="button"
-                            onClick={() => handleAnswerSelect(question.id, '모름')}
-                            className={`w-full py-3.5 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                              currentAnswer === '모름'
-                                ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
-                                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                            }`}
-                          >
-                            <HelpCircle size={16} />
-                            <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (정답 체크 및 시간 저장)'}</span>
-                          </button>
-                        </div>
                       </div>
+                    )}
 
-                      {/* 📸 풀이과정 사진 인증샷 업로드 영역 */}
-                      <div className="mt-6 pt-5 border-t border-white/10 space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[11px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
-                            <Camera size={14} />
-                            풀이 인증샷 {isProofRequired && !isDirectPaperChecked && <span className="text-rose-400 font-extrabold">*필수</span>}
-                          </label>
-                          {isDirectPaperChecked ? (
-                            <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
-                              종이 직접 제출로 사진 면제됨
+                    {/* 🔥 [모름] 버튼 */}
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        onClick={() => handleAnswerSelect(question.id, '모름')}
+                        className={`w-full py-3.5 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          currentAnswer === '모름'
+                            ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
+                            : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        }`}
+                      >
+                        <HelpCircle size={16} />
+                        <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (정답 체크 및 시간 저장)'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 📸 풀이과정 사진 인증샷 업로드 영역 (시험지 설정에서 인증샷이 ON일 때만 노출!) */}
+                  {isProofRequired && (
+                    <div className="mt-6 pt-5 border-t border-white/10 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-black text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <Camera size={14} />
+                          풀이 인증샷 <span className="text-rose-400 font-extrabold">*필수</span>
+                        </label>
+                        {isDirectPaperChecked ? (
+                          <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                            종이 직접 제출로 사진 면제됨
+                          </span>
+                        ) : isPhotoSubmission ? (
+                          <span className="text-[10px] font-bold text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded-full border border-amber-500/30">
+                            서술형 사진 제출 선택됨
+                          </span>
+                        ) : proofImages[question.id] && (
+                          proofImages[question.id].isUploading ? (
+                            <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                              <Loader2 size={12} className="animate-spin" /> 구글 드라이브 동기화 중...
                             </span>
                           ) : (
-                            proofImages[question.id] && (
-                              proofImages[question.id].isUploading ? (
-                                <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
-                                  <Loader2 size={12} className="animate-spin" /> 구글 드라이브 동기화 중...
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
-                                  <CheckCircle2 size={12} /> 구글 드라이브 저장됨
-                                </span>
-                              )
-                            )
-                          )}
-                        </div>
-
-                        {isDirectPaperChecked ? (
-                          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-300 font-bold flex items-center gap-2">
-                            <span>📄</span>
-                            <span>선생님께 시험지를 직접 제출하므로 풀이 사진을 업로드하지 않아도 됩니다.</span>
-                          </div>
-                        ) : proofImages[question.id] ? (
-                          <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
-                            <img
-                              src={proofImages[question.id].url}
-                              alt="풀이 인증샷"
-                              className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
-                              onClick={() => setViewingProofUrl(proofImages[question.id].url)}
-                              title="클릭하여 크게 보기"
-                            />
-                            <div className="flex-1 min-w-0">
-                              <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
-                              <div className="flex items-center gap-2 mt-1">
-                                {proofImages[question.id].isUploading ? (
-                                  <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
-                                    <Loader2 size={10} className="animate-spin" /> 동기화 중...
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
-                                    <CheckCircle2 size={10} /> 저장 완료
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => setViewingProofUrl(proofImages[question.id].url)}
-                                  className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
-                                >
-                                  <Maximize2 size={10} /> 크게 보기
-                                </button>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveProof(question.id)}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
-                              title="삭제 후 다시 촬영"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div>
-                            <input
-                              type="file"
-                              id={`proof-upload-${question.id}`}
-                              accept="image/*"
-                              capture="environment"
-                              className="hidden"
-                              onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) handleUploadProof(question.id, currentQuestionIndex + 1, f);
-                                e.target.value = '';
-                              }}
-                            />
-                            <label
-                              htmlFor={`proof-upload-${question.id}`}
-                              className={`w-full py-3.5 px-4 rounded-2xl border border-dashed flex items-center justify-center gap-2 cursor-pointer transition-all ${
-                                uploadingProofQId === question.id
-                                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
-                                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/30 text-amber-300 hover:border-amber-400/60'
-                              }`}
-                            >
-                              {uploadingProofQId === question.id ? (
-                                <>
-                                  <Loader2 size={16} className="animate-spin text-amber-400" />
-                                  <span className="text-xs font-black">내 구글 드라이브에 저장 중...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Camera size={16} className="text-amber-400" />
-                                  <span className="text-xs font-black">풀이과정 사진 촬영 / 업로드</span>
-                                </>
-                              )}
-                            </label>
-                          </div>
+                            <span className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                              <CheckCircle2 size={12} /> 구글 드라이브 저장됨
+                            </span>
+                          )
                         )}
                       </div>
+
+                      {isDirectPaperChecked ? (
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-300 font-bold flex items-center gap-2">
+                          <span>📄</span>
+                          <span>선생님께 시험지를 직접 제출하므로 풀이 사진을 업로드하지 않아도 됩니다.</span>
+                        </div>
+                      ) : isPhotoSubmission ? (
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl text-[11px] text-amber-300 font-bold flex items-center gap-2">
+                          <span>📸</span>
+                          <span>위 서술형 사진 제출란에 업로드한 사진으로 인증이 대체됩니다.</span>
+                        </div>
+                      ) : proofImages[question.id] ? (
+                        <div className="relative bg-white/5 rounded-2xl p-2.5 border border-emerald-500/40 flex items-center gap-3">
+                          <img
+                            src={proofImages[question.id].url}
+                            alt="풀이 인증샷"
+                            className="w-14 h-14 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
+                            onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                            title="클릭하여 크게 보기"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-white truncate">{proofImages[question.id].fileName}</div>
+                            <div className="flex items-center gap-2 mt-1">
+                              {proofImages[question.id].isUploading ? (
+                                <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
+                                  <Loader2 size={10} className="animate-spin" /> 동기화 중...
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                                  <CheckCircle2 size={10} /> 저장 완료
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setViewingProofUrl(proofImages[question.id].url)}
+                                className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
+                              >
+                                <Maximize2 size={10} /> 크게 보기
+                              </button>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveProof(question.id)}
+                            className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                            title="삭제 후 다시 촬영"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <input
+                            type="file"
+                            id={`proof-upload-${question.id}`}
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) handleUploadProof(question.id, currentQuestionIndex + 1, f);
+                              e.target.value = '';
+                            }}
+                          />
+                          <label
+                            htmlFor={`proof-upload-${question.id}`}
+                            className={`w-full py-3.5 px-4 rounded-2xl border border-dashed flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                              uploadingProofQId === question.id
+                                ? 'bg-amber-500/20 border-amber-400/50 text-amber-300'
+                                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-400/30 text-amber-300 hover:border-amber-400/60'
+                            }`}
+                          >
+                            {uploadingProofQId === question.id ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin text-amber-400" />
+                                <span className="text-xs font-black">내 구글 드라이브에 저장 중...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Camera size={16} className="text-amber-400" />
+                                <span className="text-xs font-black">풀이과정 사진 촬영 / 업로드</span>
+                              </>
+                            )}
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* 마킹 현황 요약 */}
                   <div className="pt-4 border-t border-white/10 text-xs text-slate-400 flex items-center justify-between">
@@ -2213,6 +2558,10 @@ export default function StudentTest2View({
                           {userAns === '__DIRECT_PAPER__' || ansInfo?.is_direct_paper ? (
                             <span className="inline-flex items-center gap-1 text-amber-300 text-xs">
                               <FileCheck size={13} /> 종이 직접 제출
+                            </span>
+                          ) : userAns === '__PHOTO_SUBMISSION__' ? (
+                            <span className="inline-flex items-center gap-1 text-amber-300 text-xs">
+                              <Camera size={13} /> 서술형 사진 제출
                             </span>
                           ) : (
                             userAns
