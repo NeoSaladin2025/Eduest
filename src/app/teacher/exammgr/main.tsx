@@ -31,7 +31,8 @@ import {
   ArrowUpDown,
   ShieldAlert,
   RotateCcw,
-  BookOpen
+  BookOpen,
+  Filter
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -97,6 +98,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [bankItems, setBankItems] = useState<TestBankItem[]>([]);
   const [loadingBank, setLoadingBank] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  // 🌟 좌측 시험 DB 스마트 필터 상태 (번호 구간, 홀/짝수, 소단원 폴더 아코디언)
+  const [qNumStart, setQNumStart] = useState<string>('');
+  const [qNumEnd, setQNumEnd] = useState<string>('');
+  const [qNumPreset, setQNumPreset] = useState<'all' | '1-5' | '6-10' | 'odd' | 'even'>('all');
+  const [isFilterActive, setIsFilterActive] = useState<boolean>(false);
+  const [expandedSubFolders, setExpandedSubFolders] = useState<Set<string>>(new Set());
 
   // ── 시험지 생성 폼 상태 ──
   const [examTitle, setExamTitle] = useState('');
@@ -313,10 +321,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   };
 
   // 특정 카테고리 안의 모든 문제 일괄 선택
+  // 특정 카테고리 안의 모든 문제 일괄 선택 (필터 활성화 시 필터 매칭 문항만 선택)
   const handleSelectAllInCategory = (categoryId: string) => {
     const catItems = bankItems.filter(i => i.category_id === categoryId);
+    const targetItems = isFilterActive ? catItems.filter(isItemMatchedFilter) : catItems;
+
+    if (targetItems.length === 0) {
+      alert('설정된 필터 조건에 매칭되는 문제가 없습니다.');
+      return;
+    }
+
     // 카테고리 내에서도 폴더 경로 자연어 및 문항 번호 순으로 정렬하여 바구니에 담기
-    const sortedCatItems = [...catItems].sort((a, b) => {
+    const sortedCatItems = [...targetItems].sort((a, b) => {
       const pathA = a.folder_path || a.folder_name || '';
       const pathB = b.folder_path || b.folder_name || '';
       if (pathA !== pathB) {
@@ -348,6 +364,120 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       return nextList;
     });
     setExtractionDone(false);
+  };
+
+  // 🌟 문항 필터 매칭 판정 헬퍼
+  const isItemMatchedFilter = (item: TestBankItem): boolean => {
+    if (!isFilterActive) return true;
+    const qNum = parseQuestionNumber(item);
+
+    // 1. 프리셋 검사
+    if (qNumPreset === 'odd') {
+      if (qNum === 999999 || qNum % 2 === 0) return false;
+    } else if (qNumPreset === 'even') {
+      if (qNum === 999999 || qNum % 2 !== 0) return false;
+    } else if (qNumPreset === '1-5') {
+      if (qNum < 1 || qNum > 5) return false;
+    } else if (qNumPreset === '6-10') {
+      if (qNum < 6 || qNum > 10) return false;
+    }
+
+    // 2. 직접 입력 구간 검사
+    const s = qNumStart.trim() !== '' ? parseInt(qNumStart.trim(), 10) : null;
+    const e = qNumEnd.trim() !== '' ? parseInt(qNumEnd.trim(), 10) : null;
+    if (s !== null && !isNaN(s) && e !== null && !isNaN(e)) {
+      if (qNum === 999999 || qNum < Math.min(s, e) || qNum > Math.max(s, e)) return false;
+    } else if (s !== null && !isNaN(s)) {
+      if (qNum === 999999 || qNum < s) return false;
+    } else if (e !== null && !isNaN(e)) {
+      if (qNum === 999999 || qNum > e) return false;
+    }
+
+    return true;
+  };
+
+  // 🌟 특정 소단원 폴더 전체 담기 / 비우기 토글 (필터 활성화 시 필터 매칭 문항 대상)
+  const handleToggleFolderToBasket = (folderItems: TestBankItem[]) => {
+    const targetItems = isFilterActive ? folderItems.filter(isItemMatchedFilter) : folderItems;
+    if (targetItems.length === 0) {
+      alert('설정된 필터 조건에 매칭되는 문제가 해당 폴더에 없습니다.');
+      return;
+    }
+
+    const currentIds = new Set(selectedFiles.map(f => f.drive_id));
+    const allInBasket = targetItems.every(item => currentIds.has(item.drive_id));
+
+    if (allInBasket) {
+      const targetDriveIds = new Set(targetItems.map(i => i.drive_id));
+      setSelectedFiles(prev => prev.filter(f => !targetDriveIds.has(f.drive_id)));
+    } else {
+      const toAdd = targetItems
+        .filter(item => !currentIds.has(item.drive_id))
+        .map(item => ({
+          drive_id: item.drive_id,
+          name: item.name,
+          question_image_drive_id: item.question_image_drive_id,
+          folder_name: item.folder_name,
+          folder_path: item.folder_path,
+          question_number: item.question_number,
+          display_name: item.display_name,
+        }));
+      setSelectedFiles(prev => {
+        let nextList = [...prev, ...toAdd];
+        if (basketSortMode !== 'manual') {
+          nextList = applyBasketSort(nextList, basketSortMode);
+        }
+        return nextList;
+      });
+    }
+    setExtractionDone(false);
+  };
+
+  // 🌟 필터 조건 매칭 문항들 일괄 담기
+  const handleAddFilteredToBasket = (targetItems: TestBankItem[]) => {
+    const matched = targetItems.filter(isItemMatchedFilter);
+    if (matched.length === 0) {
+      alert('설정한 필터 조건에 매칭되는 문제가 없습니다.');
+      return;
+    }
+
+    const currentIds = new Set(selectedFiles.map(f => f.drive_id));
+    const toAdd = matched
+      .filter(item => !currentIds.has(item.drive_id))
+      .map(item => ({
+        drive_id: item.drive_id,
+        name: item.name,
+        question_image_drive_id: item.question_image_drive_id,
+        folder_name: item.folder_name,
+        folder_path: item.folder_path,
+        question_number: item.question_number,
+        display_name: item.display_name,
+      }));
+
+    if (toAdd.length === 0) {
+      alert('조건에 해당하는 모든 문제가 이미 바구니에 담겨 있습니다.');
+      return;
+    }
+
+    setSelectedFiles(prev => {
+      let nextList = [...prev, ...toAdd];
+      if (basketSortMode !== 'manual') {
+        nextList = applyBasketSort(nextList, basketSortMode);
+      }
+      return nextList;
+    });
+    setExtractionDone(false);
+    alert(`🎯 필터 조건에 맞는 ${toAdd.length}개 문제가 바구니에 쏙 담겼습니다!`);
+  };
+
+  // 🌟 소단원 폴더 접기/펼치기 토글
+  const toggleSubFolderExpand = (folderKey: string) => {
+    setExpandedSubFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderKey)) next.delete(folderKey);
+      else next.add(folderKey);
+      return next;
+    });
   };
 
   // 문제 바구니 순서 이동 (위로)
@@ -1322,7 +1452,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               
               {/* 좌측: 시험 DB 카테고리별 문항 목록 */}
               <div className="border border-slate-200 rounded-2xl p-4 flex flex-col bg-slate-50/50">
-                <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-200">
+                <div className="flex items-center justify-between mb-2.5 pb-2.5 border-b border-slate-200">
                   <span className="text-xs font-black text-slate-700 flex items-center gap-1.5">
                     <Layers size={16} className="text-indigo-600" />
                     {bankGradeFilter === 'ALL' ? '전체' : bankGradeFilter} 시험 DB 카테고리 ({bankCategories.length}개)
@@ -1332,7 +1462,176 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </span>
                 </div>
 
-                <div className="flex-1 overflow-y-auto max-h-[420px] pr-2 scrollbar-thin space-y-2">
+                {/* 🌟 문항 번호 스마트 필터 바 */}
+                <div className="bg-white border border-indigo-100 rounded-xl p-2.5 mb-3 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-xs font-black text-indigo-950">
+                      <Filter size={13} className="text-indigo-600" />
+                      <span>번호 스마트 필터</span>
+                    </div>
+
+                    {/* 프리셋 버튼들 */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQNumPreset('all');
+                          setQNumStart('');
+                          setQNumEnd('');
+                          setIsFilterActive(false);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                          !isFilterActive && qNumPreset === 'all'
+                            ? 'bg-slate-800 text-white shadow-2xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        전체
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQNumPreset('1-5');
+                          setQNumStart('1');
+                          setQNumEnd('5');
+                          setIsFilterActive(true);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                          isFilterActive && qNumPreset === '1-5'
+                            ? 'bg-indigo-600 text-white shadow-2xs'
+                            : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                        }`}
+                      >
+                        1~5번
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQNumPreset('6-10');
+                          setQNumStart('6');
+                          setQNumEnd('10');
+                          setIsFilterActive(true);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                          isFilterActive && qNumPreset === '6-10'
+                            ? 'bg-indigo-600 text-white shadow-2xs'
+                            : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                        }`}
+                      >
+                        6~10번
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQNumPreset('odd');
+                          setQNumStart('');
+                          setQNumEnd('');
+                          setIsFilterActive(true);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                          isFilterActive && qNumPreset === 'odd'
+                            ? 'bg-rose-600 text-white shadow-2xs'
+                            : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                        }`}
+                      >
+                        🔴 홀수번
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQNumPreset('even');
+                          setQNumStart('');
+                          setQNumEnd('');
+                          setIsFilterActive(true);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                          isFilterActive && qNumPreset === 'even'
+                            ? 'bg-blue-600 text-white shadow-2xs'
+                            : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                        }`}
+                      >
+                        🔵 짝수번
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 하단: 구간 직접 입력 + 조건 매칭 쏙 담기 */}
+                  <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-100 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                      <span className="text-[11px] font-bold text-slate-500">구간:</span>
+                      <input
+                        type="number"
+                        placeholder="시작"
+                        value={qNumStart}
+                        onChange={(e) => {
+                          setQNumStart(e.target.value);
+                          setQNumPreset('all');
+                          setIsFilterActive(true);
+                        }}
+                        className="w-13 px-1.5 py-0.5 text-center text-xs font-bold border border-slate-300 rounded focus:border-indigo-500 focus:outline-none bg-white"
+                        min={1}
+                      />
+                      <span className="text-slate-400 font-bold">~</span>
+                      <input
+                        type="number"
+                        placeholder="끝"
+                        value={qNumEnd}
+                        onChange={(e) => {
+                          setQNumEnd(e.target.value);
+                          setQNumPreset('all');
+                          setIsFilterActive(true);
+                        }}
+                        className="w-13 px-1.5 py-0.5 text-center text-xs font-bold border border-slate-300 rounded focus:border-indigo-500 focus:outline-none bg-white"
+                        min={1}
+                      />
+                      <span className="text-[11px] text-slate-500 font-bold">번</span>
+
+                      {isFilterActive && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQNumPreset('all');
+                            setQNumStart('');
+                            setQNumEnd('');
+                            setIsFilterActive(false);
+                          }}
+                          className="text-[10px] text-slate-400 hover:text-rose-500 underline ml-1 cursor-pointer"
+                        >
+                          초기화
+                        </button>
+                      )}
+                    </div>
+
+                    {/* 일괄 담기 버튼 */}
+                    {(() => {
+                      const matchedItems = bankItems.filter(isItemMatchedFilter);
+                      const currentIds = new Set(selectedFiles.map(f => f.drive_id));
+                      const unaddedMatchedCount = matchedItems.filter(i => !currentIds.has(i.drive_id)).length;
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => handleAddFilteredToBasket(bankItems)}
+                          disabled={matchedItems.length === 0}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-black flex items-center gap-1 transition-all cursor-pointer shadow-2xs ${
+                            isFilterActive
+                              ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:opacity-95'
+                              : 'bg-violet-100 text-violet-800 hover:bg-violet-200'
+                          }`}
+                          title="조건에 맞는 모든 문제를 바구니에 담습니다"
+                        >
+                          <Sparkles size={13} />
+                          <span>
+                            {isFilterActive ? '조건 매칭 문제 쏙 담기' : '전체 문제 일괄 담기'}
+                            {unaddedMatchedCount > 0 ? ` (${unaddedMatchedCount}개)` : ' (담김 완료)'}
+                          </span>
+                        </button>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto max-h-[460px] pr-2 scrollbar-thin space-y-2">
                   {loadingBank ? (
                     <div className="p-8 text-center text-xs text-slate-400 flex flex-col items-center gap-2">
                       <Loader2 size={24} className="animate-spin text-violet-600" />
@@ -1350,6 +1649,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     bankCategories.map(cat => {
                       const isExpanded = expandedCategories.has(cat.id);
                       const itemsInCat = bankItems.filter(i => i.category_id === cat.id);
+                      const matchedInCat = isFilterActive ? itemsInCat.filter(isItemMatchedFilter) : itemsInCat;
+                      const currentIds = new Set(selectedFiles.map(f => f.drive_id));
+                      const catInBasketCount = itemsInCat.filter(i => currentIds.has(i.drive_id)).length;
 
                       return (
                         <div key={cat.id} className="border border-slate-200 rounded-xl bg-white overflow-hidden shadow-2xs">
@@ -1362,79 +1664,215 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               {isExpanded ? <ChevronDown size={14} className="text-slate-400 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 shrink-0" />}
                               <Folder size={16} className="text-indigo-600 shrink-0" />
                               <span className="font-black text-xs text-slate-800 truncate">{cat.name}</span>
-                              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded font-bold">
+                              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded font-bold shrink-0">
                                 {itemsInCat.length}문제
                               </span>
+                              {catInBasketCount > 0 && (
+                                <span className="text-[10px] text-violet-700 bg-violet-50 border border-violet-200 px-1.5 py-0.2 rounded font-bold shrink-0">
+                                  담김 {catInBasketCount}/{itemsInCat.length}
+                                </span>
+                              )}
+                              {isFilterActive && (
+                                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded font-bold shrink-0">
+                                  매칭 {matchedInCat.length}개
+                                </span>
+                              )}
                             </div>
 
                             {itemsInCat.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); handleSelectAllInCategory(cat.id); }}
-                                className="px-2 py-0.5 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded text-[10px] font-bold transition-all shrink-0 ml-2"
-                                title="이 카테고리의 모든 문제 담기"
-                              >
-                                + 전체 담기
-                              </button>
+                              <div className="flex items-center gap-1.5 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectAllInCategory(cat.id)}
+                                  className="px-2 py-0.5 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded text-[10px] font-bold transition-all cursor-pointer"
+                                  title={isFilterActive ? "이 카테고리에서 필터 매칭된 문제들 담기" : "이 카테고리의 모든 문제 담기"}
+                                >
+                                  {isFilterActive ? `+ 필터 매칭 담기 (${matchedInCat.length})` : '+ 전체 담기'}
+                                </button>
+                              </div>
                             )}
                           </div>
 
-                          {/* 카테고리 안의 문제 목록 */}
+                          {/* 카테고리 내부: 소단원 폴더별 그룹 렌더링 */}
                           {isExpanded && itemsInCat.length > 0 && (() => {
-                            const sortedCatItems = [...itemsInCat].sort((a, b) => {
-                              const pathA = a.folder_path || a.folder_name || '';
-                              const pathB = b.folder_path || b.folder_name || '';
-                              if (pathA !== pathB) {
-                                return compareNatural(pathA, pathB);
+                            // 소단원 폴더별 그룹핑
+                            const folderMap = new Map<string, TestBankItem[]>();
+                            itemsInCat.forEach(item => {
+                              const folderKey = item.folder_name || '기본 폴더';
+                              if (!folderMap.has(folderKey)) {
+                                folderMap.set(folderKey, []);
                               }
-                              const qA = parseQuestionNumber(a);
-                              const qB = parseQuestionNumber(b);
-                              if (qA !== qB) return qA - qB;
-                              return compareNatural(a.name, b.name);
+                              folderMap.get(folderKey)!.push(item);
                             });
 
+                            // 소단원 폴더 자연어 정렬 (예: 5.1, 5.2, 5.10...)
+                            const sortedFolderKeys = Array.from(folderMap.keys()).sort((a, b) => compareNatural(a, b));
+
+                            // 모든 서브 폴더가 펼쳐져 있는지 확인
+                            const allSubKeys = sortedFolderKeys.map(k => `${cat.id}__${k}`);
+                            const areAllSubExpanded = allSubKeys.length > 0 && allSubKeys.every(k => expandedSubFolders.has(k));
+
                             return (
-                              <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-1">
-                                {sortedCatItems.map(item => {
-                                  const isSelected = selectedFiles.some(f => f.drive_id === item.drive_id);
+                              <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-2">
+                                {/* 소단원 툴바: 폴더 수 & 전체 펼치기/접기 */}
+                                {sortedFolderKeys.length > 1 && (
+                                  <div className="flex items-center justify-between px-1 text-[11px] text-slate-500 font-bold">
+                                    <span>📁 소단원 {sortedFolderKeys.length}개 단원</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setExpandedSubFolders(prev => {
+                                          const next = new Set(prev);
+                                          if (areAllSubExpanded) {
+                                            allSubKeys.forEach(k => next.delete(k));
+                                          } else {
+                                            allSubKeys.forEach(k => next.add(k));
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                      className="text-[10px] text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+                                    >
+                                      {areAllSubExpanded ? '모든 폴더 접기' : '모든 폴더 펼치기'}
+                                    </button>
+                                  </div>
+                                )}
+
+                                {/* 소단원 폴더 카드 리스트 */}
+                                {sortedFolderKeys.map(folderName => {
+                                  const folderItems = folderMap.get(folderName)!;
+                                  // 폴더 내 문항 번호 -> 이름 자연어 정렬
+                                  const sortedFolderItems = [...folderItems].sort((a, b) => {
+                                    const qA = parseQuestionNumber(a);
+                                    const qB = parseQuestionNumber(b);
+                                    if (qA !== qB) return qA - qB;
+                                    return compareNatural(a.name, b.name);
+                                  });
+
+                                  const visibleItems = isFilterActive
+                                    ? sortedFolderItems.filter(isItemMatchedFilter)
+                                    : sortedFolderItems;
+
+                                  const folderInBasketCount = sortedFolderItems.filter(i => currentIds.has(i.drive_id)).length;
+                                  const isFolderAllInBasket = sortedFolderItems.length > 0 && folderInBasketCount === sortedFolderItems.length;
+
+                                  const folderKey = `${cat.id}__${folderName}`;
+                                  // 폴더가 1개뿐이거나 사용자가 펼친 경우 열림
+                                  const isSubExpanded = expandedSubFolders.has(folderKey) || sortedFolderKeys.length === 1;
+
                                   return (
                                     <div
-                                      key={item.id}
-                                      onClick={() => toggleSelectFile({
-                                        drive_id: item.drive_id,
-                                        name: item.name,
-                                        question_image_drive_id: item.question_image_drive_id,
-                                        folder_name: item.folder_name,
-                                        folder_path: item.folder_path,
-                                        question_number: item.question_number,
-                                        display_name: item.display_name,
-                                      })}
-                                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-colors text-xs select-none ${
-                                        isSelected
-                                          ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'
-                                          : 'hover:bg-white text-slate-600'
-                                      }`}
+                                      key={folderKey}
+                                      className="border border-slate-200 rounded-lg bg-white overflow-hidden shadow-2xs"
                                     >
-                                      <div className="flex items-center gap-2 truncate flex-1 min-w-0">
-                                        {isSelected ? (
-                                          <CheckSquare size={15} className="text-violet-600 shrink-0" />
-                                        ) : (
-                                          <Square size={15} className="text-slate-300 shrink-0" />
-                                        )}
-                                        <FileText size={14} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
-                                        {item.folder_name && (
-                                          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[10px] font-black shrink-0">
-                                            {item.folder_name}
+                                      {/* 소단원 헤더 */}
+                                      <div
+                                        onClick={() => toggleSubFolderExpand(folderKey)}
+                                        className="flex items-center justify-between p-2 hover:bg-slate-50 cursor-pointer select-none transition-colors"
+                                      >
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          {isSubExpanded ? (
+                                            <ChevronDown size={13} className="text-slate-400 shrink-0" />
+                                          ) : (
+                                            <ChevronRight size={13} className="text-slate-400 shrink-0" />
+                                          )}
+                                          <Folder size={14} className="text-indigo-500 shrink-0" />
+                                          <span className="font-bold text-xs text-slate-800 truncate">
+                                            {folderName}
                                           </span>
-                                        )}
-                                        {item.question_number && (
-                                          <span className="px-1.5 py-0.5 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
-                                            {item.question_number}번
+                                          <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.2 rounded font-semibold shrink-0">
+                                            {folderItems.length}문제
                                           </span>
-                                        )}
-                                        <span className="truncate">{item.name}</span>
+
+                                          {/* 바구니 담김 상태 배지 */}
+                                          {folderInBasketCount > 0 && (
+                                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 ${
+                                              isFolderAllInBasket
+                                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                                : 'bg-violet-50 text-violet-700 border border-violet-200'
+                                            }`}>
+                                              담김 {folderInBasketCount}/{folderItems.length}
+                                            </span>
+                                          )}
+
+                                          {/* 필터 활성 시 매칭 개수 배지 */}
+                                          {isFilterActive && (
+                                            <span className="text-[10px] px-1.5 py-0.2 rounded font-bold shrink-0 bg-amber-50 text-amber-700 border border-amber-200">
+                                              매칭 {visibleItems.length}개
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {/* 폴더 일괄 담기 / 비우기 버튼 */}
+                                        <div className="flex items-center gap-1 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleToggleFolderToBasket(folderItems)}
+                                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                                              isFolderAllInBasket
+                                                ? 'bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-200'
+                                                : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-600 hover:text-white border border-indigo-200'
+                                            }`}
+                                            title={isFolderAllInBasket ? '이 폴더의 문제들을 바구니에서 제외' : `이 폴더(${folderName})의 문제들을 바구니에 담기`}
+                                          >
+                                            {isFolderAllInBasket ? '비우기' : `+ ${folderName} 담기`}
+                                          </button>
+                                        </div>
                                       </div>
-                                      <span className="text-[10px] text-slate-400 shrink-0 ml-1">{item.grade}</span>
+
+                                      {/* 소단원 내부 문항 목록 */}
+                                      {isSubExpanded && (
+                                        <div className="p-1.5 border-t border-slate-100 bg-slate-50/40 space-y-1">
+                                          {visibleItems.length === 0 ? (
+                                            <div className="text-[11px] text-slate-400 py-2 text-center font-medium">
+                                              조건에 매칭되는 문제가 없습니다.
+                                            </div>
+                                          ) : (
+                                            visibleItems.map(item => {
+                                              const isSelected = selectedFiles.some(f => f.drive_id === item.drive_id);
+                                              return (
+                                                <div
+                                                  key={item.id}
+                                                  onClick={() => toggleSelectFile({
+                                                    drive_id: item.drive_id,
+                                                    name: item.name,
+                                                    question_image_drive_id: item.question_image_drive_id,
+                                                    folder_name: item.folder_name,
+                                                    folder_path: item.folder_path,
+                                                    question_number: item.question_number,
+                                                    display_name: item.display_name,
+                                                  })}
+                                                  className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
+                                                    isSelected
+                                                      ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'
+                                                      : 'hover:bg-white text-slate-600'
+                                                  }`}
+                                                >
+                                                  <div className="flex items-center gap-1.5 truncate flex-1 min-w-0">
+                                                    {isSelected ? (
+                                                      <CheckSquare size={14} className="text-violet-600 shrink-0" />
+                                                    ) : (
+                                                      <Square size={14} className="text-slate-300 shrink-0" />
+                                                    )}
+                                                    <FileText size={13} className={isSelected ? 'text-violet-600' : 'text-slate-400'} />
+                                                    {item.question_number && (
+                                                      <span className="px-1.5 py-0.2 bg-violet-100 text-violet-800 rounded text-[10px] font-black shrink-0">
+                                                        {item.question_number}번
+                                                      </span>
+                                                    )}
+                                                    <span className="truncate">{item.name}</span>
+                                                  </div>
+                                                  {isSelected && (
+                                                    <span className="text-[10px] text-emerald-600 font-bold shrink-0 ml-1 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-100">
+                                                      담김
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              );
+                                            })
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
