@@ -188,6 +188,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [modalAssignedIds, setModalAssignedIds] = useState<string[]>([]);
   const [modalStudentOverrides, setModalStudentOverrides] = useState<Record<string, StudentOverrideConfig>>({});
   const [modalSaving, setModalSaving] = useState(false);
+  const [assignModalGradeFilter, setAssignModalGradeFilter] = useState<string>('ALL');
+  const [assignModalSearch, setAssignModalSearch] = useState<string>('');
 
   // 응시 결과 현황 모달
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
@@ -196,6 +198,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 🌟 학생별 응시 상세 모달 (문항별 맞음/틀림/모름 및 소요시간)
   const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any } | null>(null);
+  const [overridingQuestionId, setOverridingQuestionId] = useState<string | null>(null);
   const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
 
   // 👯 쌍둥이 저장소 및 오답 맞춤 시험지 모달 상태
@@ -900,6 +903,88 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setAssignModalExam(exam);
     setModalAssignedIds(exam.assigned_student_ids || []);
     setModalStudentOverrides(exam.student_overrides || {});
+    setAssignModalGradeFilter('ALL');
+    setAssignModalSearch('');
+  };
+
+  // 🌟 배정 모달 내 사용 가능한 학년 목록
+  const availableAssignGrades = useMemo(() => {
+    const gradeSet = new Set<string>();
+    students.forEach(st => {
+      if (st.grade) gradeSet.add(st.grade);
+    });
+    const order = ['중1', '중2', '중3', '고1', '고2', '고3'];
+    const sorted = Array.from(gradeSet).sort((a, b) => {
+      const idxA = order.indexOf(a);
+      const idxB = order.indexOf(b);
+      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+      if (idxA !== -1) return -1;
+      if (idxB !== -1) return 1;
+      return a.localeCompare(b);
+    });
+    return ['ALL', ...sorted];
+  }, [students]);
+
+  // 🌟 배정 모달 내 필터링된 학생 목록 (학년 탭 + 자유 검색어 통합 필터)
+  const filteredModalStudents = useMemo(() => {
+    return students.filter(st => {
+      // 1. 학년 필터
+      if (assignModalGradeFilter !== 'ALL' && st.grade !== assignModalGradeFilter) {
+        return false;
+      }
+      // 2. 검색어 필터 (이름 또는 학년 부분 일치)
+      if (assignModalSearch.trim()) {
+        const query = assignModalSearch.trim().toLowerCase();
+        const nameMatch = (st.name || '').toLowerCase().includes(query);
+        const gradeMatch = (st.grade || '').toLowerCase().includes(query);
+        if (!nameMatch && !gradeMatch) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [students, assignModalGradeFilter, assignModalSearch]);
+
+  // 🌟 채점 결과 수동 수정 (맞음/틀림 토글 및 실시간 재계산)
+  const handleOverrideQuestionGrade = async (questionId: string, currentIsCorrect: boolean) => {
+    if (!detailStudent || !resultsModalExam) return;
+    const nextIsCorrect = !currentIsCorrect;
+
+    try {
+      setOverridingQuestionId(questionId);
+      const res = await fetch('/api/test2/student-exams', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: detailStudent.student.id,
+          examId: resultsModalExam.id,
+          questionId,
+          isCorrect: nextIsCorrect,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.submission) {
+        // 1. 상세 모달 내 submission 즉시 갱신 (점수, 정답수, 오답수 자동 재계산)
+        setDetailStudent(prev => prev ? { ...prev, submission: data.submission } : null);
+
+        // 2. 부모 결과 모달의 examSubmissions 목록도 동기화
+        setExamSubmissions(prev =>
+          prev.map(sub =>
+            (sub.student_id === detailStudent.student.id && sub.exam_id === resultsModalExam.id)
+              ? data.submission
+              : sub
+          )
+        );
+      } else {
+        alert(data.error || '채점 수정에 실패했습니다.');
+      }
+    } catch (e) {
+      console.error('Error overriding question grade:', e);
+      alert('채점 수정 중 오류가 발생했습니다.');
+    } finally {
+      setOverridingQuestionId(null);
+    }
   };
 
   // 배정 모달 저장
@@ -2754,8 +2839,102 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </div>
             </div>
 
+            {/* 🌟 학년 선택 탭 */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+              <span className="text-[11px] font-black text-slate-500 shrink-0 mr-1">학년:</span>
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                {availableAssignGrades.map(g => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setAssignModalGradeFilter(g)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      assignModalGradeFilter === g
+                        ? 'bg-violet-600 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                    }`}
+                  >
+                    {g === 'ALL' ? '전체' : g}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 🌟 자유 검색창 & 빠른 조작 바 */}
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-2.5 text-slate-400" size={15} />
+                <input
+                  type="text"
+                  value={assignModalSearch}
+                  onChange={e => setAssignModalSearch(e.target.value)}
+                  placeholder="학생 이름 또는 학년 검색 (예: 김대현, 고1)..."
+                  className="w-full pl-9 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:border-violet-500 focus:bg-white transition-all"
+                />
+                {assignModalSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setAssignModalSearch('')}
+                    className="absolute right-2.5 top-2.5 w-4 h-4 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 text-[10px] flex items-center justify-center font-bold"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] text-slate-500 px-0.5">
+                <div className="flex items-center gap-2">
+                  <span>
+                    선택: <strong className="text-violet-600 font-black">{modalAssignedIds.length}명</strong>
+                  </span>
+                  <span className="text-slate-300">|</span>
+                  <span>
+                    검색 결과: <strong className="text-slate-700 font-bold">{filteredModalStudents.length}명</strong>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 font-bold">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const visibleIds = filteredModalStudents.map(st => st.id);
+                      setModalAssignedIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+                    }}
+                    className="text-violet-600 hover:text-violet-800 hover:underline cursor-pointer"
+                  >
+                    현재 목록 전체 선택
+                  </button>
+                  <span className="text-slate-300">·</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const visibleIdSet = new Set(filteredModalStudents.map(st => st.id));
+                      setModalAssignedIds(prev => prev.filter(id => !visibleIdSet.has(id)));
+                    }}
+                    className="text-slate-500 hover:text-rose-600 hover:underline cursor-pointer"
+                  >
+                    현재 목록 선택 해제
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[350px] overflow-y-auto p-1 scrollbar-thin">
-              {students.map(st => {
+              {filteredModalStudents.length === 0 ? (
+                <div className="col-span-full py-8 text-center text-slate-400 text-xs font-bold space-y-1">
+                  <div>검색 조건에 일치하는 학생이 없습니다.</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAssignModalGradeFilter('ALL');
+                      setAssignModalSearch('');
+                    }}
+                    className="text-violet-600 underline text-[11px]"
+                  >
+                    필터 초기화
+                  </button>
+                </div>
+              ) : filteredModalStudents.map(st => {
                 const isChecked = modalAssignedIds.includes(st.id);
                 const stOverride = modalStudentOverrides[st.id] || {};
                 const stLockdown = stOverride.enable_lockdown !== undefined ? stOverride.enable_lockdown : !!assignModalExam.enable_lockdown;
@@ -3053,7 +3232,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       }`}
                     >
                       <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span
                             className={`w-7 h-7 rounded-lg font-black text-xs flex items-center justify-center text-white ${
                               isCorrect
@@ -3076,16 +3255,46 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           >
                             {isCorrect ? '맞음' : isUnknown ? '모름' : '틀림'}
                           </span>
+
+                          {/* 🌟 채점 결과 수동 수정 (정답 인정 / 오답 변경) 버튼 */}
+                          <button
+                            type="button"
+                            onClick={() => handleOverrideQuestionGrade(q.id, isCorrect)}
+                            disabled={overridingQuestionId === q.id}
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-all flex items-center gap-1 cursor-pointer disabled:opacity-40 ${
+                              isCorrect
+                                ? 'bg-white hover:bg-rose-50 text-rose-600 border-rose-200 hover:border-rose-300'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-2xs'
+                            }`}
+                            title={isCorrect ? '이 문항을 [오답]으로 수정합니다' : '이 문항을 [정답]으로 인정합니다'}
+                          >
+                            {overridingQuestionId === q.id ? (
+                              <>
+                                <Loader2 size={10} className="animate-spin" />
+                                <span>반영 중...</span>
+                              </>
+                            ) : isCorrect ? (
+                              <>
+                                <span>❌</span>
+                                <span>오답으로 변경</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>⭕</span>
+                                <span>정답 인정</span>
+                              </>
+                            )}
+                          </button>
                         </div>
 
-                        <div className="flex items-center gap-2 text-xs">
+                        <div className="flex items-center gap-2 text-xs shrink-0">
                           <span className="font-mono text-slate-500 font-bold bg-white px-2 py-0.5 rounded-md border border-slate-200">
                             ⏱️ {spentSec}초 소요
                           </span>
                           {q.solution_drive_id && (
                             <button
                               onClick={() => setTeacherSolutionModalDriveId(q.solution_drive_id)}
-                              className="px-2.5 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 font-black text-[11px] rounded-lg transition-colors flex items-center gap-1"
+                              className="px-2.5 py-1 bg-violet-100 hover:bg-violet-200 text-violet-700 font-black text-[11px] rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
                             >
                               <BookOpen size={12} />
                               <span>해설</span>

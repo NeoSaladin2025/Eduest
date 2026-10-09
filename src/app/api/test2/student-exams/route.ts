@@ -422,3 +422,80 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
+
+// PATCH: 선생님의 문항별 채점 결과 수동 수정 (맞음/틀림 토글 및 점수 실시간 재계산)
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { studentId, examId, questionId, isCorrect } = body;
+
+    if (!studentId || !examId || !questionId || typeof isCorrect !== "boolean") {
+      return NextResponse.json(
+        { success: false, error: "studentId, examId, questionId, isCorrect(boolean)가 필요합니다." },
+        { status: 400 }
+      );
+    }
+
+    const allSubmissions = await getSubmissions();
+    const subIdx = allSubmissions.findIndex(
+      (s) => s.student_id === studentId && s.exam_id === examId
+    );
+
+    if (subIdx === -1) {
+      return NextResponse.json(
+        { success: false, error: "해당 학생의 시험 제출 기록을 찾을 수 없습니다." },
+        { status: 404 }
+      );
+    }
+
+    const submission = allSubmissions[subIdx];
+    if (!submission.answers || !submission.answers[questionId]) {
+      return NextResponse.json(
+        { success: false, error: "해당 문항의 답안 기록을 찾을 수 없습니다." },
+        { status: 404 }
+      );
+    }
+
+    // 1. 해당 문항 채점 상태 수동 변경
+    submission.answers[questionId] = {
+      ...submission.answers[questionId],
+      is_correct: isCorrect,
+      grading_status: "reviewed",
+      reviewed_at: new Date().toISOString(),
+    };
+
+    // 2. 전체 맞은 개수(correct_count) 및 점수(score) 재계산
+    let newCorrectCount = 0;
+    let remainingPending = 0;
+    const answerEntries = Object.values(submission.answers);
+
+    answerEntries.forEach((ans) => {
+      if (ans.is_correct === true) {
+        newCorrectCount++;
+      }
+      if (ans.grading_status === "pending") {
+        remainingPending++;
+      }
+    });
+
+    const totalQuestions = submission.total_questions || answerEntries.length;
+    const newScore = totalQuestions > 0 ? Math.round((newCorrectCount / totalQuestions) * 100) : 0;
+
+    submission.correct_count = newCorrectCount;
+    submission.score = newScore;
+    submission.has_pending_review = remainingPending > 0;
+    submission.pending_count = remainingPending;
+
+    allSubmissions[subIdx] = submission;
+    await saveSubmissions(allSubmissions);
+
+    return NextResponse.json({
+      success: true,
+      submission,
+      message: isCorrect ? "해당 문항이 [정답 인정]으로 수정되었습니다." : "해당 문항이 [오답 처리]로 수정되었습니다.",
+    });
+  } catch (error: any) {
+    console.error("Student exam grade override error:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
