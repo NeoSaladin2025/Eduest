@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Printer,
   X,
@@ -12,10 +12,12 @@ import {
   LayoutGrid,
   Columns,
   Loader2,
-  CheckCircle2,
   Sparkles,
-  Info,
-  Maximize2
+  Building2,
+  Tag,
+  Plus,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 
@@ -27,6 +29,8 @@ interface ExamPrintModalProps {
 
 export type QuestionsPerPageType = 1 | 2 | 4 | 6;
 
+const DEFAULT_CHIPS = ['모의평가', '단원평가', '주간테스트', '과제물', '중간고사 대비'];
+
 export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModalProps) {
   // 레이아웃 & 옵션 상태
   const [questionsPerPage, setQuestionsPerPage] = useState<QuestionsPerPageType>(4);
@@ -35,20 +39,197 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [showHeaderInfo, setShowHeaderInfo] = useState(true);
   const [showPoints, setShowPoints] = useState(true);
   const [includeAnswerKey, setIncludeAnswerKey] = useState(true);
+
+  // 🏫 학원명 토글 & 입력 (디폴트: OFF)
+  const [showAcademyName, setShowAcademyName] = useState(false);
   const [academyName, setAcademyName] = useState('Eduest 수학학원');
 
-  // 화면 미리보기 줌 (기본 80%로 맞춰서 한눈에 들어오게)
+  // 🏷️ 시험 구분 커스텀 칩 상태
+  const [chips, setChips] = useState<string[]>(DEFAULT_CHIPS);
+  const [selectedChip, setSelectedChip] = useState('모의평가');
+  const [isAddingChip, setIsAddingChip] = useState(false);
+  const [newChipText, setNewChipText] = useState('');
+  const [editingChipIdx, setEditingChipIdx] = useState<number | null>(null);
+  const [editingChipText, setEditingChipText] = useState('');
+
+  // 화면 미리보기 줌 (기본 80%)
   const [zoomScale, setZoomScale] = useState(0.8);
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
 
-  // questionsPerPage 변경 시 단(column) 자동 추천 조정
+  // 💾 브라우저 localStorage에서 저장된 설정 불러오기 (마운트 시점 1회)
+  useEffect(() => {
+    try {
+      // 1. 학원명 토글 및 입력값
+      const savedShowAcademy = localStorage.getItem('eduest_print_show_academy');
+      if (savedShowAcademy !== null) {
+        setShowAcademyName(savedShowAcademy === 'true');
+      } else {
+        setShowAcademyName(false); // 디폴트 OFF
+      }
+
+      const savedAcademyName = localStorage.getItem('eduest_print_academy_name');
+      if (savedAcademyName) {
+        setAcademyName(savedAcademyName);
+      }
+
+      // 2. 커스텀 칩 목록 및 선택 칩
+      const savedChips = localStorage.getItem('eduest_print_chips');
+      if (savedChips) {
+        const parsed = JSON.parse(savedChips);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setChips(parsed);
+        }
+      }
+
+      const savedSelectedChip = localStorage.getItem('eduest_print_selected_chip');
+      if (savedSelectedChip !== null) {
+        setSelectedChip(savedSelectedChip);
+      }
+
+      // 3. 레이아웃 설정 복원
+      const savedQPerPage = localStorage.getItem('eduest_print_q_per_page');
+      if (savedQPerPage) {
+        const num = Number(savedQPerPage) as QuestionsPerPageType;
+        if ([1, 2, 4, 6].includes(num)) {
+          setQuestionsPerPage(num);
+          const savedCols = localStorage.getItem('eduest_print_columns');
+          if (savedCols) {
+            setColumns(Number(savedCols) as 1 | 2);
+          } else {
+            setColumns(num === 1 || num === 2 ? 1 : 2);
+          }
+        }
+      }
+
+      const savedMargin = localStorage.getItem('eduest_print_margin');
+      if (savedMargin === 'compact' || savedMargin === 'normal') {
+        setMarginSize(savedMargin);
+      }
+
+      const savedHeaderInfo = localStorage.getItem('eduest_print_show_header');
+      if (savedHeaderInfo !== null) setShowHeaderInfo(savedHeaderInfo === 'true');
+
+      const savedPoints = localStorage.getItem('eduest_print_show_points');
+      if (savedPoints !== null) setShowPoints(savedPoints === 'true');
+
+      const savedKey = localStorage.getItem('eduest_print_include_key');
+      if (savedKey !== null) setIncludeAnswerKey(savedKey === 'true');
+    } catch (e) {
+      console.warn('Failed to load saved print config:', e);
+    }
+  }, []);
+
+  // 🔄 설정 변경 헬퍼 및 localStorage 동기화
+  const handleToggleAcademyName = (enabled: boolean) => {
+    setShowAcademyName(enabled);
+    localStorage.setItem('eduest_print_show_academy', String(enabled));
+  };
+
+  const handleAcademyNameChange = (val: string) => {
+    setAcademyName(val);
+    localStorage.setItem('eduest_print_academy_name', val);
+  };
+
+  const handleSelectChip = (chip: string) => {
+    // 이미 선택된 칩을 다시 누르면 토글 해제(선택 없음)
+    const nextVal = selectedChip === chip ? '' : chip;
+    setSelectedChip(nextVal);
+    localStorage.setItem('eduest_print_selected_chip', nextVal);
+  };
+
+  const handleAddChip = () => {
+    const trimmed = newChipText.trim();
+    if (!trimmed) return;
+    if (!chips.includes(trimmed)) {
+      const nextChips = [...chips, trimmed];
+      setChips(nextChips);
+      setSelectedChip(trimmed);
+      localStorage.setItem('eduest_print_chips', JSON.stringify(nextChips));
+      localStorage.setItem('eduest_print_selected_chip', trimmed);
+    } else {
+      setSelectedChip(trimmed);
+      localStorage.setItem('eduest_print_selected_chip', trimmed);
+    }
+    setNewChipText('');
+    setIsAddingChip(false);
+  };
+
+  const handleDeleteChip = (chipToDelete: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextChips = chips.filter(c => c !== chipToDelete);
+    setChips(nextChips);
+    localStorage.setItem('eduest_print_chips', JSON.stringify(nextChips));
+    if (selectedChip === chipToDelete) {
+      const fallback = nextChips.length > 0 ? nextChips[0] : '';
+      setSelectedChip(fallback);
+      localStorage.setItem('eduest_print_selected_chip', fallback);
+    }
+  };
+
+  const handleStartEditChip = (idx: number, chip: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingChipIdx(idx);
+    setEditingChipText(chip);
+  };
+
+  const handleSaveEditChip = (idx: number) => {
+    const trimmed = editingChipText.trim();
+    if (!trimmed) {
+      setEditingChipIdx(null);
+      return;
+    }
+    const oldChip = chips[idx];
+    const nextChips = [...chips];
+    nextChips[idx] = trimmed;
+    setChips(nextChips);
+    localStorage.setItem('eduest_print_chips', JSON.stringify(nextChips));
+    if (selectedChip === oldChip) {
+      setSelectedChip(trimmed);
+      localStorage.setItem('eduest_print_selected_chip', trimmed);
+    }
+    setEditingChipIdx(null);
+  };
+
+  const handleResetChips = () => {
+    if (confirm('시험 구분 칩 목록을 초기 기본값으로 되돌리시겠습니까?')) {
+      setChips(DEFAULT_CHIPS);
+      setSelectedChip('모의평가');
+      localStorage.setItem('eduest_print_chips', JSON.stringify(DEFAULT_CHIPS));
+      localStorage.setItem('eduest_print_selected_chip', '모의평가');
+    }
+  };
+
   const handleQuestionsPerPageChange = (count: QuestionsPerPageType) => {
     setQuestionsPerPage(count);
-    if (count === 1 || count === 2) {
-      setColumns(1);
-    } else {
-      setColumns(2);
-    }
+    const nextCols = count === 1 || count === 2 ? 1 : 2;
+    setColumns(nextCols);
+    localStorage.setItem('eduest_print_q_per_page', String(count));
+    localStorage.setItem('eduest_print_columns', String(nextCols));
+  };
+
+  const handleColumnsChange = (cols: 1 | 2) => {
+    setColumns(cols);
+    localStorage.setItem('eduest_print_columns', String(cols));
+  };
+
+  const handleMarginChange = (margin: 'compact' | 'normal') => {
+    setMarginSize(margin);
+    localStorage.setItem('eduest_print_margin', margin);
+  };
+
+  const handleToggleHeaderInfo = (checked: boolean) => {
+    setShowHeaderInfo(checked);
+    localStorage.setItem('eduest_print_show_header', String(checked));
+  };
+
+  const handleToggleShowPoints = (checked: boolean) => {
+    setShowPoints(checked);
+    localStorage.setItem('eduest_print_show_points', String(checked));
+  };
+
+  const handleToggleAnswerKey = (checked: boolean) => {
+    setIncludeAnswerKey(checked);
+    localStorage.setItem('eduest_print_include_key', String(checked));
   };
 
   // 문항 배열을 페이지 단위로 청크 분할
@@ -68,7 +249,6 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
     if (!exam) return;
     setIsPreparingPrint(true);
     try {
-      // 모든 이미지 사전 캐시 완료 대기
       const imageUrls = exam.questions.map(q => q.image_url).filter(Boolean);
       await Promise.all(
         imageUrls.map(
@@ -82,7 +262,6 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
         )
       );
 
-      // 인쇄 대화상자 호출
       setTimeout(() => {
         setIsPreparingPrint(false);
         window.print();
@@ -97,7 +276,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   if (!isOpen || !exam) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-md flex flex-col overflow-hidden animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md flex flex-col overflow-hidden animate-in fade-in duration-200">
       {/* 인쇄 전용 CSS 스타일 태그 */}
       <style jsx global>{`
         @media print {
@@ -172,7 +351,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             <button
               type="button"
               onClick={() => setZoomScale(prev => Math.max(0.5, prev - 0.1))}
-              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors"
+              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors cursor-pointer"
               title="축소"
             >
               <ZoomOut size={15} />
@@ -183,7 +362,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             <button
               type="button"
               onClick={() => setZoomScale(prev => Math.min(1.2, prev + 0.1))}
-              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors"
+              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-300 transition-colors cursor-pointer"
               title="확대"
             >
               <ZoomIn size={15} />
@@ -191,7 +370,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             <button
               type="button"
               onClick={() => setZoomScale(0.8)}
-              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-slate-200 transition-colors"
+              className="p-1.5 hover:bg-slate-700 rounded-lg text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
               title="배율 초기화 (80%)"
             >
               <RotateCcw size={13} />
@@ -222,7 +401,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
           <button
             type="button"
             onClick={onClose}
-            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+            className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
             title="창 닫기"
           >
             <X size={18} />
@@ -233,9 +412,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       {/* 중앙 메인 바디 (좌: 컨트롤 패널 / 우: 실시간 A4 미리보기 뷰어) */}
       <div className="flex-1 flex overflow-hidden">
         {/* 좌측 사이드바: 레이아웃 & 옵션 패널 (no-print) */}
-        <aside className="no-print w-80 bg-slate-900/90 border-r border-slate-800 p-5 overflow-y-auto space-y-6 shrink-0 text-slate-200">
+        <aside className="no-print w-84 bg-slate-900/90 border-r border-slate-800 p-5 overflow-y-auto space-y-5 shrink-0 text-slate-200">
+          
           {/* 1. 페이지당 문항 수 선택 */}
-          <div className="space-y-2.5">
+          <div className="space-y-2">
             <label className="text-xs font-black text-slate-300 flex items-center gap-1.5">
               <LayoutGrid size={14} className="text-violet-400" />
               <span>페이지당 문항 수</span>
@@ -262,100 +442,269 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 </button>
               ))}
             </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              {questionsPerPage === 1 && '• 1쪽 1문항: 풀이 공간이 넓게 필요한 서술형/고난도 문항에 적합합니다.'}
-              {questionsPerPage === 2 && '• 1쪽 2문항: 상·하 1단 배치로 넉넉한 문제 크기와 풀이 여백을 제공합니다.'}
-              {questionsPerPage === 4 && '• 1쪽 4문항: 2열 2행 좌/우 2단 배치로 학원 시험지 표준 스타일입니다.'}
-              {questionsPerPage === 6 && '• 1쪽 6문항: 2열 3행 컴팩트 배치로 용지를 가장 효율적으로 절약합니다.'}
+          </div>
+
+          {/* 2. 단(Column) & 여백 레이아웃 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-black text-slate-300 flex items-center gap-1">
+                <Columns size={12} className="text-violet-400" />
+                <span>단 배치</span>
+              </label>
+              <div className="grid grid-cols-2 gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => handleColumnsChange(1)}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    columns === 1 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  1단
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleColumnsChange(2)}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    columns === 2 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  2단
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-black text-slate-300 flex items-center gap-1">
+                <FileText size={12} className="text-violet-400" />
+                <span>인쇄 여백</span>
+              </label>
+              <div className="grid grid-cols-2 gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => handleMarginChange('compact')}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    marginSize === 'compact' ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  좁게
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMarginChange('normal')}
+                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                    marginSize === 'normal' ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  보통
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. 🏫 학원 / 기관명 표기 (디폴트 OFF, 토글 ON 시 활성화 + localStorage 자동 기억) */}
+          <div className="space-y-2 pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black text-slate-200 flex items-center gap-1.5 cursor-pointer">
+                <Building2 size={14} className="text-violet-400" />
+                <span>학원 / 기관명 표기</span>
+              </label>
+              
+              {/* 스위치 토글 */}
+              <button
+                type="button"
+                onClick={() => handleToggleAcademyName(!showAcademyName)}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                  showAcademyName ? 'bg-violet-600' : 'bg-slate-700'
+                }`}
+                title={showAcademyName ? '학원명 표기 끄기 (OFF)' : '학원명 표기 켜기 (ON)'}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                    showAcademyName ? 'translate-x-4' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+
+            {showAcademyName ? (
+              <div className="space-y-1 animate-in fade-in slide-in-from-top-1 duration-150">
+                <input
+                  type="text"
+                  value={academyName}
+                  onChange={e => handleAcademyNameChange(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800/90 border border-slate-700 focus:border-violet-500 rounded-xl text-xs text-white focus:outline-hidden"
+                  placeholder="예: OO수학학원, 에듀에스트"
+                />
+                <p className="text-[10px] text-violet-300/80">
+                  ✓ 입력하신 학원명은 자동 저장되어 다음 인쇄 시에도 유지됩니다.
+                </p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                현재 시험지에 학원명이 인쇄되지 않습니다. (무기명 모드)
+              </p>
+            )}
+          </div>
+
+          {/* 4. 🏷️ 시험 구분 (소제목 커스텀 칩 관리) */}
+          <div className="space-y-2.5 pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black text-slate-200 flex items-center gap-1.5">
+                <Tag size={13} className="text-violet-400" />
+                <span>시험 구분 (소제목 칩)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                {selectedChip && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectChip(selectedChip)}
+                    className="text-[10px] text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                  >
+                    선택 해제
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleResetChips}
+                  className="text-[10px] text-slate-500 hover:text-slate-300 cursor-pointer"
+                  title="기본 칩 목록으로 복원"
+                >
+                  기본값
+                </button>
+              </div>
+            </div>
+
+            {/* 칩 목록 */}
+            <div className="flex flex-wrap gap-1.5">
+              {chips.map((chip, idx) => {
+                const isSelected = selectedChip === chip;
+                const isEditing = editingChipIdx === idx;
+
+                if (isEditing) {
+                  return (
+                    <div key={idx} className="flex items-center gap-1 bg-slate-800 p-1 rounded-lg border border-violet-500">
+                      <input
+                        type="text"
+                        value={editingChipText}
+                        onChange={e => setEditingChipText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleSaveEditChip(idx);
+                          if (e.key === 'Escape') setEditingChipIdx(null);
+                        }}
+                        autoFocus
+                        className="w-20 px-1.5 py-0.5 text-xs bg-slate-900 text-white rounded focus:outline-hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveEditChip(idx)}
+                        className="p-1 text-emerald-400 hover:bg-emerald-950/50 rounded cursor-pointer"
+                        title="수정 완료"
+                      >
+                        <Check size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingChipIdx(null)}
+                        className="p-1 text-slate-400 hover:bg-slate-700 rounded cursor-pointer"
+                        title="취소"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => handleSelectChip(chip)}
+                    className={`group pl-2.5 pr-1.5 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border ${
+                      isSelected
+                        ? 'bg-violet-600 text-white border-violet-500 shadow-xs'
+                        : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                    }`}
+                  >
+                    <span>{chip}</span>
+
+                    {/* 칩 편집/삭제 액션 버튼들 */}
+                    <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-0.5 ml-0.5">
+                      <button
+                        type="button"
+                        onClick={e => handleStartEditChip(idx, chip, e)}
+                        className="p-0.5 hover:text-amber-300 transition-colors cursor-pointer"
+                        title="칩 이름 수정"
+                      >
+                        <Edit2 size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={e => handleDeleteChip(chip, e)}
+                        className="p-0.5 hover:text-rose-400 transition-colors cursor-pointer"
+                        title="칩 삭제"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* 새 칩 추가 인라인 버튼 or 입력창 */}
+              {isAddingChip ? (
+                <div className="flex items-center gap-1 bg-slate-800 p-1 rounded-xl border border-violet-500">
+                  <input
+                    type="text"
+                    value={newChipText}
+                    onChange={e => setNewChipText(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleAddChip();
+                      if (e.key === 'Escape') setIsAddingChip(false);
+                    }}
+                    placeholder="새 칩 이름"
+                    autoFocus
+                    className="w-24 px-1.5 py-0.5 text-xs bg-slate-900 text-white rounded focus:outline-hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddChip}
+                    className="px-1.5 py-0.5 bg-violet-600 text-white text-[11px] font-bold rounded hover:bg-violet-500 cursor-pointer"
+                  >
+                    추가
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setIsAddingChip(false); setNewChipText(''); }}
+                    className="p-1 text-slate-400 hover:bg-slate-700 rounded cursor-pointer"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsAddingChip(true)}
+                  className="px-2.5 py-1 rounded-xl text-xs font-bold bg-slate-800/40 text-slate-400 hover:text-violet-300 hover:bg-slate-800 border border-dashed border-slate-700 hover:border-violet-500 flex items-center gap-1 transition-all cursor-pointer"
+                >
+                  <Plus size={12} />
+                  <span>새 칩 추가</span>
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-400">
+              ※ 칩을 클릭해 선택하거나, 마우스를 올려 이름을 수정/삭제할 수 있습니다.
             </p>
           </div>
 
-          {/* 2. 단(Column) 분할 */}
-          <div className="space-y-2.5">
-            <label className="text-xs font-black text-slate-300 flex items-center gap-1.5">
-              <Columns size={14} className="text-violet-400" />
-              <span>단(Column) 레이아웃</span>
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setColumns(1)}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                  columns === 1
-                    ? 'bg-violet-600/20 text-violet-300 border-violet-500'
-                    : 'bg-slate-800/60 text-slate-400 border-slate-700/80 hover:bg-slate-800'
-                }`}
-              >
-                1단 (세로형)
-              </button>
-              <button
-                type="button"
-                onClick={() => setColumns(2)}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                  columns === 2
-                    ? 'bg-violet-600/20 text-violet-300 border-violet-500'
-                    : 'bg-slate-800/60 text-slate-400 border-slate-700/80 hover:bg-slate-800'
-                }`}
-              >
-                2단 (좌/우 분할)
-              </button>
-            </div>
-          </div>
-
-          {/* 3. 용지 여백 */}
-          <div className="space-y-2.5">
-            <label className="text-xs font-black text-slate-300 flex items-center gap-1.5">
-              <FileText size={14} className="text-violet-400" />
-              <span>용지 인쇄 여백</span>
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setMarginSize('compact')}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                  marginSize === 'compact'
-                    ? 'bg-violet-600/20 text-violet-300 border-violet-500'
-                    : 'bg-slate-800/60 text-slate-400 border-slate-700/80 hover:bg-slate-800'
-                }`}
-              >
-                좁게 (8mm)
-              </button>
-              <button
-                type="button"
-                onClick={() => setMarginSize('normal')}
-                className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                  marginSize === 'normal'
-                    ? 'bg-violet-600/20 text-violet-300 border-violet-500'
-                    : 'bg-slate-800/60 text-slate-400 border-slate-700/80 hover:bg-slate-800'
-                }`}
-              >
-                보통 (15mm)
-              </button>
-            </div>
-          </div>
-
-          {/* 4. 학원 이름 커스텀 */}
-          <div className="space-y-2">
-            <label className="text-xs font-black text-slate-300">학원 / 기관명 표기</label>
-            <input
-              type="text"
-              value={academyName}
-              onChange={e => setAcademyName(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-xl text-xs text-white focus:outline-hidden focus:border-violet-500"
-              placeholder="예: Eduest 수학학원"
-            />
-          </div>
-
           {/* 5. 세부 출력 옵션 (체크박스) */}
-          <div className="space-y-2.5 pt-2 border-t border-slate-800">
-            <label className="text-xs font-black text-slate-300">세부 인쇄 옵션</label>
+          <div className="space-y-2 pt-2 border-t border-slate-800">
+            <label className="text-xs font-black text-slate-200">세부 인쇄 옵션</label>
             <div className="space-y-2">
               <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={showHeaderInfo}
-                  onChange={e => setShowHeaderInfo(e.target.checked)}
-                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700"
+                  onChange={e => handleToggleHeaderInfo(e.target.checked)}
+                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
                 />
                 <span>수험자 기재란 (반/이름/점수) 포함</span>
               </label>
@@ -364,8 +713,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 <input
                   type="checkbox"
                   checked={showPoints}
-                  onChange={e => setShowPoints(e.target.checked)}
-                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700"
+                  onChange={e => handleToggleShowPoints(e.target.checked)}
+                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
                 />
                 <span>문항별 배점 표시 (예: [4.0점])</span>
               </label>
@@ -374,8 +723,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 <input
                   type="checkbox"
                   checked={includeAnswerKey}
-                  onChange={e => setIncludeAnswerKey(e.target.checked)}
-                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700"
+                  onChange={e => handleToggleAnswerKey(e.target.checked)}
+                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
                 />
                 <span>마지막 장 빠른 정답표(Answer Key) 첨부</span>
               </label>
@@ -386,10 +735,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
           <div className="p-3 bg-violet-950/40 border border-violet-800/40 rounded-xl space-y-1">
             <div className="flex items-center gap-1.5 text-violet-300 text-xs font-bold">
               <Sparkles size={13} />
-              <span>인쇄 팁</span>
+              <span>인쇄 & PDF 저장 안내</span>
             </div>
             <p className="text-[11px] text-violet-300/80 leading-normal">
-              브라우저 인쇄 대화상자에서 <strong>[대상: PDF로 저장]</strong>을 선택하시면 고해상도 PDF 파일로 즉시 저장할 수 있습니다.
+              인쇄 창에서 <strong>[대상: PDF로 저장]</strong>을 선택하시면 깨짐 없는 고화질 벡터 PDF로 바로 저장됩니다.
             </p>
           </div>
         </aside>
@@ -429,9 +778,22 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       <div className="border-b-2 border-slate-900 pb-3">
                         <div className="flex items-start justify-between">
                           <div className="space-y-1">
-                            <div className="text-[11px] font-bold text-slate-500 tracking-wider">
-                              {academyName} • 모의평가
-                            </div>
+                            
+                            {/* 학원명 & 시험구분 칩 결합 헤더 라인 */}
+                            {(showAcademyName && academyName) || selectedChip ? (
+                              <div className="text-[11px] font-bold text-slate-500 tracking-wider flex items-center gap-2">
+                                {showAcademyName && academyName && (
+                                  <span className="text-slate-800 font-black">{academyName}</span>
+                                )}
+                                {showAcademyName && academyName && selectedChip && (
+                                  <span className="text-slate-300 font-light">•</span>
+                                )}
+                                {selectedChip && (
+                                  <span className="text-violet-700 font-extrabold">{selectedChip}</span>
+                                )}
+                              </div>
+                            ) : null}
+
                             <h1 className="text-xl font-black text-slate-900 tracking-tight leading-snug">
                               {exam.title}
                             </h1>
@@ -473,7 +835,13 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       /* 2페이지 이후 간이 러닝 헤더 */
                       <div className="border-b border-slate-300 pb-1.5 flex items-center justify-between text-xs text-slate-500 font-bold">
                         <span>{exam.title} ({exam.grade})</span>
-                        <span>{academyName}</span>
+                        <span>
+                          {showAcademyName && academyName
+                            ? academyName
+                            : selectedChip
+                            ? selectedChip
+                            : ''}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -557,7 +925,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
 
                   {/* 하단 푸터 (페이지 번호) */}
                   <div className="shrink-0 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-                    <span>{academyName}</span>
+                    <span>{showAcademyName && academyName ? academyName : ''}</span>
                     <span className="font-mono font-bold text-slate-600">
                       - {pageNumber} / {totalPages} -
                     </span>
@@ -583,7 +951,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                   {/* 정답표 헤더 */}
                   <div className="border-b-2 border-slate-900 pb-3 mb-6">
                     <div className="text-[11px] font-bold text-slate-500 tracking-wider">
-                      {academyName} • 정답 및 배점표
+                      {showAcademyName && academyName ? `${academyName} • ` : ''}정답 및 배점표
                     </div>
                     <h1 className="text-xl font-black text-slate-900">
                       {exam.title} - 빠른 정답표
@@ -649,7 +1017,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
 
                 {/* 정답표 하단 푸터 */}
                 <div className="shrink-0 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-                  <span>{academyName}</span>
+                  <span>{showAcademyName && academyName ? academyName : ''}</span>
                   <span className="font-mono font-bold text-slate-600">
                     - {totalPages} / {totalPages} (정답표) -
                   </span>
