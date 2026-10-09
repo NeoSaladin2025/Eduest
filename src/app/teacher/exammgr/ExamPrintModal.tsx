@@ -17,7 +17,9 @@ import {
   Tag,
   Plus,
   Edit2,
-  Trash2
+  Trash2,
+  Sliders,
+  AlertTriangle
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 
@@ -39,6 +41,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [showHeaderInfo, setShowHeaderInfo] = useState(true);
   const [showPoints, setShowPoints] = useState(true);
   const [includeAnswerKey, setIncludeAnswerKey] = useState(true);
+
+  // 📝 빠른 정답표 전용 레이아웃 & 옵션 상태
+  const [answerKeyColumns, setAnswerKeyColumns] = useState<1 | 2>(2); // 디폴트: 2단 (컴팩트 용지절약)
+  const [showAnswerKeyType, setShowAnswerKeyType] = useState(false); // 디폴트: OFF (군더더기 제거, 정답란 넓게)
+  const [answersPerPage1Col, setAnswersPerPage1Col] = useState(22); // 1단 기준 기본 출력수
+  const [answersPerPage2Col, setAnswersPerPage2Col] = useState(44); // 2단 기준 기본 출력수
 
   // 🏫 학원명 토글 & 입력 (디폴트: OFF)
   const [showAcademyName, setShowAcademyName] = useState(false);
@@ -114,6 +122,29 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
 
       const savedKey = localStorage.getItem('eduest_print_include_key');
       if (savedKey !== null) setIncludeAnswerKey(savedKey === 'true');
+
+      // 4. 빠른 정답표 전용 옵션 복원
+      const savedAnsCols = localStorage.getItem('eduest_print_ans_columns');
+      if (savedAnsCols === '1' || savedAnsCols === '2') {
+        setAnswerKeyColumns(Number(savedAnsCols) as 1 | 2);
+      }
+
+      const savedAnsType = localStorage.getItem('eduest_print_ans_show_type');
+      if (savedAnsType !== null) {
+        setShowAnswerKeyType(savedAnsType === 'true');
+      }
+
+      const savedAns1Col = localStorage.getItem('eduest_print_ans_per_page_1col');
+      if (savedAns1Col) {
+        const n = Number(savedAns1Col);
+        if (!isNaN(n) && n >= 10 && n <= 36) setAnswersPerPage1Col(n);
+      }
+
+      const savedAns2Col = localStorage.getItem('eduest_print_ans_per_page_2col');
+      if (savedAns2Col) {
+        const n = Number(savedAns2Col);
+        if (!isNaN(n) && n >= 20 && n <= 70) setAnswersPerPage2Col(n);
+      }
     } catch (e) {
       console.warn('Failed to load saved print config:', e);
     }
@@ -232,6 +263,38 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
     localStorage.setItem('eduest_print_include_key', String(checked));
   };
 
+  const handleAnswerKeyColumnsChange = (cols: 1 | 2) => {
+    setAnswerKeyColumns(cols);
+    localStorage.setItem('eduest_print_ans_columns', String(cols));
+  };
+
+  const handleToggleAnswerKeyType = (checked: boolean) => {
+    setShowAnswerKeyType(checked);
+    localStorage.setItem('eduest_print_ans_show_type', String(checked));
+  };
+
+  const handleAnswersPerPageChange = (delta: number) => {
+    if (answerKeyColumns === 1) {
+      const nextVal = Math.min(32, Math.max(10, answersPerPage1Col + delta));
+      setAnswersPerPage1Col(nextVal);
+      localStorage.setItem('eduest_print_ans_per_page_1col', String(nextVal));
+    } else {
+      const nextVal = Math.min(64, Math.max(20, answersPerPage2Col + delta));
+      setAnswersPerPage2Col(nextVal);
+      localStorage.setItem('eduest_print_ans_per_page_2col', String(nextVal));
+    }
+  };
+
+  const handleResetAnswersPerPage = () => {
+    if (answerKeyColumns === 1) {
+      setAnswersPerPage1Col(22);
+      localStorage.setItem('eduest_print_ans_per_page_1col', '22');
+    } else {
+      setAnswersPerPage2Col(44);
+      localStorage.setItem('eduest_print_ans_per_page_2col', '44');
+    }
+  };
+
   // 문항 배열을 페이지 단위로 청크 분할
   const questionPages = useMemo(() => {
     if (!exam || !exam.questions || exam.questions.length === 0) return [];
@@ -242,7 +305,164 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
     return chunks;
   }, [exam, questionsPerPage]);
 
-  const totalPages = questionPages.length + (includeAnswerKey ? 1 : 0);
+  // 📝 빠른 정답표 전용 스마트 페이지 분할 (1단 / 2단 및 텍스트 줄바꿈 대응)
+  interface AnswerPageItem {
+    q: ExamQuestion;
+    globalIndex: number;
+  }
+
+  interface AnswerPageData {
+    pageIndex: number;
+    isFirstPage: boolean;
+    questions1Col?: AnswerPageItem[];
+    leftQuestions?: AnswerPageItem[];
+    rightQuestions?: AnswerPageItem[];
+    isWarningOverflow: boolean;
+  }
+
+  const answerPages = useMemo<AnswerPageData[]>(() => {
+    if (!includeAnswerKey || !exam || !exam.questions || exam.questions.length === 0) {
+      return [];
+    }
+
+    const allItems: AnswerPageItem[] = exam.questions.map((q, idx) => ({
+      q,
+      globalIndex: idx + 1
+    }));
+
+    const pages: AnswerPageData[] = [];
+    let currentIndex = 0;
+    let pageIdx = 0;
+
+    if (answerKeyColumns === 1) {
+      // 1단 모드: 1페이지는 메인 헤더(~40mm) 공간 감안하여 약간 적게 배치
+      while (currentIndex < allItems.length) {
+        const isFirst = pageIdx === 0;
+        const capacity = isFirst
+          ? Math.max(6, answersPerPage1Col - 4)
+          : answersPerPage1Col;
+
+        const pageItems = allItems.slice(currentIndex, currentIndex + capacity);
+        currentIndex += pageItems.length;
+
+        const isWarning =
+          capacity > 26 ||
+          pageItems.filter(item => (item.q.answer?.length || 0) > 40).length >= 4;
+
+        pages.push({
+          pageIndex: pageIdx,
+          isFirstPage: isFirst,
+          questions1Col: pageItems,
+          isWarningOverflow: isWarning
+        });
+        pageIdx++;
+      }
+    } else {
+      // 2단 컴팩트 모드: 1페이지는 메인 헤더 감안, 각 페이지는 좌/우 2열로 균등 분할
+      while (currentIndex < allItems.length) {
+        const isFirst = pageIdx === 0;
+        const capacity = isFirst
+          ? Math.max(12, answersPerPage2Col - 8)
+          : answersPerPage2Col;
+
+        const pageItems = allItems.slice(currentIndex, currentIndex + capacity);
+        currentIndex += pageItems.length;
+
+        const half = Math.ceil(pageItems.length / 2);
+        const leftItems = pageItems.slice(0, half);
+        const rightItems = pageItems.slice(half);
+
+        const isWarning =
+          capacity > 52 ||
+          pageItems.filter(item => (item.q.answer?.length || 0) > 40).length >= 6;
+
+        pages.push({
+          pageIndex: pageIdx,
+          isFirstPage: isFirst,
+          leftQuestions: leftItems,
+          rightQuestions: rightItems,
+          isWarningOverflow: isWarning
+        });
+        pageIdx++;
+      }
+    }
+
+    return pages;
+  }, [includeAnswerKey, exam, answerKeyColumns, answersPerPage1Col, answersPerPage2Col]);
+
+  // 시험지 본문 페이지수 + 정답표 페이지수 완벽 합산
+  const totalPages = questionPages.length + (includeAnswerKey ? answerPages.length : 0);
+
+  // 📋 정답표 테이블 렌더링 헬퍼 함수 (1단 및 2단 공용)
+  const renderAnswerTable = (items: AnswerPageItem[], isCompactCol: boolean = false) => {
+    return (
+      <div className="border border-slate-900 rounded-lg overflow-hidden bg-white">
+        <table className="w-full text-xs text-center border-collapse">
+          <thead>
+            <tr className="bg-slate-100 border-b border-slate-900 font-black text-slate-800">
+              <th className={`py-1.5 px-2 border-r border-slate-300 ${isCompactCol ? 'w-10' : 'w-14'}`}>
+                번호
+              </th>
+              {showAnswerKeyType && (
+                <th className={`py-1.5 px-2 border-r border-slate-300 ${isCompactCol ? 'w-14' : 'w-18'}`}>
+                  유형
+                </th>
+              )}
+              {showPoints && (
+                <th className={`py-1.5 px-2 border-r border-slate-300 ${isCompactCol ? 'w-12' : 'w-16'}`}>
+                  배점
+                </th>
+              )}
+              <th className="py-1.5 px-3 text-left">정답</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, rowIdx) => {
+              const { q, globalIndex } = item;
+              const points = q.points || (q.is_descriptive ? 5 : 4);
+              const isSub = q.sub_questions && q.sub_questions.length > 0;
+
+              return (
+                <tr
+                  key={q.id || globalIndex}
+                  className={`border-b border-slate-200 ${
+                    rowIdx % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'
+                  }`}
+                >
+                  <td className="py-1.5 px-2 border-r border-slate-200 font-black text-slate-800">
+                    {globalIndex}
+                  </td>
+                  {showAnswerKeyType && (
+                    <td className="py-1.5 px-2 border-r border-slate-200 text-slate-600 font-bold text-[11px]">
+                      {q.is_descriptive ? '서술형' : isSub ? '소문항' : '단답/객관'}
+                    </td>
+                  )}
+                  {showPoints && (
+                    <td className="py-1.5 px-2 border-r border-slate-200 text-slate-600 font-mono font-bold text-[11px]">
+                      {points}.0점
+                    </td>
+                  )}
+                  <td className="py-1.5 px-3 text-left font-black text-slate-900 font-mono break-words whitespace-pre-wrap leading-snug">
+                    {isSub ? (
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        {q.sub_questions!.map((sq, sqIdx) => (
+                          <span key={sqIdx} className="inline-block">
+                            <strong className="text-violet-700 font-black">{sq.label}</strong> {sq.answer}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span>{q.answer || q.raw_answer || '-'}</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
   const handleTriggerPrint = async () => {
@@ -898,15 +1118,136 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 <span>문항별 배점 표시 (예: [4.0점])</span>
               </label>
 
-              <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={includeAnswerKey}
-                  onChange={e => handleToggleAnswerKey(e.target.checked)}
-                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
-                />
-                <span>마지막 장 빠른 정답표(Answer Key) 첨부</span>
-              </label>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeAnswerKey}
+                    onChange={e => handleToggleAnswerKey(e.target.checked)}
+                    className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
+                  />
+                  <span>마지막 장 빠른 정답표(Answer Key) 첨부</span>
+                </label>
+
+                {/* 빠른 정답표 활성화 시 노출되는 전용 세부 설정 */}
+                {includeAnswerKey && (
+                  <div className="ml-6 p-3 bg-slate-800/80 rounded-xl border border-slate-700/80 space-y-3 animate-in fade-in slide-in-from-top-1 duration-150">
+                    {/* 1. 정답표 단 배치 (1단 vs 2단) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+                          <Columns size={12} className="text-violet-400" />
+                          <span>정답표 단 배치</span>
+                        </label>
+                        <span className="text-[10px] text-violet-300 font-bold">
+                          {answerKeyColumns === 2 ? '용지 50% 절약 모드' : '상세 모드'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1 bg-slate-900/80 p-1 rounded-lg border border-slate-700">
+                        <button
+                          type="button"
+                          onClick={() => handleAnswerKeyColumnsChange(1)}
+                          className={`py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                            answerKeyColumns === 1
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          1단 (상세형)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAnswerKeyColumnsChange(2)}
+                          className={`py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                            answerKeyColumns === 2
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          2단 (컴팩트★)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 2. 문항 유형(단답/서술) 표기 토글 */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-700/60">
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer">
+                          <span>문항 유형(단답/서술) 표기</span>
+                        </label>
+                        <p className="text-[9px] text-slate-400">
+                          OFF 시 정답란이 넓어져 채점이 편합니다.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAnswerKeyType(!showAnswerKeyType)}
+                        className={`relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                          showAnswerKeyType ? 'bg-violet-600' : 'bg-slate-700'
+                        }`}
+                        title={showAnswerKeyType ? '유형 표기 끄기 (OFF)' : '유형 표기 켜기 (ON)'}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                            showAnswerKeyType ? 'translate-x-3.5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* 3. 쪽당 정답 출력 수 직접 조절 */}
+                    <div className="space-y-1.5 pt-2 border-t border-slate-700/60">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+                          <Sliders size={12} className="text-violet-400" />
+                          <span>쪽당 정답 출력 수</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleResetAnswersPerPage}
+                          className="text-[10px] text-slate-400 hover:text-violet-300 underline cursor-pointer"
+                          title="추천 기본값으로 복원"
+                        >
+                          기본값 ({answerKeyColumns === 1 ? '22개' : '44개'})
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-lg border border-slate-700">
+                        <button
+                          type="button"
+                          onClick={() => handleAnswersPerPageChange(answerKeyColumns === 1 ? -2 : -4)}
+                          className="w-7 h-7 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-black text-sm transition-colors cursor-pointer"
+                          title="문항 수 줄이기 (여유 확보)"
+                        >
+                          -
+                        </button>
+                        <div className="flex-1 text-center font-mono font-bold text-xs text-white">
+                          <span>{answerKeyColumns === 1 ? answersPerPage1Col : answersPerPage2Col}</span>
+                          <span className="text-[10px] text-slate-400 font-normal ml-1">문항 / 쪽</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleAnswersPerPageChange(answerKeyColumns === 1 ? 2 : 4)}
+                          className="w-7 h-7 flex items-center justify-center rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-black text-sm transition-colors cursor-pointer"
+                          title="문항 수 늘리기 (페이지 압축)"
+                        >
+                          +
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[10px] text-violet-300/90 font-medium">
+                        <span>현재 정답표: <strong>총 {answerPages.length}장</strong></span>
+                        {answerPages.some(p => p.isWarningOverflow) && (
+                          <span className="text-amber-400 font-bold flex items-center gap-1" title="A4 한 페이지 높이를 넘칠 수 있으니 문항 수를 줄여보세요">
+                            <AlertTriangle size={11} />
+                            <span>A4 초과 주의</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1114,96 +1455,90 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
               );
             })}
 
-            {/* 빠른 정답표 부록 페이지 (옵션 활성화 시 맨 뒤에 출력) */}
-            {includeAnswerKey && (
-              <div
-                className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between ${
-                  marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
-                }`}
-                style={{
-                  width: '210mm',
-                  minHeight: '297mm',
-                  boxSizing: 'border-box'
-                }}
-              >
-                <div>
-                  {/* 정답표 헤더 */}
-                  <div className="border-b-2 border-slate-900 pb-3 mb-6">
-                    <div className="text-[11px] font-bold text-slate-500 tracking-wider">
-                      {showAcademyName && academyName ? `${academyName} • ` : ''}정답 및 배점표
+            {/* 빠른 정답표 부록 페이지 (옵션 활성화 시 맨 뒤에 A4 페이지별로 동적 분할 출력) */}
+            {includeAnswerKey &&
+              answerPages.map((ansPage, ansPageIdx) => {
+                const currentGlobalPage = questionPages.length + ansPageIdx + 1;
+
+                return (
+                  <div
+                    key={`ans-page-${ansPageIdx}`}
+                    className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between ${
+                      marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
+                    }`}
+                    style={{
+                      width: '210mm',
+                      minHeight: '297mm',
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    <div>
+                      {/* 정답표 상단 헤더 영역 */}
+                      {ansPage.isFirstPage ? (
+                        /* 1페이지 메인 헤더 */
+                        <div className="border-b-2 border-slate-900 pb-3 mb-4">
+                          <div className="text-[11px] font-bold text-slate-500 tracking-wider">
+                            {showAcademyName && academyName ? `${academyName} • ` : ''}정답 및 배점표
+                          </div>
+                          <div className="flex items-baseline justify-between">
+                            <h1 className="text-xl font-black text-slate-900">
+                              {exam.title} - 빠른 정답표
+                            </h1>
+                            {answerPages.length > 1 && (
+                              <span className="text-xs font-bold text-violet-700 font-mono">
+                                (1 / {answerPages.length} 쪽)
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">
+                            총 {exam.questions.length}문항 • 각 문항별 정답 및 소문항 기준 답안입니다.
+                          </p>
+                        </div>
+                      ) : (
+                        /* 2페이지 이후 간이 연속 헤더 */
+                        <div className="border-b-2 border-slate-900 pb-2 mb-4 flex items-center justify-between text-xs font-bold text-slate-700">
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-900 font-black">
+                              {exam.title} - 빠른 정답표 (계속)
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              ({showAcademyName && academyName ? academyName : selectedChip || 'Eduest'})
+                            </span>
+                          </div>
+                          <span className="text-violet-700 font-black font-mono">
+                            ({ansPageIdx + 1} / {answerPages.length} 쪽)
+                          </span>
+                        </div>
+                      )}
+
+                      {/* 본문 테이블 렌더링 (1단 or 2단 그리드) */}
+                      {answerKeyColumns === 1 ? (
+                        /* 1단 모드 */
+                        ansPage.questions1Col && renderAnswerTable(ansPage.questions1Col, false)
+                      ) : (
+                        /* 2단 컴팩트 모드 */
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            {ansPage.leftQuestions && renderAnswerTable(ansPage.leftQuestions, true)}
+                          </div>
+                          <div className="space-y-2">
+                            {ansPage.rightQuestions && renderAnswerTable(ansPage.rightQuestions, true)}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <h1 className="text-xl font-black text-slate-900">
-                      {exam.title} - 빠른 정답표
-                    </h1>
-                    <p className="text-xs text-slate-500 mt-1">
-                      총 {exam.questions.length}문항 • 각 문항별 정답 및 소문항 기준 답안입니다.
-                    </p>
+
+                    {/* 정답표 하단 푸터 */}
+                    <div className="shrink-0 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-400 font-medium">
+                      <span>{showAcademyName && academyName ? academyName : ''}</span>
+                      <span className="font-mono font-bold text-slate-600">
+                        - {currentGlobalPage} / {totalPages} (정답표 {ansPageIdx + 1}/{answerPages.length}) -
+                      </span>
+                      <span>Eduest Examination</span>
+                    </div>
                   </div>
-
-                  {/* 정답 그리드 테이블 */}
-                  <div className="border border-slate-900 rounded-lg overflow-hidden">
-                    <table className="w-full text-xs text-center border-collapse">
-                      <thead>
-                        <tr className="bg-slate-100 border-b border-slate-900 font-black text-slate-800">
-                          <th className="py-2.5 px-3 border-r border-slate-300 w-16">번호</th>
-                          <th className="py-2.5 px-3 border-r border-slate-300 w-20">유형</th>
-                          <th className="py-2.5 px-3 border-r border-slate-300 w-20">배점</th>
-                          <th className="py-2.5 px-4 text-left">정답</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {exam.questions.map((q, idx) => {
-                          const qNum = idx + 1;
-                          const points = q.points || (q.is_descriptive ? 5 : 4);
-                          const isSub = q.sub_questions && q.sub_questions.length > 0;
-
-                          return (
-                            <tr
-                              key={q.id}
-                              className={`border-b border-slate-200 ${
-                                idx % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'
-                              }`}
-                            >
-                              <td className="py-2 px-3 border-r border-slate-200 font-black text-slate-800">
-                                {qNum}
-                              </td>
-                              <td className="py-2 px-3 border-r border-slate-200 text-slate-600 font-bold">
-                                {q.is_descriptive ? '서술형' : isSub ? '소문항' : '단답/객관'}
-                              </td>
-                              <td className="py-2 px-3 border-r border-slate-200 text-slate-600 font-mono font-bold">
-                                {points}.0점
-                              </td>
-                              <td className="py-2 px-4 text-left font-black text-slate-900 font-mono">
-                                {isSub ? (
-                                  <div className="flex flex-wrap gap-x-4 gap-y-1">
-                                    {q.sub_questions!.map((sq, sqIdx) => (
-                                      <span key={sqIdx}>
-                                        <strong className="text-violet-700">{sq.label}</strong> {sq.answer}
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span>{q.answer || q.raw_answer}</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* 정답표 하단 푸터 */}
-                <div className="shrink-0 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-                  <span>{showAcademyName && academyName ? academyName : ''}</span>
-                  <span className="font-mono font-bold text-slate-600">
-                    - {totalPages} / {totalPages} (정답표) -
-                  </span>
-                  <span>Eduest Examination</span>
-                </div>
-              </div>
-            )}
+                );
+              })}
           </div>
         </main>
       </div>
