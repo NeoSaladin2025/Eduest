@@ -122,10 +122,10 @@ export default function StudentReviewExplorer({
     });
   };
 
-  // 🌟 DB에서 기존 문항 누락 데이터(answer, solutionUrl) 자동 보강 및 Supabase DB 저장
+  // 🌟 DB에서 기존 문항 누락 데이터(answer, solutionUrl, 문항유형, 서술형, 소문항) 자동 보강 및 Supabase DB 저장
   useEffect(() => {
     const needsEnrichment = reviewData.items.some(
-      i => i.type === 'image' && (!i.answer || !i.solutionUrl)
+      i => i.type === 'image' && (!i.answer || !i.solutionUrl || !i.question_type || i.is_descriptive === undefined)
     );
     if (!needsEnrichment) return;
 
@@ -138,7 +138,7 @@ export default function StudentReviewExplorer({
         let hasChanged = false;
         const enrichedItems = reviewData.items.map(item => {
           if (item.type !== 'image') return item;
-          if (item.answer && item.solutionUrl) return item;
+          if (item.answer && item.solutionUrl && item.question_type && item.is_descriptive !== undefined) return item;
 
           let matchedQ: any = null;
           // 1. fileId 패턴 매칭: exam_{examId}_q_{qId}
@@ -174,6 +174,22 @@ export default function StudentReviewExplorer({
               solutionUrl: matchedQ.solution_drive_id || matchedQ.drive_id || item.solutionUrl,
               problemUrl: matchedQ.image_url || item.problemUrl,
               points: matchedQ.points || item.points || 4,
+              question_type: matchedQ.question_type || (matchedQ.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(String(matchedQ.answer || '')) ? 'MULTIPLE' : 'SHORT')),
+              is_descriptive: Boolean(matchedQ.is_descriptive),
+              sub_questions: matchedQ.sub_questions && matchedQ.sub_questions.length > 0 ? matchedQ.sub_questions : item.sub_questions,
+            };
+          }
+
+          // fallback: 원본 매칭이 안 되어도 정답 패턴으로 서술형/소문항 감지
+          const ansText = item.answer || item.raw_answer || '';
+          const hasSubPattern = /\((?:1|2|가|나)\)|[①②]/.test(ansText);
+          const isProbablyDescriptive = item.is_descriptive || ansText.length > 25 || hasSubPattern;
+          if (item.question_type === undefined || item.is_descriptive === undefined) {
+            hasChanged = true;
+            return {
+              ...item,
+              question_type: (item.question_type || (isProbablyDescriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ansText) ? 'MULTIPLE' : 'SHORT'))) as any,
+              is_descriptive: Boolean(isProbablyDescriptive),
             };
           }
 

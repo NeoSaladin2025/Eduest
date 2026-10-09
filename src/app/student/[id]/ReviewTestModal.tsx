@@ -18,8 +18,18 @@ import {
   Zap,
   CheckSquare,
   Trophy,
-  Flame,
-  Medal
+  Flame, 
+  Medal,
+  Plus,
+  Minus,
+  Info,
+  FileText,
+  Camera,
+  Loader2,
+  Maximize2,
+  Trash2,
+  ThumbsUp,
+  ThumbsDown
 } from 'lucide-react';
 import { ReviewItem, StudentReviewData, ReviewTestHistory, ReviewTestResultItem, ReviewLapRecord } from './types';
 import ReviewSolutionModal from './ReviewSolutionModal';
@@ -48,10 +58,21 @@ export default function ReviewTestModal({
   const [viewMode, setViewMode] = useState<'taking' | 'result'>('taking');
   const [currentIndex, setCurrentIndex] = useState(0);
 
-  // 답안 및 소요시간 관리
-  const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
+  // 답안 및 소요시간 관리 (문자열 또는 소문항 맵)
+  const [userAnswers, setUserAnswers] = useState<Record<string, any>>({});
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
+
+  // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
+  const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
+
+  // 📝 서술형 문항 3-Way 제출 모드 관리: 'PAPER' | 'PHOTO' | 'TEXT'
+  const [descriptiveSubmitModes, setDescriptiveSubmitModes] = useState<Record<string, 'PAPER' | 'PHOTO' | 'TEXT'>>({});
+
+  // 📸 서술형 풀이 사진 업로드 관리
+  const [proofImages, setProofImages] = useState<Record<string, { url: string; fileName: string; isUploading?: boolean }>>({});
+  const [uploadingProofQId, setUploadingProofQId] = useState<string | null>(null);
+  const [viewingProofUrl, setViewingProofUrl] = useState<string | null>(null);
 
   // 🌟 달리기초 스톱워치 (카운트업 경과 시간, 100ms 단위 실시간 계측)
   const [elapsedMs, setElapsedMs] = useState<number>(0);
@@ -115,22 +136,199 @@ export default function ReviewTestModal({
   };
 
   // 답안 선택 핸들러
-  const handleAnswerSelect = (itemId: string, answer: string) => {
+  const handleAnswerSelect = (itemId: string, answer: any) => {
     setUserAnswers(prev => ({
       ...prev,
       [itemId]: answer,
     }));
   };
 
-  // ── 정답 정규화 비교 함수 ─────────────────────────────────────
-  const normalizeAnswer = (val?: string) => {
-    if (!val) return '';
-    const trimmed = String(val).trim();
-    const symbolMap: Record<string, string> = {
+  // ── 🧩 문항 타입 판별 ('MULTIPLE' | 'SHORT' | 'DESCRIPTIVE') ───────
+  const getItemQuestionType = (item: ReviewItem): 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE' => {
+    if (item.question_type) return item.question_type;
+    if (item.is_descriptive) return 'DESCRIPTIVE';
+
+    const ans = String(item.answer || item.raw_answer || '').trim();
+    // 1~5 단일 번호 (소문항 없는 경우) -> 객관식
+    if (/^[1-5]$/.test(ans)) return 'MULTIPLE';
+
+    // 소문항 패턴이 있는 경우 ((1), (2), ①, ② 등)
+    if (Array.isArray(item.sub_questions) && item.sub_questions.length >= 2) return 'SHORT';
+    if (/\((?:1|2|가|나)\)|[①②]/.test(ans)) return 'SHORT';
+
+    // 긴 풀이 텍스트인 경우 -> 서술형
+    if (ans.length > 25) return 'DESCRIPTIVE';
+
+    return 'SHORT';
+  };
+
+  // ── 🧩 활성 소문항 라벨 목록 계산 ─────────────────────────────
+  const getItemSubLabels = (item: ReviewItem): string[] => {
+    if (!item) return [];
+    if (customSubLabels[item.id] !== undefined) {
+      return customSubLabels[item.id];
+    }
+    if (Array.isArray(item.sub_questions) && item.sub_questions.length >= 2) {
+      return item.sub_questions.map(sq => sq.label);
+    }
+    const ans = String(item.answer || item.raw_answer || '');
+    const matches = ans.match(/\((?:1|2|3|4|5|[가-마])\)|[①②③④⑤]/g);
+    if (matches) {
+      const unique = Array.from(new Set(matches));
+      if (unique.length >= 2) return unique;
+    }
+    const curAns = userAnswers[item.id];
+    if (typeof curAns === 'object' && curAns !== null && Object.keys(curAns).length >= 2) {
+      return Object.keys(curAns);
+    }
+    return [];
+  };
+
+  // 소문항 칸 추가 핸들러
+  const handleAddSubQuestion = (itemId: string) => {
+    const itemObj = items.find(i => i.id === itemId);
+    const curLabels = getItemSubLabels(itemObj || ({ id: itemId } as any));
+    let nextLabels: string[];
+    if (curLabels.length === 0) {
+      nextLabels = ['(1)', '(2)'];
+    } else {
+      const nextNum = curLabels.length + 1;
+      nextLabels = [...curLabels, `(${nextNum})`];
+    }
+    setCustomSubLabels(prev => ({ ...prev, [itemId]: nextLabels }));
+  };
+
+  // 소문항 칸 삭제 핸들러 (마지막 칸 제거)
+  const handleRemoveSubQuestion = (itemId: string) => {
+    const itemObj = items.find(i => i.id === itemId);
+    const curLabels = getItemSubLabels(itemObj || ({ id: itemId } as any));
+    if (curLabels.length <= 2) {
+      setCustomSubLabels(prev => ({ ...prev, [itemId]: [] }));
+      setUserAnswers(prev => {
+        const curAns = prev[itemId];
+        let singleVal = '';
+        if (typeof curAns === 'object' && curAns !== null) {
+          singleVal = curAns['(1)'] || Object.values(curAns)[0] || '';
+        } else if (typeof curAns === 'string') {
+          singleVal = curAns;
+        }
+        return { ...prev, [itemId]: singleVal };
+      });
+    } else {
+      const nextLabels = curLabels.slice(0, -1);
+      setCustomSubLabels(prev => ({ ...prev, [itemId]: nextLabels }));
+    }
+  };
+
+  // 소문항 개별 답안 변경 처리
+  const handleSubAnswerChange = (itemId: string, subLabel: string, value: string) => {
+    setUserAnswers(prev => {
+      let currentVal = prev[itemId];
+      let subMap: Record<string, string> = {};
+      if (typeof currentVal === 'object' && currentVal !== null) {
+        subMap = { ...currentVal };
+      } else if (typeof currentVal === 'string') {
+        try {
+          subMap = JSON.parse(currentVal);
+        } catch {
+          subMap = {};
+        }
+      }
+      subMap[subLabel] = value;
+      return { ...prev, [itemId]: subMap };
+    });
+  };
+
+  // ── 📸 서술형 풀이 사진 업로드 & 관리 ─────────────────────────
+  const handleUploadProof = (itemId: string, qNum: number, file: File) => {
+    if (!file) return;
+    setUploadingProofQId(itemId);
+
+    const localPreviewUrl = URL.createObjectURL(file);
+    const tempFileName = `[복습풀이]_${qNum}번_${Date.now()}.jpg`;
+
+    setProofImages(prev => ({
+      ...prev,
+      [itemId]: {
+        url: localPreviewUrl,
+        fileName: tempFileName,
+        isUploading: false,
+      },
+    }));
+
+    handleAnswerSelect(itemId, '__PHOTO_SUBMISSION__');
+    setUploadingProofQId(null);
+  };
+
+  const handleRemoveProof = (itemId: string) => {
+    setProofImages(prev => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+    handleAnswerSelect(itemId, '');
+  };
+
+  // ── 🎯 스마트 단위 및 부가 기호 제거 (주관식/소문항 채점 보정) ──────
+  const stripUnitsAndExtras = (str: string): string => {
+    if (!str) return '';
+    const circledMap: Record<string, string> = {
       '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5',
-      '1': '1', '2': '2', '3': '3', '4': '4', '5': '5'
+      '❶': '1', '❷': '2', '❸': '3', '❹': '4', '❺': '5',
     };
-    return symbolMap[trimmed] || trimmed.toLowerCase().replace(/\s+/g, '');
+
+    let s = str
+      .replace(/[①②③④⑤❶❷❸❹❺]/g, m => circledMap[m] || m)
+      .replace(/\s+/g, '')
+      .toLowerCase()
+      .replace(/²/g, '2')
+      .replace(/³/g, '3')
+      .replace(/,/g, '')
+      .replace(/^[a-z]\s*=\s*/i, '')
+      .replace(/^(?:\([1-9]\)|[1-9]\)|\[[1-9]\]|[①-⑤])\s*/, '')
+      .replace(/\((?:cm[23]?|mm[23]?|m[23]?|km[23]?|kg|mg|g|ml|l|°|도|개|명|원|초|분)\)$/i, '');
+
+    const unitSuffixRegex = /(?:cm[23]?|mm[23]?|km[23]?|m[23]?|kg|mg|g|ml|l|°|도|개|명|원|자루|권|마리|대|점|번|초|분|시간|s|sec|min|hr|h|%|퍼센트|배)$/i;
+    s = s.replace(unitSuffixRegex, '');
+    return s.trim();
+  };
+
+  // ── 정답 정규화 비교 함수 ─────────────────────────────────────
+  const checkAnswerMatch = (
+    userAns: string,
+    correctAns: string,
+    rawAns: string,
+    isMultipleChoice: boolean = false
+  ): boolean => {
+    const cUser = String(userAns || '').replace(/\s+/g, '').toLowerCase();
+    const cCorrect = String(correctAns || '').replace(/\s+/g, '').toLowerCase();
+    const cRaw = String(rawAns || '').replace(/\s+/g, '').toLowerCase();
+
+    if (!cUser || cUser === '모름' || cUser === 'unknown') return false;
+
+    // 1. 공백 제거 후 완전 일치
+    if (cUser === cCorrect || (cRaw && cUser === cRaw)) return true;
+
+    // 2. 스마트 단위 제거 후 핵심 값 비교
+    const strippedUser = stripUnitsAndExtras(userAns);
+    const strippedCorrect = stripUnitsAndExtras(correctAns);
+    const strippedRaw = stripUnitsAndExtras(rawAns);
+
+    if (strippedUser && (strippedUser === strippedCorrect || (strippedRaw && strippedUser === strippedRaw))) {
+      return true;
+    }
+
+    // 3. 객관식(1~5) 전용 매칭
+    if (isMultipleChoice) {
+      const symbolMap: Record<string, string> = {
+        '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5',
+      };
+      const normUser = symbolMap[userAns.trim()] || userAns.trim();
+      const correctNumMatch = cCorrect.match(/^([1-5])/);
+      if (correctNumMatch && correctNumMatch[1] === normUser) return true;
+    }
+
+    return false;
   };
 
   // ── 2. 시험 답안 제출 및 자동 채점 & DB 영구 저장 ──────────────
@@ -144,15 +342,75 @@ export default function ReviewTestModal({
 
     // 채점 및 랩타임 연산 루프
     items.forEach((item, idx) => {
-      const userAns = userAnswers[item.id] || '';
+      const qType = getItemQuestionType(item);
+      const subLabels = getItemSubLabels(item);
+      const hasSubQuestions = subLabels.length >= 2;
+      const rawUserAns = userAnswers[item.id] || '';
       const correctAns = item.answer || item.raw_answer || '';
       const point = item.points || 4;
 
-      const userNorm = normalizeAnswer(userAns);
-      const corrNorm = normalizeAnswer(correctAns);
+      let isCorrect = false;
+      let displayUserAns = '';
+      let subResults: Record<string, boolean> | undefined = undefined;
+      let subAnswersMap: Record<string, string> | undefined = undefined;
+      const descMode = descriptiveSubmitModes[item.id] || (rawUserAns === '__DIRECT_PAPER__' ? 'PAPER' : (rawUserAns === '__PHOTO_SUBMISSION__' ? 'PHOTO' : 'TEXT'));
 
-      // 정답 판정
-      const isCorrect = corrNorm !== '' && userNorm !== '' && userNorm === corrNorm;
+      if (qType === 'DESCRIPTIVE') {
+        // 🌟 서술형 문항: 학생의 자기주도적 셀프 채점 방식!
+        if (descMode === 'PAPER') {
+          displayUserAns = '종이 직접 풀이 제출';
+          isCorrect = true; // 학생이 모범풀이 확인 후 셀프 채점
+        } else if (descMode === 'PHOTO') {
+          displayUserAns = '서술형 풀이 사진 제출';
+          isCorrect = true; // 학생이 모범풀이 확인 후 셀프 채점
+        } else {
+          if (typeof rawUserAns === 'object' && rawUserAns !== null) {
+            displayUserAns = Object.entries(rawUserAns).map(([k, v]) => `${k} ${v}`).join(' / ');
+            isCorrect = true;
+          } else {
+            displayUserAns = String(rawUserAns || '');
+            if (rawUserAns && rawUserAns !== '모름') {
+              isCorrect = checkAnswerMatch(displayUserAns, correctAns, item.raw_answer || correctAns, false) || true;
+            } else {
+              isCorrect = false;
+            }
+          }
+        }
+      } else if (hasSubQuestions) {
+        // 🌟 소문항이 2개 이상 있는 경우
+        let parsedSub: Record<string, string> = {};
+        if (typeof rawUserAns === 'object' && rawUserAns !== null) {
+          parsedSub = rawUserAns;
+        } else if (typeof rawUserAns === 'string') {
+          try {
+            parsedSub = JSON.parse(rawUserAns);
+          } catch {
+            parsedSub = {};
+          }
+        }
+        subAnswersMap = parsedSub;
+        subResults = {};
+        displayUserAns = subLabels.map(lbl => `${lbl} ${parsedSub[lbl] || '(미입력)'}`).join(' / ');
+
+        let allMatched = true;
+        subLabels.forEach(lbl => {
+          const studentSubVal = parsedSub[lbl] || '';
+          const matchedSq = (item.sub_questions || []).find(sq => sq.label === lbl);
+          const sqAns = matchedSq ? matchedSq.answer : correctAns;
+          const matched = checkAnswerMatch(studentSubVal, sqAns, sqAns, false);
+          subResults![lbl] = matched;
+          if (!matched) {
+            allMatched = false;
+          }
+        });
+
+        isCorrect = allMatched;
+      } else {
+        // 🌟 일반 객관식 또는 단일 단답형
+        displayUserAns = typeof rawUserAns === 'object' ? JSON.stringify(rawUserAns) : String(rawUserAns || '');
+        const isMultiple = qType === 'MULTIPLE';
+        isCorrect = checkAnswerMatch(displayUserAns, correctAns, item.raw_answer || correctAns, isMultiple);
+      }
 
       if (isCorrect) {
         correctCount += 1;
@@ -167,11 +425,9 @@ export default function ReviewTestModal({
       let newBestSpentSec = item.bestSpentSec;
       let top3Records: ReviewLapRecord[] = [];
 
-      // 기존 정답 랩타임만 필터링 (과거 오답 기록이 섞여있더라도 정답만 보존)
       const existingCorrectLaps = (item.timeRecords || []).filter(l => l.isCorrect);
 
       if (isCorrect) {
-        // 정답인 경우: 이전 정답 풀이 시간(lastSpentSec)과의 차이 계산
         const prevSpent = item.lastSpentSec;
         if (prevSpent !== undefined && prevSpent > 0 && item.lastIsCorrect) {
           diffFromPrev = spentSec - prevSpent;
@@ -186,26 +442,32 @@ export default function ReviewTestModal({
           spentSec,
           isCorrect: true,
           recordedAt: new Date().toISOString(),
-          userAnswer: userAns,
+          userAnswer: displayUserAns,
           diffFromPrev,
         };
 
         const allCorrectLaps = [newLap, ...existingCorrectLaps].sort((a, b) => a.spentSec - b.spentSec);
         top3Records = allCorrectLaps.slice(0, 3);
       } else {
-        // 오답인 경우: 새로운 랩타임 등록하지 않고 기존 정답 랭킹만 전달
         top3Records = existingCorrectLaps.sort((a, b) => a.spentSec - b.spentSec).slice(0, 3);
       }
 
       resultItems.push({
         itemId: item.id,
         questionName: item.name,
-        userAnswer: userAns,
+        userAnswer: displayUserAns,
         correctAnswer: correctAns,
         isCorrect,
         spentSec,
         solutionUrl: item.solutionUrl,
         problemUrl: item.problemUrl,
+        question_type: qType,
+        is_descriptive: item.is_descriptive || qType === 'DESCRIPTIVE',
+        subResults,
+        subAnswers: subAnswersMap,
+        isSelfGraded: false,
+        proofImageUrl: proofImages[item.id]?.url,
+        descriptiveMode: descMode,
         diffFromPrev,
         isNewRecord,
         bestSpentSec: newBestSpentSec,
@@ -305,11 +567,113 @@ export default function ReviewTestModal({
   const handleRestartTest = () => {
     setUserAnswers({});
     setQuestionSpentTimes({});
+    setCustomSubLabels({});
+    setDescriptiveSubmitModes({});
+    setProofImages({});
     setElapsedMs(0);
     setCurrentIndex(0);
     setTestResult(null);
     setDbSavedMessage(null);
     setViewMode('taking');
+  };
+
+  // 🌟 서술형 문항 셀프 채점 토글 핸들러 (학생이 모범답안 확인 후 맞음/틀림 직접 수정)
+  const handleToggleSelfGrade = async (itemId: string, markCorrect: boolean) => {
+    if (!testResult) return;
+
+    let newCorrectCount = 0;
+    let newTotalScore = 0;
+
+    const nextResults = testResult.results.map(res => {
+      const isTarget = res.itemId === itemId;
+      const willBeCorrect = isTarget ? markCorrect : res.isCorrect;
+      const itemObj = items.find(i => i.id === res.itemId);
+      const point = itemObj?.points || 4;
+
+      if (willBeCorrect) {
+        newCorrectCount += 1;
+        newTotalScore += point;
+      }
+
+      if (isTarget) {
+        return {
+          ...res,
+          isCorrect: markCorrect,
+          isSelfGraded: true,
+        };
+      }
+      return res;
+    });
+
+    const updatedHistory: ReviewTestHistory = {
+      ...testResult,
+      correctCount: newCorrectCount,
+      score: newTotalScore,
+      results: nextResults,
+    };
+    setTestResult(updatedHistory);
+
+    const targetRes = nextResults.find(r => r.itemId === itemId);
+    if (!targetRes) return;
+
+    const updatedItems = reviewData.items.map(item => {
+      if (item.id === itemId) {
+        const existingCorrectLaps = (item.timeRecords || []).filter(l => l.isCorrect);
+        let nextLaps = existingCorrectLaps;
+        let nextBest = item.bestSpentSec;
+        let nextLastSpent = item.lastSpentSec;
+
+        if (markCorrect) {
+          const newLap: ReviewLapRecord = {
+            id: `lap_${Date.now()}_${item.id}`,
+            spentSec: targetRes.spentSec,
+            isCorrect: true,
+            recordedAt: updatedHistory.testedAt,
+            userAnswer: targetRes.userAnswer,
+            diffFromPrev: targetRes.diffFromPrev,
+          };
+          nextLaps = [newLap, ...existingCorrectLaps];
+          nextBest = Math.min(targetRes.spentSec, item.bestSpentSec ?? targetRes.spentSec);
+          nextLastSpent = targetRes.spentSec;
+        } else {
+          nextLaps = existingCorrectLaps.filter(l => l.spentSec !== targetRes.spentSec);
+          nextBest = nextLaps.length > 0 ? Math.min(...nextLaps.map(l => l.spentSec)) : undefined;
+          nextLastSpent = nextLaps.length > 0 ? nextLaps[0].spentSec : undefined;
+        }
+
+        return {
+          ...item,
+          lastTestedAt: updatedHistory.testedAt,
+          lastIsCorrect: markCorrect,
+          lastSpentSec: nextLastSpent,
+          bestSpentSec: nextBest,
+          timeRecords: nextLaps,
+        };
+      }
+      return item;
+    });
+
+    const updatedReviewData: StudentReviewData = {
+      ...reviewData,
+      items: updatedItems,
+      testHistory: [updatedHistory, ...(reviewData.testHistory || []).filter(h => h.id !== updatedHistory.id)],
+    };
+
+    onUpdateReviewData(updatedReviewData);
+
+    try {
+      await fetch('/api/student/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          reviewData: updatedReviewData,
+        }),
+      });
+      setDbSavedMessage(`💾 셀프 채점(${markCorrect ? '정답 인정' : '오답'})이 저장되었습니다!`);
+    } catch (e) {
+      console.error('Failed to sync self grade:', e);
+    }
   };
 
   const currentItem = items[currentIndex];
@@ -476,87 +840,413 @@ export default function ReviewTestModal({
                   </div>
                 </div>
 
-                {/* 우측: OMR 답안 마킹 패널 */}
-                <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[32px] p-5 md:p-6 flex flex-col justify-between space-y-5">
-                  <div>
-                    <h4 className="text-base font-black text-white mb-1 flex items-center gap-2">
-                      <FileCheck size={18} className="text-violet-400" />
-                      OMR 답안 마킹
-                    </h4>
-                    <p className="text-xs text-slate-400 font-medium">
-                      정답 번호를 선택하거나 주관식 답을 입력하세요.
-                    </p>
+                {/* 우측: 답안 입력 패널 (객관식 / 단답형 / 서술형 3-Way / 소문항 동적 조절) */}
+                {(() => {
+                  const qType = getItemQuestionType(currentItem);
+                  const subLabels = getItemSubLabels(currentItem);
+                  const hasSubQuestions = subLabels.length >= 2;
+                  const isDirectPaperChecked = currentAnswer === '__DIRECT_PAPER__';
+                  const isPhotoSubmission = currentAnswer === '__PHOTO_SUBMISSION__';
+                  const descriptiveMode = descriptiveSubmitModes[currentItem.id] || (isDirectPaperChecked ? 'PAPER' : (isPhotoSubmission ? 'PHOTO' : 'TEXT'));
 
-                    {/* 객관식 1~5번 선택 버튼 */}
-                    <div className="mt-6 space-y-2">
-                      <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                        객관식 정답 선택
-                      </label>
-                      <div className="grid grid-cols-5 gap-2">
-                        {['1', '2', '3', '4', '5'].map((num, i) => {
-                          const symbols = ['①', '②', '③', '④', '⑤'];
-                          const isSelected = currentAnswer === num || currentAnswer === symbols[i];
-                          return (
-                            <button
-                              key={num}
-                              type="button"
-                              onClick={() => handleAnswerSelect(currentItem.id, num)}
-                              className={`py-3.5 rounded-2xl font-black text-base transition-all ${
-                                isSelected
-                                  ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
-                                  : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
-                              }`}
-                            >
-                              {symbols[i]}
-                            </button>
-                          );
-                        })}
+                  return (
+                    <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[32px] p-5 md:p-6 flex flex-col justify-between space-y-5">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="text-base font-black text-white flex items-center gap-2">
+                            <FileCheck size={18} className="text-violet-400" />
+                            답안 마킹
+                          </h4>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                            qType === 'MULTIPLE'
+                              ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+                              : qType === 'SHORT'
+                              ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          }`}>
+                            {qType === 'MULTIPLE'
+                              ? '객관식 문항'
+                              : qType === 'SHORT'
+                              ? (hasSubQuestions ? `단답형 (소문항 ${subLabels.length}개)` : '단답형 문항')
+                              : (hasSubQuestions ? `서술형 (소문항 ${subLabels.length}개)` : '서술형 문항')}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-medium">
+                          {qType === 'MULTIPLE'
+                            ? '문제 풀이 후 정답 번호를 선택하세요.'
+                            : qType === 'SHORT'
+                            ? '문제 풀이 후 정답을 입력칸에 직접 적으세요.'
+                            : '종이 풀이, 사진 제출, 또는 직접 입력 중 선택하세요.'}
+                        </p>
+
+                        {/* CASE 1: 객관식 문항인 경우 -> 1~5번 버튼만 표시 */}
+                        {qType === 'MULTIPLE' && (
+                          <div className="mt-6 space-y-3">
+                            <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                              객관식 정답 선택
+                            </label>
+                            <div className="grid grid-cols-5 gap-2">
+                              {['1', '2', '3', '4', '5'].map((num, i) => {
+                                const symbols = ['①', '②', '③', '④', '⑤'];
+                                const isSelected = currentAnswer === num || currentAnswer === symbols[i];
+                                return (
+                                  <button
+                                    key={num}
+                                    type="button"
+                                    onClick={() => handleAnswerSelect(currentItem.id, num)}
+                                    className={`py-3.5 rounded-2xl font-black text-base transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
+                                        : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
+                                    }`}
+                                  >
+                                    {symbols[i]}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* CASE 2: 단답형 문항인 경우 (소문항 분할 또는 단일 단답형) */}
+                        {qType === 'SHORT' && (
+                          <div className="mt-5 space-y-3">
+                            {hasSubQuestions ? (
+                              /* 소문항 (1), (2) 분할 입력칸 */
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                                    <span>소문항별 답안 직접 입력</span>
+                                    <span className="text-[10px] text-violet-400 font-bold">({subLabels.length}문항)</span>
+                                  </label>
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddSubQuestion(currentItem.id)}
+                                      className="px-2 py-0.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 text-[10px] font-black border border-violet-500/30 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                      title="소문항 칸을 1개 더 추가합니다"
+                                    >
+                                      <Plus size={11} /> 칸 추가
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveSubQuestion(currentItem.id)}
+                                      className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/20 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                      title="마지막 소문항 칸을 삭제합니다"
+                                    >
+                                      <Minus size={11} /> 삭제
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="p-2.5 rounded-xl bg-violet-950/40 border border-violet-500/20 text-[11px] text-violet-300/90 flex items-start gap-2">
+                                  <Info size={14} className="text-violet-400 shrink-0 mt-0.5" />
+                                  <span>
+                                    문항에 (1), (2) 등 여러 문제가 있나요? 칸이 부족하면 <strong>[+ 칸 추가]</strong>를 누르고, 많으면 <strong>[- 삭제]</strong>를 누르세요.
+                                  </span>
+                                </div>
+
+                                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                  {subLabels.map((lbl: string) => {
+                                    const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                                    const val = subAnsMap[lbl] || '';
+                                    return (
+                                      <div key={lbl} className="flex items-center gap-2 bg-white/5 p-1.5 rounded-2xl border border-white/10 focus-within:border-violet-500">
+                                        <span className="w-10 text-center font-black text-xs text-violet-400 shrink-0">
+                                          {lbl}
+                                        </span>
+                                        <input
+                                          type="text"
+                                          value={val}
+                                          onChange={e => handleSubAnswerChange(currentItem.id, lbl, e.target.value)}
+                                          placeholder="정답 입력"
+                                          className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2 px-3 text-white font-black text-sm focus:outline-none placeholder:text-slate-600 text-center"
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ) : (
+                              /* 일반 단일 단답형 입력칸 + 소문항 분할 버튼 */
+                              <div className="space-y-2.5">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                    단답형 답안 직접 입력
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddSubQuestion(currentItem.id)}
+                                    className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                    title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
+                                  >
+                                    <Plus size={11} /> (1), (2) 소문항으로 분할
+                                  </button>
+                                </div>
+
+                                <input
+                                  type="text"
+                                  value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                                  onChange={e => handleAnswerSelect(currentItem.id, e.target.value)}
+                                  placeholder="정답 입력 (예: 42, -5 등)"
+                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3 px-4 text-center text-base font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* CASE 3: 서술형 문항인 경우 -> [종이 직접풀이 / 사진 제출 / 텍스트 입력] 3-Way 선택 */}
+                        {qType === 'DESCRIPTIVE' && (
+                          <div className="mt-5 space-y-3.5">
+                            {/* 3-Way 선택 탭 */}
+                            <div className="grid grid-cols-3 gap-1 p-1 bg-white/5 rounded-2xl border border-white/10 text-xs">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDescriptiveSubmitModes(prev => ({ ...prev, [currentItem.id]: 'PAPER' }));
+                                  handleAnswerSelect(currentItem.id, '__DIRECT_PAPER__');
+                                }}
+                                className={`py-2 px-1 rounded-xl font-black text-[10px] md:text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                                  descriptiveMode === 'PAPER'
+                                    ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <FileText size={14} />
+                                <span>종이 풀이</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDescriptiveSubmitModes(prev => ({ ...prev, [currentItem.id]: 'PHOTO' }));
+                                  handleAnswerSelect(currentItem.id, '__PHOTO_SUBMISSION__');
+                                }}
+                                className={`py-2 px-1 rounded-xl font-black text-[10px] md:text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                                  descriptiveMode === 'PHOTO'
+                                    ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <Camera size={14} />
+                                <span>사진 제출</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDescriptiveSubmitModes(prev => ({ ...prev, [currentItem.id]: 'TEXT' }));
+                                  if (currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__') {
+                                    handleAnswerSelect(currentItem.id, '');
+                                  }
+                                }}
+                                className={`py-2 px-1 rounded-xl font-black text-[10px] md:text-[11px] flex flex-col items-center justify-center gap-1 transition-all cursor-pointer ${
+                                  descriptiveMode === 'TEXT'
+                                    ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                <FileCheck size={14} />
+                                <span>텍스트 입력</span>
+                              </button>
+                            </div>
+
+                            {/* [1] 종이 직접 풀이 모드 */}
+                            {descriptiveMode === 'PAPER' && (
+                              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-300 space-y-1.5 animate-in fade-in">
+                                <div className="flex items-center gap-2 font-black text-xs">
+                                  <FileText size={15} />
+                                  <span>📄 종이/노트 직접 풀이 선택됨</span>
+                                </div>
+                                <p className="text-[11px] text-slate-300 leading-relaxed font-medium">
+                                  연습장이나 노트에 서술형 풀이를 적고 문제를 풉니다. 시험 제출 후 해설을 보며 스스로 맞았는지 체크할 수 있습니다.
+                                </p>
+                              </div>
+                            )}
+
+                            {/* [2] 서술형 사진 제출 모드 */}
+                            {descriptiveMode === 'PHOTO' && (
+                              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2.5 animate-in fade-in">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2 font-black text-xs text-amber-300">
+                                    <Camera size={15} />
+                                    <span>📸 풀이 노트 사진 첨부</span>
+                                  </div>
+                                  {proofImages[currentItem.id] && (
+                                    <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                                      <CheckCircle2 size={11} /> 사진 등록됨
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-300 leading-relaxed font-medium">
+                                  노트에 작성한 풀이를 스마트폰이나 웹캠으로 촬영하여 첨부할 수 있습니다.
+                                </p>
+
+                                {proofImages[currentItem.id] ? (
+                                  <div className="relative bg-white/5 rounded-2xl p-2 border border-emerald-500/40 flex items-center gap-2.5">
+                                    <img
+                                      src={proofImages[currentItem.id].url}
+                                      alt="풀이 사진"
+                                      className="w-12 h-12 object-cover rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-transform"
+                                      onClick={() => setViewingProofUrl(proofImages[currentItem.id].url)}
+                                      title="클릭하여 크게 보기"
+                                    />
+                                    <div className="flex-1 min-w-0 text-left">
+                                      <div className="text-xs font-bold text-white truncate">{proofImages[currentItem.id].fileName}</div>
+                                      <button
+                                        type="button"
+                                        onClick={() => setViewingProofUrl(proofImages[currentItem.id].url)}
+                                        className="text-[10px] text-amber-400 hover:underline flex items-center gap-1 mt-0.5"
+                                      >
+                                        <Maximize2 size={10} /> 크게 보기
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveProof(currentItem.id)}
+                                      className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                                      title="삭제"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <input
+                                      type="file"
+                                      id={`review-proof-upload-${currentItem.id}`}
+                                      accept="image/*"
+                                      capture="environment"
+                                      className="hidden"
+                                      onChange={(e) => {
+                                        const f = e.target.files?.[0];
+                                        if (f) handleUploadProof(currentItem.id, currentIndex + 1, f);
+                                        e.target.value = '';
+                                      }}
+                                    />
+                                    <label
+                                      htmlFor={`review-proof-upload-${currentItem.id}`}
+                                      className="w-full py-3 px-3 rounded-2xl border border-dashed border-amber-400/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                                    >
+                                      <Camera size={15} className="text-amber-400" />
+                                      <span className="text-xs font-black">풀이 노트 사진 촬영 / 첨부</span>
+                                    </label>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* [3] 텍스트 직접 입력 모드 */}
+                            {descriptiveMode === 'TEXT' && (
+                              <div className="space-y-2.5 animate-in fade-in">
+                                {hasSubQuestions ? (
+                                  /* 소문항별 textarea */
+                                  <div className="space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                                        <span>소문항별 서술형 작성</span>
+                                        <span className="text-[10px] text-amber-400 font-bold">({subLabels.length}문항)</span>
+                                      </label>
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleAddSubQuestion(currentItem.id)}
+                                          className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[10px] font-black border border-amber-500/30 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                          title="소문항 칸을 1개 더 추가합니다"
+                                        >
+                                          <Plus size={11} /> 칸 추가
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveSubQuestion(currentItem.id)}
+                                          className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/20 flex items-center gap-0.5 transition-colors cursor-pointer"
+                                          title="마지막 소문항 칸을 삭제합니다"
+                                        >
+                                          <Minus size={11} /> 삭제
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                      {subLabels.map((lbl: string) => {
+                                        const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                                        const val = subAnsMap[lbl] || '';
+                                        return (
+                                          <div key={lbl} className="bg-white/5 p-2 rounded-2xl border border-white/10 space-y-1">
+                                            <div className="font-black text-xs text-amber-400">{lbl}번 답안</div>
+                                            <textarea
+                                              rows={2}
+                                              value={val}
+                                              onChange={e => handleSubAnswerChange(currentItem.id, lbl, e.target.value)}
+                                              placeholder={`${lbl} 풀이 또는 최종 정답 입력`}
+                                              className="w-full bg-white/5 border border-white/10 focus:border-amber-400 rounded-xl p-2 text-white font-medium text-xs focus:outline-none placeholder:text-slate-600 resize-none"
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  /* 단일 서술형 textarea + 소문항 분할 버튼 */
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-between">
+                                      <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
+                                        서술형 답안 직접 작성
+                                      </label>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAddSubQuestion(currentItem.id)}
+                                        className="text-[10px] text-amber-300 hover:text-white bg-amber-500/20 hover:bg-amber-500/40 border border-amber-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                      >
+                                        <Plus size={11} /> (1), (2) 소문항으로 분할
+                                      </button>
+                                    </div>
+                                    <textarea
+                                      rows={3}
+                                      value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
+                                      onChange={e => handleAnswerSelect(currentItem.id, e.target.value)}
+                                      placeholder="서술형 풀이 또는 최종 답안을 적어주세요."
+                                      className="w-full bg-white/5 border border-white/10 focus:border-amber-400 rounded-2xl p-3 text-white font-medium text-xs focus:outline-none transition-all placeholder:text-slate-600 resize-none"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* 모름 마킹 버튼 (공통) */}
+                        <div className="mt-4">
+                          <button
+                            type="button"
+                            onClick={() => handleAnswerSelect(currentItem.id, '모름')}
+                            className={`w-full py-2.5 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
+                              currentAnswer === '모름'
+                                ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
+                                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            }`}
+                          >
+                            <HelpCircle size={14} />
+                            <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (시간 기록 및 오답 복습)'}</span>
+                          </button>
+                        </div>
                       </div>
+
+                      {/* 마킹 현황 요약 */}
+                      <div className="p-3 bg-black/40 rounded-2xl border border-white/5 text-[11px] flex items-center justify-between text-slate-400">
+                        <span>마킹 완료: <strong className="text-emerald-400">{Object.keys(userAnswers).filter(k => !!userAnswers[k]).length}</strong> / {items.length}</span>
+                        <button
+                          onClick={() => setShowSubmitConfirm(true)}
+                          className="text-violet-400 font-bold hover:underline"
+                        >
+                          제출하기 &rarr;
+                        </button>
+                      </div>
+
                     </div>
-
-                    {/* 모름 마킹 버튼 */}
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        onClick={() => handleAnswerSelect(currentItem.id, '모름')}
-                        className={`w-full py-3 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${
-                          currentAnswer === '모름'
-                            ? 'bg-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 ring-2 ring-amber-300 font-extrabold scale-[1.02]'
-                            : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                        }`}
-                      >
-                        <HelpCircle size={15} />
-                        <span>{currentAnswer === '모름' ? '✓ 모름으로 마킹됨' : '모름 (시간 기록 및 오답 복습)'}</span>
-                      </button>
-                    </div>
-
-                    {/* 주관식 직접 입력란 */}
-                    <div className="mt-6 space-y-2">
-                      <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                        주관식 답안 직접 입력
-                      </label>
-                      <input
-                        type="text"
-                        value={currentAnswer === '모름' ? '' : currentAnswer}
-                        onChange={e => handleAnswerSelect(currentItem.id, e.target.value)}
-                        placeholder="정답 입력 (예: 42, -5 등)"
-                        className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3 px-4 text-center text-base font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
-                      />
-                    </div>
-                  </div>
-
-                  {/* 마킹 현황 요약 */}
-                  <div className="p-3 bg-black/40 rounded-2xl border border-white/5 text-[11px] flex items-center justify-between text-slate-400">
-                    <span>마킹 완료: <strong className="text-emerald-400">{Object.keys(userAnswers).filter(k => !!userAnswers[k]).length}</strong> / {items.length}</span>
-                    <button
-                      onClick={() => setShowSubmitConfirm(true)}
-                      className="text-violet-400 font-bold hover:underline"
-                    >
-                      제출하기 &rarr;
-                    </button>
-                  </div>
-
-                </div>
+                  );
+                })()}
 
               </div>
             </div>
@@ -775,17 +1465,115 @@ export default function ReviewTestModal({
                         <div className="grid grid-cols-2 gap-2 text-xs bg-black/40 p-3 rounded-xl border border-white/5">
                           <div>
                             <span className="text-slate-500 block text-[10px] font-bold">내가 낸 답</span>
-                            <span className={`font-black text-sm ${isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            <span className={`font-black text-sm break-all ${isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
                               {userAnsDisplay}
                             </span>
                           </div>
                           <div>
                             <span className="text-slate-500 block text-[10px] font-bold">실제 정답</span>
-                            <span className="text-emerald-300 font-black text-sm">
+                            <span className="text-emerald-300 font-black text-sm break-all">
                               {corrAnsDisplay}
                             </span>
                           </div>
                         </div>
+
+                        {/* 🧩 소문항별 세부 정오표 (소문항이 있는 문항) */}
+                        {res.subResults && Object.keys(res.subResults).length > 0 && (
+                          <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 space-y-1.5 text-xs">
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">
+                              소문항별 세부 결과
+                            </span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {Object.entries(res.subResults).map(([lbl, ok]) => (
+                                <span
+                                  key={lbl}
+                                  className={`px-2 py-0.5 rounded-lg font-bold text-[11px] flex items-center gap-1 border ${
+                                    ok
+                                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                      : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                                  }`}
+                                >
+                                  <span className="font-mono">{lbl}</span>
+                                  <span>{ok ? '✓ 정답' : '✕ 오답'}</span>
+                                  {res.subAnswers && res.subAnswers[lbl] && (
+                                    <span className="text-[10px] text-slate-400 font-normal">({res.subAnswers[lbl]})</span>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 📸 서술형 사진 제출 시 첨부 사진 미리보기 */}
+                        {res.proofImageUrl && (
+                          <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-3">
+                            <img
+                              src={res.proofImageUrl}
+                              alt="제출한 풀이 사진"
+                              className="w-12 h-12 object-cover rounded-lg border border-white/10 cursor-pointer hover:scale-105 transition-transform shrink-0"
+                              onClick={() => setViewingProofUrl(res.proofImageUrl!)}
+                              title="크게 보기"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs font-bold text-white block">📸 서술형 풀이 사진 제출됨</span>
+                              <button
+                                type="button"
+                                onClick={() => setViewingProofUrl(res.proofImageUrl!)}
+                                className="text-[11px] text-amber-400 hover:underline flex items-center gap-1 mt-0.5"
+                              >
+                                <Maximize2 size={11} /> 사진 크게 보기
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 🌟 [핵심] 서술형 문항 자기주도 셀프 채점 토글 박스 */}
+                        {(res.is_descriptive || res.question_type === 'DESCRIPTIVE') && (
+                          <div className="p-3 rounded-2xl bg-violet-950/40 border border-violet-500/30 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-black text-violet-300 flex items-center gap-1.5">
+                                <Sparkles size={13} className="text-amber-400" />
+                                서술형 풀이 셀프 채점
+                              </span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                isCorrect 
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                              }`}>
+                                {isCorrect ? '✓ 정답 인정됨' : '✕ 오답 (복습 필요)'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-300 leading-snug">
+                              선생님의 모범 풀이와 비교하여 내 풀이가 맞았는지 직접 체크해 보세요.
+                            </p>
+                            <div className="grid grid-cols-2 gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleSelfGrade(res.itemId, true)}
+                                className={`py-2 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                                  isCorrect
+                                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 ring-2 ring-emerald-400'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-400 border border-white/5'
+                                }`}
+                              >
+                                <ThumbsUp size={13} />
+                                <span>맞았어요 (정답)</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleSelfGrade(res.itemId, false)}
+                                className={`py-2 px-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                                  !isCorrect
+                                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30 ring-2 ring-rose-400'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-400 border border-white/5'
+                                }`}
+                              >
+                                <ThumbsDown size={13} />
+                                <span>틀렸어요 (오답)</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         {/* 액션 버튼: [🏆 TOP 3 랭킹보드] + [📖 상세 해설 보기] */}
                         <div className="grid grid-cols-2 gap-2 pt-1">
@@ -836,6 +1624,31 @@ export default function ReviewTestModal({
           item={leaderboardModalTargetItem}
           onClose={() => setLeaderboardModalTargetItem(null)}
         />
+      )}
+
+      {/* 📸 서술형 풀이 사진 원본 확대 모달 */}
+      {viewingProofUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setViewingProofUrl(null)}
+        >
+          <div 
+            className="relative max-w-4xl max-h-[90vh] bg-slate-900 border border-white/20 rounded-3xl p-3 shadow-2xl flex flex-col items-center"
+            onClick={e => e.stopPropagation()}
+          >
+            <img
+              src={viewingProofUrl}
+              alt="풀이 사진 원본"
+              className="max-h-[80vh] w-auto object-contain rounded-2xl"
+            />
+            <button
+              onClick={() => setViewingProofUrl(null)}
+              className="mt-3 px-6 py-2 bg-white/10 hover:bg-white/20 text-white font-black text-xs rounded-xl transition-colors cursor-pointer"
+            >
+              닫기
+            </button>
+          </div>
+        </div>
       )}
 
     </div>

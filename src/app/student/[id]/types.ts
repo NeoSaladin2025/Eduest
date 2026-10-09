@@ -13,6 +13,9 @@ export interface ReviewItem {
   points?: number;
   questionNumber?: number;
   examTitle?: string;
+  question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
+  is_descriptive?: boolean;
+  sub_questions?: { label: string; answer: string }[];
   lastTestedAt?: string;
   lastIsCorrect?: boolean;
   lastUserAnswer?: string;
@@ -39,6 +42,13 @@ export interface ReviewTestResultItem {
   spentSec: number;
   solutionUrl?: string;
   problemUrl?: string;
+  question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
+  is_descriptive?: boolean;
+  subResults?: Record<string, boolean>; // 소문항별 정오 여부
+  subAnswers?: Record<string, string>;  // 소문항별 학생 답안
+  isSelfGraded?: boolean;               // 서술형 셀프 채점 여부
+  proofImageUrl?: string;               // 서술형 사진 제출 URL
+  descriptiveMode?: 'PAPER' | 'PHOTO' | 'TEXT';
   diffFromPrev?: number;   // 이전 풀이 대비 시간 차이 (음수: 단축)
   isNewRecord?: boolean;   // 신기록 달성 여부
   bestSpentSec?: number;   // 역대 최고(최단) 시간

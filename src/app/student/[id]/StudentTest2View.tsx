@@ -422,6 +422,9 @@ export default function StudentTest2View({
         points: q.points || 4,
         questionNumber: idx + 1,
         examTitle: currentExam.title,
+        question_type: (q as any).question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(String(q.answer || '')) ? 'MULTIPLE' : 'SHORT')),
+        is_descriptive: Boolean(q.is_descriptive),
+        sub_questions: q.sub_questions && q.sub_questions.length > 0 ? q.sub_questions : undefined,
       };
       nextItems.push(newItem);
       showReviewToast(`⭐ '${currentExam.title} ${idx + 1}번' 문제가 내 복습 홈에 담겼습니다! 📁`);
