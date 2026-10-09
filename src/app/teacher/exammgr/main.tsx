@@ -36,7 +36,8 @@ import {
   Filter,
   Lock,
   Unlock,
-  Camera
+  Camera,
+  Printer
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -46,6 +47,7 @@ import ExamBundleTab from './ExamBundleTab';
 import RealtimeProctorTab from './RealtimeProctorTab';
 import DescriptiveGradingModal from './DescriptiveGradingModal';
 import QuestionDiffModal from './QuestionDiffModal';
+import ExamPrintModal from './ExamPrintModal';
 
 interface Student {
   id: string;
@@ -220,6 +222,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 문제 미리보기 모달
   const [previewQuestion, setPreviewQuestion] = useState<ExamQuestion | null>(null);
+
+  // 🖨️ 시험지 인쇄 모달 상태
+  const [printModalExam, setPrintModalExam] = useState<ExamPaper | null>(null);
 
   // 1. 초기 데이터 로드 (시험지 목록, 학생 목록)
   const loadInitialData = async () => {
@@ -1640,6 +1645,14 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           <Eye size={14} />
                           응시 현황
                         </button>
+                        <button
+                          onClick={() => setPrintModalExam(exam)}
+                          className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border border-emerald-200/60"
+                          title="시험지 인쇄 및 출력 설정"
+                        >
+                          <Printer size={14} />
+                          출력
+                        </button>
                       </div>
 
                       <button
@@ -3049,12 +3062,23 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   총 {resultsModalExam.assigned_student_ids?.length || 0}명 배정 • 제출 완료 {examSubmissions.length}명
                 </p>
               </div>
-              <button
-                onClick={() => setResultsModalExam(null)}
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
-              >
-                ✕
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPrintModalExam(resultsModalExam)}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border border-emerald-200 cursor-pointer"
+                  title="이 시험지 인쇄 및 출력 미리보기"
+                >
+                  <Printer size={14} />
+                  <span>시험지 인쇄</span>
+                </button>
+                <button
+                  onClick={() => setResultsModalExam(null)}
+                  className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {loadingResults ? (
@@ -3640,6 +3664,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           onClose={() => setDiffModalInfo(null)}
         />
       )}
+
+      {/* 🖨️ 시험지 인쇄 & 레이아웃 설정 모달 */}
+      <ExamPrintModal
+        isOpen={!!printModalExam}
+        onClose={() => setPrintModalExam(null)}
+        exam={printModalExam}
+      />
 
     </div>
   );

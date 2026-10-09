@@ -123,22 +123,69 @@ function cleanAnswerString(str: string): string {
     .toLowerCase();
 }
 
-// 정답 비교 판정
-function checkAnswerMatch(userAns: string, correctAns: string, rawAns: string): boolean {
+// 스마트 단위 및 부가 기호 제거 (주관식/소문항 채점 보정)
+function stripUnitsAndExtras(str: string): string {
+  if (!str) return "";
+  const circledMap: Record<string, string> = {
+    '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5',
+    '❶': '1', '❷': '2', '❸': '3', '❹': '4', '❺': '5',
+  };
+
+  let s = str
+    .replace(/[①②③④⑤❶❷❸❹❺]/g, (m) => circledMap[m] || m)
+    .replace(/\s+/g, "")
+    .toLowerCase()
+    .replace(/²/g, "2")
+    .replace(/³/g, "3")
+    .replace(/,/g, "") // 천 단위 콤마 제거
+    // 미지수 접두사 제거 (예: x=12, y=-3, a=5)
+    .replace(/^[a-z]\s*=\s*/i, "")
+    // 소문항 라벨 접두사 제거 (예: (1)4 -> 4)
+    .replace(/^(?:\([1-9]\)|[1-9]\)|\[[1-9]\]|[①-⑤])\s*/, "")
+    // 괄호로 둘러싸인 단위 제거 (예: 12(cm) -> 12)
+    .replace(/\((?:cm[23]?|mm[23]?|m[23]?|km[23]?|kg|mg|g|ml|l|°|도|개|명|원|초|분)\)$/i, "");
+
+  // 단위 접미사 제거 (한국어 및 영문 물리/수학 단위)
+  const unitSuffixRegex = /(?:cm[23]?|mm[23]?|km[23]?|m[23]?|kg|mg|g|ml|l|°|도|개|명|원|자루|권|마리|대|점|번|초|분|시간|s|sec|min|hr|h|%|퍼센트|배)$/i;
+  s = s.replace(unitSuffixRegex, "");
+
+  return s.trim();
+}
+
+// 정답 비교 판정 (단위 무관 및 주관식 스마트 매칭 지원)
+function checkAnswerMatch(
+  userAns: string,
+  correctAns: string,
+  rawAns: string,
+  isMultipleChoice: boolean = false
+): boolean {
   const cUser = cleanAnswerString(userAns);
   const cCorrect = cleanAnswerString(correctAns);
   const cRaw = cleanAnswerString(rawAns);
 
   if (!cUser || cUser === "모름" || cUser === "unknown") return false;
-  if (cUser === cCorrect) return true;
-  if (cUser === cRaw) return true;
 
-  // 번호만 일치하는지 (예: user: '5', correct: '5 83')
-  const correctNumMatch = cCorrect.match(/^([1-5])/);
-  if (correctNumMatch && correctNumMatch[1] === cUser) return true;
+  // 1. 공백 제거 후 완전 일치
+  if (cUser === cCorrect || cUser === cRaw) return true;
 
-  const rawNumMatch = cRaw.match(/^([1-5])/);
-  if (rawNumMatch && rawNumMatch[1] === cUser) return true;
+  // 2. 스마트 단위 제거 후 핵심 값 비교 (단답형 & 소문항 핵심)
+  const strippedUser = stripUnitsAndExtras(userAns);
+  const strippedCorrect = stripUnitsAndExtras(correctAns);
+  const strippedRaw = stripUnitsAndExtras(rawAns);
+
+  if (strippedUser && (strippedUser === strippedCorrect || (strippedRaw && strippedUser === strippedRaw))) {
+    return true;
+  }
+
+  // 3. 객관식(1~5) 전용 매칭
+  // 주관식 단답형(예: 12cm)에서 1이 매칭되는 오판정을 막기 위해 isMultipleChoice일 때만 허용
+  if (isMultipleChoice) {
+    const correctNumMatch = cCorrect.match(/^([1-5])/);
+    if (correctNumMatch && correctNumMatch[1] === cUser) return true;
+
+    const rawNumMatch = cRaw.match(/^([1-5])/);
+    if (rawNumMatch && rawNumMatch[1] === cUser) return true;
+  }
 
   return false;
 }
@@ -318,7 +365,8 @@ export async function POST(req: NextRequest) {
         let allMatched = true;
         subQuestions.forEach((sq) => {
           const studentSubVal = parsedSub[sq.label] || '';
-          const matched = checkAnswerMatch(studentSubVal, sq.answer, sq.answer);
+          // 소문항은 단답형이므로 isMultipleChoice = false
+          const matched = checkAnswerMatch(studentSubVal, sq.answer, sq.answer, false);
           subResults![sq.label] = matched;
           if (!matched) {
             allMatched = false;
@@ -330,8 +378,9 @@ export async function POST(req: NextRequest) {
         gradingStatus = 'graded';
         if (allMatched) correctCount++;
       } else {
-        // 일반 단답/객관식: 기존대로 즉시 일치 채점
-        const matched = checkAnswerMatch(userAns, q.answer, q.raw_answer);
+        // 일반 단답/객관식
+        const isMultiple = q.question_type === 'MULTIPLE' || (/^[1-5]$/.test(cleanAnswerString(q.answer)) && (!subQuestions || subQuestions.length === 0));
+        const matched = checkAnswerMatch(userAns, q.answer, q.raw_answer, isMultiple);
         isCorrect = matched;
         gradingStatus = 'graded';
         if (matched) correctCount++;
