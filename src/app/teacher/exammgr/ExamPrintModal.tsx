@@ -19,7 +19,8 @@ import {
   Edit2,
   Trash2,
   Sliders,
-  AlertTriangle
+  AlertTriangle,
+  Type
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 
@@ -30,6 +31,9 @@ interface ExamPrintModalProps {
 }
 
 export type QuestionsPerPageType = 1 | 2 | 4 | 6;
+export type AnswerFontFamilyType = 'math' | 'sans' | 'serif';
+export type AnswerFontSizeType = 'small' | 'medium' | 'large';
+export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
 
 const DEFAULT_CHIPS = ['모의평가', '단원평가', '주간테스트', '과제물', '중간고사 대비'];
 
@@ -47,6 +51,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [showAnswerKeyType, setShowAnswerKeyType] = useState(false); // 디폴트: OFF (군더더기 제거, 정답란 넓게)
   const [answersPerPage1Col, setAnswersPerPage1Col] = useState(22); // 1단 기준 기본 출력수
   const [answersPerPage2Col, setAnswersPerPage2Col] = useState(44); // 2단 기준 기본 출력수
+
+  // 🎨 정답표 텍스트 글꼴 & 크기 & 수학 기호 스타일 상태
+  const [answerFontFamily, setAnswerFontFamily] = useState<AnswerFontFamilyType>('math'); // 디폴트: 수학 표준 (π 완벽 곡선)
+  const [answerFontSize, setAnswerFontSize] = useState<AnswerFontSizeType>('medium'); // 디폴트: 보통 (12px)
+  const [answerFontWeight, setAnswerFontWeight] = useState<AnswerFontWeightType>('bold'); // 디폴트: 굵게 (700)
+  const [smartMathFormatting, setSmartMathFormatting] = useState(true); // 디폴트: ON (cm³, cm² 위첨자 및 π 세리프 자동 정규화)
 
   // 🏫 학원명 토글 & 입력 (디폴트: OFF)
   const [showAcademyName, setShowAcademyName] = useState(false);
@@ -144,6 +154,27 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       if (savedAns2Col) {
         const n = Number(savedAns2Col);
         if (!isNaN(n) && n >= 20 && n <= 70) setAnswersPerPage2Col(n);
+      }
+
+      // 5. 정답표 폰트 & 크기 & 수학 스타일 복원
+      const savedAnsFont = localStorage.getItem('eduest_print_ans_font_family');
+      if (savedAnsFont === 'math' || savedAnsFont === 'sans' || savedAnsFont === 'serif') {
+        setAnswerFontFamily(savedAnsFont);
+      }
+
+      const savedAnsSize = localStorage.getItem('eduest_print_ans_font_size');
+      if (savedAnsSize === 'small' || savedAnsSize === 'medium' || savedAnsSize === 'large') {
+        setAnswerFontSize(savedAnsSize);
+      }
+
+      const savedAnsWeight = localStorage.getItem('eduest_print_ans_font_weight');
+      if (savedAnsWeight === 'medium' || savedAnsWeight === 'bold' || savedAnsWeight === 'black') {
+        setAnswerFontWeight(savedAnsWeight);
+      }
+
+      const savedSmartMath = localStorage.getItem('eduest_print_ans_smart_math');
+      if (savedSmartMath !== null) {
+        setSmartMathFormatting(savedSmartMath === 'true');
       }
     } catch (e) {
       console.warn('Failed to load saved print config:', e);
@@ -295,6 +326,96 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
     }
   };
 
+  const handleAnswerFontFamilyChange = (val: AnswerFontFamilyType) => {
+    setAnswerFontFamily(val);
+    localStorage.setItem('eduest_print_ans_font_family', val);
+  };
+
+  const handleAnswerFontSizeChange = (val: AnswerFontSizeType) => {
+    setAnswerFontSize(val);
+    localStorage.setItem('eduest_print_ans_font_size', val);
+  };
+
+  const handleAnswerFontWeightChange = (val: AnswerFontWeightType) => {
+    setAnswerFontWeight(val);
+    localStorage.setItem('eduest_print_ans_font_weight', val);
+  };
+
+  const handleToggleSmartMath = (enabled: boolean) => {
+    setSmartMathFormatting(enabled);
+    localStorage.setItem('eduest_print_ans_smart_math', String(enabled));
+  };
+
+  // 📐 수학 기호(π) 스마트 세리프 래핑 및 단위(cm³) 위첨자 자동 정규화 헬퍼
+  const renderFormattedAnswer = (rawText: string | undefined | null) => {
+    if (!rawText) return '-';
+    let text = rawText;
+
+    if (smartMathFormatting) {
+      // 1. 일반 텍스트로 적힌 단위들을 표준 위첨자 기호로 자동 정규화
+      text = text
+        .replace(/\bcm3\b/gi, 'cm³')
+        .replace(/\bcm2\b/gi, 'cm²')
+        .replace(/\bm3\b/gi, 'm³')
+        .replace(/\bm2\b/gi, 'm²')
+        .replace(/\bkm2\b/gi, 'km²')
+        .replace(/\bmm2\b/gi, 'mm²')
+        .replace(/\bmm3\b/gi, 'mm³');
+    }
+
+    // 2. π 기호를 정통 수학 이탤릭 세리프(Cambria Math / Times New Roman)로 분할 렌더링 (ㅠ, TT 왜곡 방지)
+    if (text.includes('π')) {
+      const parts = text.split(/(π)/g);
+      return parts.map((part, pIdx) => {
+        if (part === 'π') {
+          return (
+            <span
+              key={pIdx}
+              className="font-serif italic font-normal text-[1.15em] px-[1px] inline-block select-text leading-none"
+              style={{
+                fontFamily: '"Cambria Math", "Times New Roman", "KaTeX_Math", serif',
+                verticalAlign: 'baseline'
+              }}
+            >
+              π
+            </span>
+          );
+        }
+        return part;
+      });
+    }
+
+    return text;
+  };
+
+  // 🎨 선택된 폰트, 크기, 굵기 스타일 계산
+  const getAnswerTextStyle = () => {
+    let fontFamStyle: React.CSSProperties = {};
+    if (answerFontFamily === 'math') {
+      fontFamStyle = {
+        fontFamily: '"Cambria Math", "Times New Roman", "Noto Serif KR", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      };
+    } else if (answerFontFamily === 'serif') {
+      fontFamStyle = {
+        fontFamily: '"KoPub Batang", Batang, "Noto Serif KR", serif'
+      };
+    } else {
+      fontFamStyle = {
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, "Malgun Gothic", sans-serif'
+      };
+    }
+
+    let sizeClass = 'text-xs';
+    if (answerFontSize === 'small') sizeClass = 'text-[11px]';
+    if (answerFontSize === 'large') sizeClass = 'text-[13.5px]';
+
+    let weightClass = 'font-bold';
+    if (answerFontWeight === 'medium') weightClass = 'font-medium';
+    if (answerFontWeight === 'black') weightClass = 'font-black';
+
+    return { fontFamStyle, sizeClass, weightClass };
+  };
+
   // 문항 배열을 페이지 단위로 청크 분할
   const questionPages = useMemo(() => {
     if (!exam || !exam.questions || exam.questions.length === 0) return [];
@@ -395,6 +516,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
 
   // 📋 정답표 테이블 렌더링 헬퍼 함수 (1단 및 2단 공용)
   const renderAnswerTable = (items: AnswerPageItem[], isCompactCol: boolean = false) => {
+    const { fontFamStyle, sizeClass, weightClass } = getAnswerTextStyle();
+
     return (
       <div className="border border-slate-900 rounded-lg overflow-hidden bg-white">
         <table className="w-full text-xs text-center border-collapse">
@@ -442,17 +565,21 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       {points}.0점
                     </td>
                   )}
-                  <td className="py-1.5 px-3 text-left font-black text-slate-900 font-mono break-words whitespace-pre-wrap leading-snug">
+                  <td
+                    style={fontFamStyle}
+                    className={`py-1.5 px-3 text-left ${weightClass} ${sizeClass} text-slate-900 break-words whitespace-pre-wrap leading-snug`}
+                  >
                     {isSub ? (
                       <div className="flex flex-wrap gap-x-3 gap-y-1">
                         {q.sub_questions!.map((sq, sqIdx) => (
                           <span key={sqIdx} className="inline-block">
-                            <strong className="text-violet-700 font-black">{sq.label}</strong> {sq.answer}
+                            <strong className="text-violet-700 font-black font-sans">{sq.label}</strong>{' '}
+                            {renderFormattedAnswer(sq.answer)}
                           </span>
                         ))}
                       </div>
                     ) : (
-                      <span>{q.answer || q.raw_answer || '-'}</span>
+                      <span>{renderFormattedAnswer(q.answer || q.raw_answer)}</span>
                     )}
                   </td>
                 </tr>
@@ -1244,6 +1371,123 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                           </span>
                         )}
                       </div>
+                    </div>
+
+                    {/* 4. 🎨 정답 폰트 및 글자 크기/굵기 스타일 조절 */}
+                    <div className="space-y-2 pt-2 border-t border-slate-700/60">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+                          <Type size={12} className="text-violet-400" />
+                          <span>정답 글꼴(폰트)</span>
+                        </label>
+                        <span className="text-[10px] text-violet-300 font-bold">
+                          {answerFontFamily === 'math' ? 'π 왜곡방지 (추천★)' : answerFontFamily === 'sans' ? '깔끔 고딕' : '교과서 명조'}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1 bg-slate-900/80 p-1 rounded-lg border border-slate-700 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => handleAnswerFontFamilyChange('math')}
+                          className={`py-1 rounded-md font-bold transition-all cursor-pointer ${
+                            answerFontFamily === 'math'
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          수학 표준★
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAnswerFontFamilyChange('sans')}
+                          className={`py-1 rounded-md font-bold transition-all cursor-pointer ${
+                            answerFontFamily === 'sans'
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          깔끔 고딕
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleAnswerFontFamilyChange('serif')}
+                          className={`py-1 rounded-md font-bold transition-all cursor-pointer ${
+                            answerFontFamily === 'serif'
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          교과서 명조
+                        </button>
+                      </div>
+
+                      {/* 글자 크기 & 굵기 그리드 */}
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="space-y-1">
+                          <span className="text-[10px] text-slate-400 font-bold">글자 크기</span>
+                          <div className="grid grid-cols-3 gap-0.5 bg-slate-900/80 p-0.5 rounded-lg border border-slate-700 text-[10px]">
+                            {(['small', 'medium', 'large'] as AnswerFontSizeType[]).map(sz => (
+                              <button
+                                key={sz}
+                                type="button"
+                                onClick={() => handleAnswerFontSizeChange(sz)}
+                                className={`py-1 rounded font-bold transition-all cursor-pointer ${
+                                  answerFontSize === sz
+                                    ? 'bg-violet-600 text-white shadow-xs'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                {sz === 'small' ? '작게' : sz === 'medium' ? '보통' : '크게'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-[10px] text-slate-400 font-bold">글자 굵기</span>
+                          <div className="grid grid-cols-3 gap-0.5 bg-slate-900/80 p-0.5 rounded-lg border border-slate-700 text-[10px]">
+                            {(['medium', 'bold', 'black'] as AnswerFontWeightType[]).map(wt => (
+                              <button
+                                key={wt}
+                                type="button"
+                                onClick={() => handleAnswerFontWeightChange(wt)}
+                                className={`py-1 rounded font-bold transition-all cursor-pointer ${
+                                  answerFontWeight === wt
+                                    ? 'bg-violet-600 text-white shadow-xs'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                {wt === 'medium' ? '보통' : wt === 'bold' ? '굵게' : '진함'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 5. 💡 단위 위첨자 자동 정규화 토글 */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-700/60">
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer">
+                          <span>단위 위첨자 변환 (cm³)</span>
+                        </label>
+                        <p className="text-[9px] text-slate-400">
+                          cm3, cm2를 표준 단위(cm³, cm²)로 자동 변환
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSmartMath(!smartMathFormatting)}
+                        className={`relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                          smartMathFormatting ? 'bg-violet-600' : 'bg-slate-700'
+                        }`}
+                        title={smartMathFormatting ? '단위 변환 끄기 (OFF)' : '단위 변환 켜기 (ON)'}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                            smartMathFormatting ? 'translate-x-3.5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
                     </div>
                   </div>
                 )}
