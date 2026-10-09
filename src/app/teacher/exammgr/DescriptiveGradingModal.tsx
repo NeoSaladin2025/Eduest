@@ -59,6 +59,7 @@ export default function DescriptiveGradingModal({
   const [showSolutionCheck, setShowSolutionCheck] = useState<boolean>(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewSolutionDriveId, setPreviewSolutionDriveId] = useState<string | null>(null);
 
   // 대기 목록 로드
   const fetchPendingItems = async () => {
@@ -273,15 +274,15 @@ export default function DescriptiveGradingModal({
                       </button>
                     )}
                     {currentItem.solution_drive_id && (
-                      <a
-                        href={`https://lh3.googleusercontent.com/d/${currentItem.solution_drive_id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:text-violet-700 hover:bg-slate-50 rounded-xl text-xs font-bold flex items-center gap-1 transition-all"
+                      <button
+                        type="button"
+                        onClick={() => setPreviewSolutionDriveId(currentItem.solution_drive_id)}
+                        className="px-3 py-1.5 bg-violet-50 border border-violet-200 text-violet-700 hover:bg-violet-100 rounded-xl text-xs font-black flex items-center gap-1 shadow-2xs transition-all cursor-pointer"
+                        title="해당 문항의 상세 해설 및 원본 HTML을 바로 열람합니다"
                       >
-                        <ExternalLink size={13} />
-                        원본 파일
-                      </a>
+                        <BookOpen size={14} className="text-violet-600" />
+                        <span>해설 보기 (HTML)</span>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -456,6 +457,59 @@ export default function DescriptiveGradingModal({
         )}
 
       </div>
+
+      {/* 🌟 원본 HTML 상세 해설 iframe 뷰어 모달 */}
+      {previewSolutionDriveId && (
+        <div 
+          className="fixed inset-0 z-70 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-200"
+          onClick={() => setPreviewSolutionDriveId(null)}
+        >
+          <div 
+            className="bg-white rounded-3xl max-w-5xl w-full h-[88vh] flex flex-col overflow-hidden shadow-2xl border border-slate-200 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/90">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-violet-100 text-violet-700 flex items-center justify-center">
+                  <BookOpen size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-800">문항 상세 해설 & 원본 HTML 문서</h3>
+                  <p className="text-[11px] text-slate-500 font-medium">수식 및 서술형 풀이 과정 원본 리포트입니다.</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <a
+                  href={`/api/drive/library/file?fileId=${encodeURIComponent(previewSolutionDriveId)}&type=html&raw=true`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors"
+                  title="새 탭에서 전체 화면으로 열기"
+                >
+                  <ExternalLink size={13} />
+                  <span>새 창에서 전체보기</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewSolutionDriveId(null)}
+                  className="w-8 h-8 rounded-full bg-slate-200 hover:bg-slate-300 flex items-center justify-center text-slate-600 font-bold transition-colors cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 bg-white p-2">
+              <iframe
+                src={`/api/drive/library/file?fileId=${encodeURIComponent(previewSolutionDriveId)}&type=html&raw=true`}
+                className="w-full h-full border-0 rounded-2xl bg-white"
+                title="문항 상세 해설"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 이미지 미리보기 팝업 */}
       {previewImage && (

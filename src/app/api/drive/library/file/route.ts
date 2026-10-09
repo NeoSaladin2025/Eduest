@@ -41,15 +41,24 @@ export async function GET(req: NextRequest) {
   const cacheKey = `${fileId}_${type}`;
   if (memoryCache.has(cacheKey)) {
     const cached = memoryCache.get(cacheKey)!;
-    if (raw && type === "image") {
-      const base64Data = cached.replace(/^data:image\/\w+;base64,/, "");
-      const buf = Buffer.from(base64Data, "base64");
-      return new NextResponse(buf, {
-        headers: {
-          "Content-Type": "image/jpeg",
-          "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
-        },
-      });
+    if (raw) {
+      if (type === "image") {
+        const base64Data = cached.replace(/^data:image\/\w+;base64,/, "");
+        const buf = Buffer.from(base64Data, "base64");
+        return new NextResponse(buf, {
+          headers: {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+          },
+        });
+      } else if (type === "html") {
+        return new NextResponse(cached, {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+          },
+        });
+      }
     }
     return NextResponse.json(
       { success: true, data: cached, from: "memory-cache" },
@@ -74,6 +83,14 @@ export async function GET(req: NextRequest) {
         if (content) {
           content = content.replace(/[₩¥]/g, "\\");
           memoryCache.set(cacheKey, content);
+          if (raw) {
+            return new NextResponse(content, {
+              headers: {
+                "Content-Type": "text/html; charset=utf-8",
+                "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+              },
+            });
+          }
           return NextResponse.json(
             { success: true, data: content, from: "drive-v3" },
             {
@@ -133,15 +150,24 @@ export async function GET(req: NextRequest) {
       let d = result.data;
       if (type === "html") d = d.replace(/[₩¥]/g, "\\");
       memoryCache.set(cacheKey, d);
-      if (raw && type === "image") {
-        const base64Data = d.replace(/^data:image\/\w+;base64,/, "");
-        const buf = Buffer.from(base64Data, "base64");
-        return new NextResponse(buf, {
-          headers: {
-            "Content-Type": "image/jpeg",
-            "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
-          },
-        });
+      if (raw) {
+        if (type === "image") {
+          const base64Data = d.replace(/^data:image\/\w+;base64,/, "");
+          const buf = Buffer.from(base64Data, "base64");
+          return new NextResponse(buf, {
+            headers: {
+              "Content-Type": "image/jpeg",
+              "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+            },
+          });
+        } else if (type === "html") {
+          return new NextResponse(d, {
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
+            },
+          });
+        }
       }
       return NextResponse.json(
         { success: true, data: d, from: "gas-fallback" },

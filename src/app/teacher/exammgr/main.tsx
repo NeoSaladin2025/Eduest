@@ -3162,7 +3162,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             </div>
             <div className="flex-1 bg-white p-2">
               <iframe
-                src={`/api/student/file-content?fileId=${encodeURIComponent(teacherSolutionModalDriveId)}&type=html`}
+                src={`/api/drive/library/file?fileId=${encodeURIComponent(teacherSolutionModalDriveId)}&type=html&raw=true`}
                 className="w-full h-full border-0 rounded-2xl"
                 title="문제 해설"
               />
