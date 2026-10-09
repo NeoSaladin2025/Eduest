@@ -244,11 +244,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
 
   const totalPages = questionPages.length + (includeAnswerKey ? 1 : 0);
 
-  // 모든 문항 이미지 사전 로딩 후 브라우저 인쇄창 호출
+  // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
   const handleTriggerPrint = async () => {
     if (!exam) return;
     setIsPreparingPrint(true);
     try {
+      // 1. 모든 문항 이미지 사전 로딩 및 디코딩 완료 대기
       const imageUrls = exam.questions.map(q => q.image_url).filter(Boolean);
       await Promise.all(
         imageUrls.map(
@@ -262,12 +263,141 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
         )
       );
 
+      const printArea = document.getElementById('eduest-print-area');
+      if (!printArea) {
+        window.print();
+        setIsPreparingPrint(false);
+        return;
+      }
+
+      // 2. 현재 문서의 모든 Tailwind/전역 스타일 태그 추출
+      const styleNodes = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'));
+      const combinedStyles = styleNodes
+        .map(node => node.outerHTML)
+        .join('\n');
+
+      // 3. 인쇄 전용 숨김 iframe 확보 (기존 것 재사용 또는 신규 생성)
+      let iframe = document.getElementById('eduest-print-iframe') as HTMLIFrameElement;
+      if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.id = 'eduest-print-iframe';
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.style.visibility = 'hidden';
+        document.body.appendChild(iframe);
+      }
+
+      const doc = iframe.contentWindow?.document;
+      if (!doc) {
+        window.print();
+        setIsPreparingPrint(false);
+        return;
+      }
+
+      const paddingVal = marginSize === 'compact' ? '8mm 10mm' : '12mm 15mm';
+
+      // 4. 모달의 fixed/overflow 제약이 전혀 없는 깨끗한 A4 인쇄 HTML 주입
+      doc.open();
+      doc.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>${exam.title} - 시험지 인쇄</title>
+            ${combinedStyles}
+            <style>
+              @page {
+                size: A4 portrait;
+                margin: 0;
+              }
+              *, *::before, *::after {
+                box-sizing: border-box;
+              }
+              html, body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: #ffffff !important;
+                color: #000000 !important;
+                width: 210mm !important;
+                height: auto !important;
+                overflow: visible !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
+              #eduest-print-area {
+                display: block !important;
+                position: static !important;
+                transform: none !important;
+                width: 210mm !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                background: #ffffff !important;
+              }
+              .a4-print-sheet {
+                display: flex !important;
+                flex-direction: column !important;
+                justify-content: space-between !important;
+                width: 210mm !important;
+                height: 297mm !important;
+                min-height: 297mm !important;
+                max-height: 297mm !important;
+                box-sizing: border-box !important;
+                margin: 0 !important;
+                padding: ${paddingVal} !important;
+                page-break-before: auto !important;
+                page-break-after: always !important;
+                page-break-inside: avoid !important;
+                break-after: page !important;
+                break-inside: avoid !important;
+                box-shadow: none !important;
+                border: none !important;
+                border-radius: 0 !important;
+                background: #ffffff !important;
+                overflow: hidden !important;
+              }
+              .a4-print-sheet:last-child {
+                page-break-after: auto !important;
+                break-after: auto !important;
+              }
+              .print-avoid-break {
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+              }
+            </style>
+          </head>
+          <body>
+            <div id="eduest-print-area">
+              ${printArea.innerHTML}
+            </div>
+          </body>
+        </html>
+      `);
+      doc.close();
+
+      // 5. iframe 내부 이미지 로딩 대기 후 인쇄 트리거
+      const iframeImages = Array.from(doc.images);
+      await Promise.all(
+        iframeImages.map(img => {
+          if (img.complete) return Promise.resolve(true);
+          return new Promise(resolve => {
+            img.onload = () => resolve(true);
+            img.onerror = () => resolve(false);
+          });
+        })
+      );
+
       setTimeout(() => {
         setIsPreparingPrint(false);
-        window.print();
-      }, 300);
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      }, 350);
     } catch (e) {
-      console.error('Print image preloading failed:', e);
+      console.error('Print iframe failed, fallback to window.print():', e);
       setIsPreparingPrint(false);
       window.print();
     }
@@ -276,47 +406,96 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   if (!isOpen || !exam) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md flex flex-col overflow-hidden animate-in fade-in duration-200">
-      {/* 인쇄 전용 CSS 스타일 태그 */}
+    <div className="eduest-print-modal-root fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md flex flex-col overflow-hidden animate-in fade-in duration-200">
+      {/* 인쇄 전용 CSS 스타일 태그 (메인 윈도우 단축키 등 대비 fallback) */}
       <style jsx global>{`
         @media print {
-          /* 화면 일반 UI 전부 숨김 */
+          html, body {
+            width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            color: #000000 !important;
+          }
           body * {
             visibility: hidden !important;
           }
-          /* 인쇄 대상 루트 컨테이너만 표시 */
+          .eduest-print-modal-root,
+          .eduest-print-modal-inner,
+          .eduest-print-main-viewport,
           #eduest-print-area,
           #eduest-print-area * {
             visibility: visible !important;
           }
-          #eduest-print-area {
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
+          .eduest-print-modal-root {
+            position: static !important;
             width: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            display: block !important;
+            background: transparent !important;
+            padding: 0 !important;
             margin: 0 !important;
+          }
+          .eduest-print-modal-inner,
+          .eduest-print-main-viewport {
+            position: static !important;
+            width: 100% !important;
+            height: auto !important;
+            overflow: visible !important;
+            display: block !important;
+            background: transparent !important;
+            padding: 0 !important;
+            margin: 0 !important;
+          }
+          .no-print {
+            display: none !important;
+            visibility: hidden !important;
+          }
+          #eduest-print-area {
+            display: block !important;
+            position: static !important;
+            transform: none !important;
+            width: 210mm !important;
+            margin: 0 auto !important;
             padding: 0 !important;
             background: white !important;
             color: black !important;
             box-shadow: none !important;
-          }
-          .no-print {
-            display: none !important;
+            overflow: visible !important;
           }
           @page {
             size: A4 portrait;
-            margin: ${marginSize === 'compact' ? '8mm 10mm' : '12mm 15mm'};
+            margin: 0;
           }
           .a4-print-sheet {
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
+            width: 210mm !important;
+            height: 297mm !important;
+            max-height: 297mm !important;
+            box-sizing: border-box !important;
+            margin: 0 auto !important;
+            padding: ${marginSize === 'compact' ? '8mm 10mm' : '12mm 15mm'} !important;
+            page-break-before: auto !important;
             page-break-after: always !important;
+            page-break-inside: avoid !important;
             break-after: page !important;
+            break-inside: avoid !important;
             box-shadow: none !important;
             border: none !important;
             border-radius: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 100% !important;
-            min-height: 275mm !important;
+            background: white !important;
+            overflow: hidden !important;
+          }
+          .a4-print-sheet:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
           }
           .print-avoid-break {
             page-break-inside: avoid !important;
@@ -410,7 +589,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       </header>
 
       {/* 중앙 메인 바디 (좌: 컨트롤 패널 / 우: 실시간 A4 미리보기 뷰어) */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="eduest-print-modal-inner flex-1 flex overflow-hidden">
         {/* 좌측 사이드바: 레이아웃 & 옵션 패널 (no-print) */}
         <aside className="no-print w-84 bg-slate-900/90 border-r border-slate-800 p-5 overflow-y-auto space-y-5 shrink-0 text-slate-200">
           
@@ -744,7 +923,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
         </aside>
 
         {/* 우측 메인 영역: A4 실시간 미리보기 스크롤 뷰어 */}
-        <main className="flex-1 bg-slate-950 overflow-auto p-8 flex flex-col items-center">
+        <main className="eduest-print-main-viewport flex-1 bg-slate-950 overflow-auto p-8 flex flex-col items-center">
           <div
             id="eduest-print-area"
             style={{
