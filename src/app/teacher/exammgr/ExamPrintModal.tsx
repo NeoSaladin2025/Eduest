@@ -20,7 +20,8 @@ import {
   Trash2,
   Sliders,
   AlertTriangle,
-  Type
+  Type,
+  ArrowUpDown
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 
@@ -45,6 +46,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [showHeaderInfo, setShowHeaderInfo] = useState(true);
   const [showPoints, setShowPoints] = useState(true);
   const [includeAnswerKey, setIncludeAnswerKey] = useState(true);
+
+  // 📐 2단 시험지 배열 순서 & 가운데 기준선 & 폴더 정보 표시 상태
+  const [columnFlowDirection, setColumnFlowDirection] = useState<'vertical' | 'horizontal'>('vertical'); // 디폴트: 세로 우선 (N자형 한국 표준)
+  const [showCenterDivider, setShowCenterDivider] = useState(true); // 디폴트: ON (가운데 기준선)
+  const [showFolderInfo, setShowFolderInfo] = useState(true); // 디폴트: ON (문제 폴더 정보 [5.1] 표기)
 
   // 📝 빠른 정답표 전용 레이아웃 & 옵션 상태
   const [answerKeyColumns, setAnswerKeyColumns] = useState<1 | 2>(2); // 디폴트: 2단 (컴팩트 용지절약)
@@ -182,12 +188,43 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       if (savedSmartMath !== null) {
         setSmartMathFormatting(savedSmartMath === 'true');
       }
+
+      // 6. 2단 문항 배열 순서 & 가운데 기준선 & 폴더 정보 복원
+      const savedFlow = localStorage.getItem('eduest_print_flow_direction');
+      if (savedFlow === 'vertical' || savedFlow === 'horizontal') {
+        setColumnFlowDirection(savedFlow);
+      }
+
+      const savedCenterDivider = localStorage.getItem('eduest_print_show_center_divider');
+      if (savedCenterDivider !== null) {
+        setShowCenterDivider(savedCenterDivider === 'true');
+      }
+
+      const savedFolderInfo = localStorage.getItem('eduest_print_show_folder_info');
+      if (savedFolderInfo !== null) {
+        setShowFolderInfo(savedFolderInfo === 'true');
+      }
     } catch (e) {
       console.warn('Failed to load saved print config:', e);
     }
   }, []);
 
   // 🔄 설정 변경 헬퍼 및 localStorage 동기화
+  const handleToggleFlowDirection = (dir: 'vertical' | 'horizontal') => {
+    setColumnFlowDirection(dir);
+    localStorage.setItem('eduest_print_flow_direction', dir);
+  };
+
+  const handleToggleCenterDivider = (checked: boolean) => {
+    setShowCenterDivider(checked);
+    localStorage.setItem('eduest_print_show_center_divider', String(checked));
+  };
+
+  const handleToggleShowFolderInfo = (checked: boolean) => {
+    setShowFolderInfo(checked);
+    localStorage.setItem('eduest_print_show_folder_info', String(checked));
+  };
+
   const handleToggleAcademyName = (enabled: boolean) => {
     setShowAcademyName(enabled);
     localStorage.setItem('eduest_print_show_academy', String(enabled));
@@ -1053,6 +1090,52 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             </div>
           </div>
 
+          {/* 2-1. 2단 배열 순서 (세로 N자형 vs 가로 Z자형) */}
+          {columns === 2 && (
+            <div className="space-y-1.5 p-3 bg-slate-800/50 rounded-xl border border-slate-700/80 animate-in fade-in duration-150">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-black text-slate-300 flex items-center gap-1">
+                  <ArrowUpDown size={12} className="text-violet-400" />
+                  <span>2단 문항 배열 순서</span>
+                </label>
+                <span className="text-[10px] text-violet-300 font-bold">
+                  {columnFlowDirection === 'vertical' ? 'N자형 (표준★)' : 'Z자형'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 bg-slate-900/80 p-1 rounded-lg border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => handleToggleFlowDirection('vertical')}
+                  className={`py-1.5 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                    columnFlowDirection === 'vertical'
+                      ? 'bg-violet-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="왼쪽 단을 위에서 아래로 먼저 채우고, 오른쪽 단으로 이동 (한국 시험지 표준)"
+                >
+                  세로 우선 (N자★)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleToggleFlowDirection('horizontal')}
+                  className={`py-1.5 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                    columnFlowDirection === 'horizontal'
+                      ? 'bg-violet-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="좌우 좌우 순서로 배치"
+                >
+                  가로 우선 (Z자)
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-tight">
+                {columnFlowDirection === 'vertical'
+                  ? '✓ 왼쪽 단(위→아래)을 모두 푼 뒤 오른쪽 단으로 넘어갑니다.'
+                  : '✓ 1번(좌상) 2번(우상) 3번(좌하) 4번(우하) 순으로 배치됩니다.'}
+              </p>
+            </div>
+          )}
+
           {/* 3. 🏫 학원 / 기관명 표기 (디폴트 OFF, 토글 ON 시 활성화 + localStorage 자동 기억) */}
           <div className="space-y-2 pt-2 border-t border-slate-800">
             <div className="flex items-center justify-between">
@@ -1270,6 +1353,31 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 />
                 <span>문항별 배점 표시 (예: [4.0점])</span>
               </label>
+
+              <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showFolderInfo}
+                  onChange={e => handleToggleShowFolderInfo(e.target.checked)}
+                  className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
+                />
+                <span className="flex items-center gap-1.5">
+                  <span>문항 출처(폴더 정보) 표시</span>
+                  <span className="text-[10px] text-violet-400 font-bold bg-violet-500/10 px-1 rounded">예: [5.1]</span>
+                </span>
+              </label>
+
+              {columns === 2 && (
+                <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showCenterDivider}
+                    onChange={e => handleToggleCenterDivider(e.target.checked)}
+                    className="w-4 h-4 rounded-sm text-violet-600 accent-violet-600 bg-slate-800 border-slate-700 cursor-pointer"
+                  />
+                  <span>2단 가운데 기준선 (중앙 구분선) 표시</span>
+                </label>
+              )}
 
               <div className="space-y-2">
                 <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
@@ -1662,32 +1770,29 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                     )}
                   </div>
 
-                  {/* 본문 문항 그리드 레이아웃 */}
-                  <div
-                    className={`flex-1 ${
-                      columns === 2
-                        ? questionsPerPage === 6
-                          ? 'grid grid-cols-2 grid-rows-3 gap-x-6 gap-y-4'
-                          : 'grid grid-cols-2 grid-rows-2 gap-x-6 gap-y-5'
-                        : questionsPerPage === 1
-                        ? 'flex flex-col justify-start gap-4'
-                        : 'grid grid-cols-1 grid-rows-2 gap-y-6'
-                    }`}
-                  >
-                    {pageQuestions.map((q, qSubIdx) => {
-                      const globalQuestionNumber = pageIdx * questionsPerPage + qSubIdx + 1;
+                  {/* 본문 문항 레이아웃 (1단 or 2단 - 세로 N자형 / 가로 Z자형 & 가운데 기준선 지원) */}
+                  {(() => {
+                    const renderQuestionCard = (q: ExamQuestion, globalQuestionNumber: number) => {
                       const points = q.points || (q.is_descriptive ? 5 : 4);
+                      const formattedFolder = q.folder_name
+                        ? (q.folder_name.startsWith('[') ? q.folder_name : `[${q.folder_name}]`)
+                        : '';
 
                       return (
                         <div
                           key={q.id}
                           className="print-avoid-break flex flex-col justify-start relative p-2 rounded-lg border border-transparent hover:border-slate-200 transition-colors"
                         >
-                          {/* 문항 번호 및 배점 헤더 */}
-                          <div className="flex items-baseline gap-1.5 mb-1.5 shrink-0">
+                          {/* 문항 번호 및 출처(폴더) & 배점 헤더 */}
+                          <div className="flex items-baseline gap-1.5 mb-1.5 shrink-0 flex-wrap">
                             <span className="text-sm font-black text-slate-900">
                               {globalQuestionNumber}.
                             </span>
+                            {showFolderInfo && formattedFolder && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 print:border-slate-300 print:bg-slate-100 print:text-slate-600">
+                                {formattedFolder}
+                              </span>
+                            )}
                             {showPoints && (
                               <span className="text-[11px] font-bold text-slate-500">
                                 [{points}.0점]
@@ -1736,8 +1841,80 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                           )}
                         </div>
                       );
-                    })}
-                  </div>
+                    };
+
+                    if (columns === 1) {
+                      return (
+                        <div
+                          className={`flex-1 ${
+                            questionsPerPage === 1
+                              ? 'flex flex-col justify-start gap-4'
+                              : 'grid grid-cols-1 grid-rows-2 gap-y-6'
+                          }`}
+                        >
+                          {pageQuestions.map((q, qSubIdx) =>
+                            renderQuestionCard(q, pageIdx * questionsPerPage + qSubIdx + 1)
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // 2단 레이아웃 분할
+                    let leftItems: { q: ExamQuestion; num: number }[] = [];
+                    let rightItems: { q: ExamQuestion; num: number }[] = [];
+
+                    if (columnFlowDirection === 'vertical') {
+                      // 🌟 세로 우선 (N자형 한국 시험지 표준: 좌단 위→아래 먼저, 그 다음 우단 위→아래)
+                      const mid = Math.ceil(pageQuestions.length / 2);
+                      leftItems = pageQuestions.slice(0, mid).map((q, idx) => ({
+                        q,
+                        num: pageIdx * questionsPerPage + idx + 1,
+                      }));
+                      rightItems = pageQuestions.slice(mid).map((q, idx) => ({
+                        q,
+                        num: pageIdx * questionsPerPage + mid + idx + 1,
+                      }));
+                    } else {
+                      // 가로 우선 (Z자형)
+                      pageQuestions.forEach((q, idx) => {
+                        const num = pageIdx * questionsPerPage + idx + 1;
+                        if (idx % 2 === 0) {
+                          leftItems.push({ q, num });
+                        } else {
+                          rightItems.push({ q, num });
+                        }
+                      });
+                    }
+
+                    const rowCount = questionsPerPage === 6 ? 3 : (questionsPerPage === 4 ? 2 : 1);
+                    const rowGridClass = rowCount === 3
+                      ? 'grid-rows-3 gap-y-4'
+                      : (rowCount === 2 ? 'grid-rows-2 gap-y-5' : 'grid-rows-1 gap-y-6');
+
+                    return (
+                      <div className="flex-1 flex relative">
+                        {/* 좌측 단 */}
+                        <div
+                          className={`flex-1 grid ${rowGridClass} ${
+                            showCenterDivider
+                              ? 'pr-4 border-r border-slate-300 print:border-slate-400'
+                              : 'pr-3'
+                          }`}
+                        >
+                          {leftItems.map(({ q, num }) => renderQuestionCard(q, num))}
+                        </div>
+
+                        {/* 우측 단 */}
+                        <div
+                          className={`flex-1 grid ${rowGridClass} ${
+                            showCenterDivider ? 'pl-4' : 'pl-3'
+                          }`}
+                        >
+                          {rightItems.map(({ q, num }) => renderQuestionCard(q, num))}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* 하단 푸터 (페이지 번호) */}
                   <div className="shrink-0 pt-3 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-400 font-medium">
