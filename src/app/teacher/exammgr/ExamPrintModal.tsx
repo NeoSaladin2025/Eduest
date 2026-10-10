@@ -346,7 +346,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
     localStorage.setItem('eduest_print_ans_smart_math', String(enabled));
   };
 
-  // 📐 수학 기호(π) 스마트 세리프 래핑 및 단위(cm³) 위첨자 자동 정규화 헬퍼
+  // 📐 수학 기호(π, °) 스마트 렌더링 및 단위(cm³) 위첨자 자동 정규화 헬퍼
   const renderFormattedAnswer = (rawText: string | undefined | null) => {
     if (!rawText) return '-';
     let text = rawText;
@@ -361,12 +361,27 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
         .replace(/\bkm2\b/gi, 'km²')
         .replace(/\bmm2\b/gi, 'mm²')
         .replace(/\bmm3\b/gi, 'mm³');
+
+      // 2. 문맥 인식 각도 보정 (Context-Aware Degree Formatting):
+      // 합성함수(f ∘ g, g ∘ f)는 100% 안전하게 보호하고, 오직 숫자 바로 뒤에 붙은 각도(1800∘, 156º, 90˚ 등)만 __DEGREE__ 토큰으로 변환!
+      text = text.replace(/(\d+(?:\.\d+)?)\s*[∘º˚°]/g, '$1__DEGREE__');
     }
 
-    // 2. π 기호를 정통 수학 이탤릭 세리프(Cambria Math / Times New Roman)로 분할 렌더링 (ㅠ, TT 왜곡 방지)
-    if (text.includes('π')) {
-      const parts = text.split(/(π)/g);
+    // 3. π 기호 및 각도(__DEGREE__)를 교과서 표준 스타일로 분할 렌더링
+    const tokenRegex = /(__DEGREE__|π)/g;
+    if (tokenRegex.test(text)) {
+      const parts = text.split(tokenRegex);
       return parts.map((part, pIdx) => {
+        if (part === '__DEGREE__') {
+          return (
+            <span
+              key={pIdx}
+              className="font-sans font-black text-[0.85em] align-top relative -top-[0.25em] ml-[0.5px] select-text leading-none inline-block"
+            >
+              °
+            </span>
+          );
+        }
         if (part === 'π') {
           return (
             <span
@@ -1464,14 +1479,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       </div>
                     </div>
 
-                    {/* 5. 💡 단위 위첨자 자동 정규화 토글 */}
+                    {/* 5. 💡 단위 및 각도 기호 자동 보정 토글 */}
                     <div className="flex items-center justify-between pt-2 border-t border-slate-700/60">
                       <div>
                         <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer">
-                          <span>단위 위첨자 변환 (cm³)</span>
+                          <span>수식 단위 & 각도 보정 (cm³, °)</span>
                         </label>
                         <p className="text-[9px] text-slate-400">
-                          cm3, cm2를 표준 단위(cm³, cm²)로 자동 변환
+                          cm3➔cm³, 1800∘➔1800° (합성함수 f∘g 보호)
                         </p>
                       </div>
                       <button
