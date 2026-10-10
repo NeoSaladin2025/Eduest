@@ -97,6 +97,41 @@ function formatFullDateTime(isoString?: string | null): string {
   }
 }
 
+// 헬퍼: 문항의 원천 HTML 구글 드라이브 파일 ID 추출 (2중 스마트 폴백)
+function getSolutionDriveId(item?: ReviewItem | null, submissions?: any[]): string | null {
+  if (!item) return null;
+  // 1순위: item.solutionUrl 직접 사용
+  if (item.solutionUrl && typeof item.solutionUrl === 'string' && item.solutionUrl.trim()) {
+    const trimmed = item.solutionUrl.trim();
+    if (!trimmed.startsWith('http')) return trimmed;
+    if (trimmed.includes('id=')) {
+      const match = trimmed.match(/id=([a-zA-Z0-9_-]+)/);
+      if (match && match[1]) return match[1];
+    }
+  }
+  // 2순위: item.fileId 또는 item.id 패턴 매칭 (exam_..._q_1ZTU... 또는 _q_q_1ZTU...)
+  const rawId = item.fileId || item.id || '';
+  const match = rawId.match(/_q_(?:q_)?([a-zA-Z0-9_-]+)$/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  // 3순위: 해당 학생의 제출 기록(submissions) answers 내 solution_drive_id 대조
+  if (submissions && submissions.length > 0) {
+    for (const sub of submissions) {
+      if (!sub.answers) continue;
+      for (const [key, ans] of Object.entries<any>(sub.answers)) {
+        if (
+          (key.includes(item.id) || (item.fileId && key.includes(item.fileId)) || (item.name && ans?.name === item.name)) &&
+          ans?.solution_drive_id
+        ) {
+          return ans.solution_drive_id;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export default function ReviewManagerMain() {
   const [activeTab, setActiveTab] = useState<'monitoring' | 'special_tests'>('monitoring');
   const [loading, setLoading] = useState(true);
@@ -153,6 +188,13 @@ export default function ReviewManagerMain() {
 
   // 문제 미리보기 모달
   const [previewProblemUrl, setPreviewProblemUrl] = useState<string | null>(null);
+
+  // 🌟 문항 원본 HTML 및 상세 해설 미리보기 모달 상태
+  const [previewSolutionInfo, setPreviewSolutionInfo] = useState<{
+    fileId: string;
+    title: string;
+    answer?: string;
+  } | null>(null);
 
   // 1. 학생 복습 통계 요약 목록 로드
   const fetchStudentsSummary = async () => {
@@ -1143,6 +1185,28 @@ export default function ReviewManagerMain() {
                                     </button>
                                   )}
 
+                                  {(() => {
+                                    const solId = getSolutionDriveId(item, studentSubmissions);
+                                    if (!solId) return null;
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setPreviewSolutionInfo({
+                                            fileId: solId,
+                                            title: item.name,
+                                            answer: item.answer || item.raw_answer,
+                                          });
+                                        }}
+                                        className="p-1.5 text-slate-400 hover:text-violet-600 rounded-lg hover:bg-white transition-colors"
+                                        title="문항 원본 HTML 및 상세 해설 열람"
+                                      >
+                                        <BookOpen size={15} />
+                                      </button>
+                                    );
+                                  })()}
+
                                   {/* 🗑️ 학생 복습함에서 이 문항 삭제 */}
                                   <button
                                     type="button"
@@ -1678,12 +1742,32 @@ export default function ReviewManagerMain() {
                     <button
                       type="button"
                       onClick={() => setPreviewProblemUrl(detailModalItem.problemUrl!)}
-                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors"
+                      className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
                       title="문제 이미지 미리보기"
                     >
                       <Eye size={13} className="text-indigo-600" /> 문제 보기
                     </button>
                   )}
+                  {(() => {
+                    const solId = getSolutionDriveId(detailModalItem, studentSubmissions);
+                    if (!solId) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPreviewSolutionInfo({
+                            fileId: solId,
+                            title: detailModalItem.name,
+                            answer: detailModalItem.answer || detailModalItem.raw_answer,
+                          })
+                        }
+                        className="px-2.5 py-1.5 bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-700 rounded-xl text-xs font-bold flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                        title="문항 원본 HTML 및 상세 해설 열람"
+                      >
+                        <BookOpen size={13} className="text-violet-600" /> 해설 보기
+                      </button>
+                    );
+                  })()}
                   <button
                     type="button"
                     onClick={() => setDetailModalItem(null)}
@@ -1897,6 +1981,67 @@ export default function ReviewManagerMain() {
                 src={viewingDetailProofUrl}
                 alt="손글씨 풀이 인증샷 원본"
                 className="max-h-[75vh] object-contain rounded-xl shadow-2xl"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 9. 문항 상세 해설 & 원본 HTML 문서 모달 (z-[125]로 상세보기 모달 위에 부드럽게 오버레이) */}
+      {previewSolutionInfo && (
+        <div className="fixed inset-0 z-[125] bg-black/80 backdrop-blur-md flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl md:rounded-[32px] max-w-5xl w-full h-[90vh] flex flex-col overflow-hidden shadow-3xl border border-slate-200">
+            {/* 상단 헤더 */}
+            <div className="p-4 md:px-6 md:py-4.5 border-b border-slate-100 bg-gradient-to-r from-violet-50/60 via-indigo-50/30 to-white flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-violet-600/10 text-violet-700 flex items-center justify-center shrink-0 border border-violet-200/60">
+                  <BookOpen size={20} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-black text-violet-700 bg-violet-100/70 px-2 py-0.5 rounded-md">
+                      문항 추출 원천 파일
+                    </span>
+                    {previewSolutionInfo.answer && (
+                      <span className="text-xs font-bold text-slate-500 truncate max-w-md">
+                        모범 정답: <strong className="text-slate-800 font-black">{previewSolutionInfo.answer}</strong>
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-base font-black text-slate-800 truncate leading-snug">
+                    {previewSolutionInfo.title}
+                  </h3>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={`/api/drive/library/file?fileId=${encodeURIComponent(previewSolutionInfo.fileId)}&type=html&raw=true`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
+                  title="새 창(새 탭)에서 전체 화면으로 열기"
+                >
+                  <ExternalLink size={13} className="text-violet-600" />
+                  <span className="hidden sm:inline">새 창에서 전체보기</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewSolutionInfo(null)}
+                  className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center font-black transition-colors cursor-pointer"
+                  title="닫기"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* 본문 iframe 영역 */}
+            <div className="flex-1 bg-white relative p-2 overflow-hidden flex flex-col">
+              <iframe
+                src={`/api/drive/library/file?fileId=${encodeURIComponent(previewSolutionInfo.fileId)}&type=html&raw=true`}
+                className="w-full h-full border-0 rounded-2xl bg-white"
+                title={`${previewSolutionInfo.title} 해설`}
               />
             </div>
           </div>
