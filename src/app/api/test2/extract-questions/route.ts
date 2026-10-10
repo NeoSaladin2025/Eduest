@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { detectSubQuestions, detectQuestionType } from "@/lib/extractQuestionUtils";
+import { detectSubQuestions, detectQuestionType, normalizeOverlines } from "@/lib/extractQuestionUtils";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -97,8 +97,11 @@ function decodeHtmlEntities(str: string): string {
 function cleanHtmlContent(rawHtml: string): string {
   if (!rawHtml) return "";
 
+  // 0. MathML <mover> 및 <menclose> 윗줄(선분/변) 기호 사전 변환
+  let processed = normalizeOverlines(rawHtml);
+
   // 1. MathML 연산자 및 기호 앞뒤 공백 정돈 (예: ≡, =, +, -, ×, ÷ 등)
-  let processed = rawHtml
+  processed = processed
     .replace(/<mo[^>]*>([≡=≠≤≥≈~+×÷])<\/mo>/gi, ' $1 ')
     .replace(/<mo[^>]*>([,])<\/mo>/gi, '$1 ');
 
@@ -113,6 +116,9 @@ function cleanHtmlContent(rawHtml: string): string {
 
   // 4. HTML 엔티티 디코딩
   processed = decodeHtmlEntities(processed);
+
+  // 4-1. 텍스트화된 상태의 대시/오버라인 기호 재정규화 (예: AB― -> A̅B̅)
+  processed = normalizeOverlines(processed);
 
   // 5. 연속 공백 및 줄바꿈 정리
   const lines = processed

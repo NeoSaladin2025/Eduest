@@ -76,6 +76,55 @@ export function normalizeCircledNumber(str: string): string {
   return str.replace(/[①②③④⑤❶❷❸❹❺]/g, (match) => circledMap[match] || match);
 }
 
+// 🌟 알파벳/글자에 결합 윗줄(Combining Overline U+0305) 부착 헬퍼
+export function toCombiningOverline(str: string): string {
+  if (!str) return "";
+  return str
+    .split("")
+    .map(ch => (/[a-zA-Z가-힣]/.test(ch) ? `${ch}\u0305` : ch))
+    .join("");
+}
+
+// 🌟 수식 및 텍스트 내 선분/변 윗줄 기호 정규화 (AB― -> A̅B̅)
+export function normalizeOverlines(text: string): string {
+  if (!text) return "";
+  let processed = text;
+
+  // 1. MathML <mover> 태그 처리
+  processed = processed.replace(/<mover[^>]*>([\s\S]*?)<\/mover>/gi, (match, inner) => {
+    const overlineMoRegex = /<mo[^>]*>([―—‾¯\-~]|&macr;|&#xAF;|&#8213;|&#x2015;|&#175;|&#8254;)<\/mo>/i;
+    if (overlineMoRegex.test(inner)) {
+      const withoutMo = inner.replace(overlineMoRegex, "");
+      const cleanBase = withoutMo.replace(/<[^>]+>/g, "").trim();
+      return toCombiningOverline(cleanBase);
+    }
+    return match;
+  });
+
+  // 2. MathML <menclose notation="top"> 처리
+  processed = processed.replace(/<menclose[^>]*notation=["'][^"']*top[^"']*["'][^>]*>([\s\S]*?)<\/menclose>/gi, (_, inner) => {
+    const cleanBase = inner.replace(/<[^>]+>/g, "").trim();
+    return toCombiningOverline(cleanBase);
+  });
+
+  // 3. LaTeX 스타일 \overline{AB} 처리
+  processed = processed.replace(/\\(?:overline|bar)\{([A-Za-z]+)\}/g, (_, letters) => {
+    return toCombiningOverline(letters);
+  });
+
+  // 4. 이미 텍스트로 추출된 대시/오버라인 기호 (예: AB―, FD―, BC―)
+  processed = processed.replace(/([A-Z]{1,3})\s*[―—‾¯]+/g, (_, letters) => {
+    return toCombiningOverline(letters);
+  });
+
+  // 5. 알파벳 2~3글자 뒤에 붙은 하이픈 (예: AB-와 FD-)
+  processed = processed.replace(/([A-Z]{2,3})\s*-(?=[^0-9a-zA-Z]|$)/g, (_, letters) => {
+    return toCombiningOverline(letters);
+  });
+
+  return processed;
+}
+
 export interface SubQuestionItem {
   label: string;
   answer: string;
@@ -117,7 +166,7 @@ export function detectSubQuestions(text: string): SubQuestionItem[] {
     const end = (i + 1 < matches.length) ? matches[i + 1].index : str.length;
     const ans = str.slice(start, end).trim().replace(/^[:：\s]+/, '').replace(/[,;\s]+$/, '');
     if (ans) {
-      items.push({ label: cur.label, answer: ans });
+      items.push({ label: cur.label, answer: normalizeOverlines(ans) });
     }
   }
 

@@ -110,7 +110,7 @@ async function saveSubmissions(submissions: StudentSubmission[]) {
   }
 }
 
-// 원형 숫자 등 정규화
+// 원형 숫자 및 선분/변 기호 등 정규화
 function cleanAnswerString(str: string): string {
   if (!str) return "";
   const circledMap: Record<string, string> = {
@@ -119,6 +119,9 @@ function cleanAnswerString(str: string): string {
   };
   return str
     .replace(/[①②③④⑤❶❷❸❹❺]/g, (m) => circledMap[m] || m)
+    .replace(/\u0305/g, "") // 🌟 결합 윗줄(선분 기호) 제거하여 동일 취급
+    .replace(/[―—‾¯]/g, "") // 🌟 대시/오버라인 기호 제거
+    .replace(/([a-zA-Z])-(?=[^0-9]|$)/g, "$1") // 🌟 알파벳 뒤 하이픈 제거
     .replace(/\s+/g, "")
     .toLowerCase();
 }
@@ -133,11 +136,18 @@ function stripUnitsAndExtras(str: string): string {
 
   let s = str
     .replace(/[①②③④⑤❶❷❸❹❺]/g, (m) => circledMap[m] || m)
+    .replace(/\u0305/g, "") // 🌟 결합 윗줄(선분 기호) 제거
+    .replace(/[―—‾¯]/g, "") // 🌟 대시/오버라인 기호 제거
+    .replace(/([a-zA-Z])-(?=[^0-9]|$)/g, "$1") // 🌟 알파벳 뒤 하이픈 제거
     .replace(/\s+/g, "")
     .toLowerCase()
     .replace(/²/g, "2")
     .replace(/³/g, "3")
     .replace(/,/g, "") // 천 단위 콤마 제거
+    // 🌟 대응변, 대응각, 대응점 접두사 제거
+    .replace(/^(?:대응변|대응각|대응점)\s*[:：]?\s*/i, "")
+    // 🌟 선분, 변 키워드 제거 (예: 선분AB -> ab, 변AB -> ab)
+    .replace(/(?:선분|변)\s*/g, "")
     // 미지수 접두사 제거 (예: x=12, y=-3, a=5)
     .replace(/^[a-z]\s*=\s*/i, "")
     // 소문항 라벨 접두사 제거 (예: (1)4 -> 4)

@@ -279,11 +279,18 @@ export default function ReviewTestModal({
 
     let s = str
       .replace(/[①②③④⑤❶❷❸❹❺]/g, m => circledMap[m] || m)
+      .replace(/\u0305/g, '') // 🌟 결합 윗줄(선분 기호) 제거
+      .replace(/[―—‾¯]/g, '') // 🌟 대시/오버라인 기호 제거
+      .replace(/([a-zA-Z])-(?=[^0-9]|$)/g, '$1') // 🌟 알파벳 뒤 하이픈 제거
       .replace(/\s+/g, '')
       .toLowerCase()
       .replace(/²/g, '2')
       .replace(/³/g, '3')
       .replace(/,/g, '')
+      // 🌟 대응변, 대응각, 대응점 접두사 제거
+      .replace(/^(?:대응변|대응각|대응점)\s*[:：]?\s*/i, '')
+      // 🌟 선분, 변 키워드 제거
+      .replace(/(?:선분|변)\s*/g, '')
       .replace(/^[a-z]\s*=\s*/i, '')
       .replace(/^(?:\([1-9]\)|[1-9]\)|\[[1-9]\]|[①-⑤])\s*/, '')
       .replace(/\((?:cm[23]?|mm[23]?|m[23]?|km[23]?|kg|mg|g|ml|l|°|도|개|명|원|초|분)\)$/i, '');
@@ -300,9 +307,9 @@ export default function ReviewTestModal({
     rawAns: string,
     isMultipleChoice: boolean = false
   ): boolean => {
-    const cUser = String(userAns || '').replace(/\s+/g, '').toLowerCase();
-    const cCorrect = String(correctAns || '').replace(/\s+/g, '').toLowerCase();
-    const cRaw = String(rawAns || '').replace(/\s+/g, '').toLowerCase();
+    const cUser = String(userAns || '').replace(/\u0305/g, '').replace(/[―—‾¯]/g, '').replace(/([a-zA-Z])-(?=[^0-9]|$)/g, '$1').replace(/\s+/g, '').toLowerCase();
+    const cCorrect = String(correctAns || '').replace(/\u0305/g, '').replace(/[―—‾¯]/g, '').replace(/([a-zA-Z])-(?=[^0-9]|$)/g, '$1').replace(/\s+/g, '').toLowerCase();
+    const cRaw = String(rawAns || '').replace(/\u0305/g, '').replace(/[―—‾¯]/g, '').replace(/([a-zA-Z])-(?=[^0-9]|$)/g, '$1').replace(/\s+/g, '').toLowerCase();
 
     if (!cUser || cUser === '모름' || cUser === 'unknown') return false;
 
