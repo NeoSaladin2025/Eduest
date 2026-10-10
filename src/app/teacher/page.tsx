@@ -14,7 +14,8 @@ import {
   FileCheck,
   Layers,
   Radio,
-  ChevronDown
+  ChevronDown,
+  CalendarCheck
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -26,6 +27,7 @@ import ExamManagerMain from './exammgr/main';
 import TestDataManagerMain from './testdatamgr/main';
 import ReviewManagerMain from './reviewmgr/main';
 import MonitoringCenterMain from './monitoring/main';
+import ScheduleManagerMain from './schedule/main';
 
 // 🌟 신규 통합 알림 센터 모달
 import NotificationHubModal from './notifications/NotificationHubModal';
@@ -172,6 +174,11 @@ export default function TeacherAdminPage() {
           icon: <Layers size={15} /> 
         },
       ],
+    },
+    {
+      id: 'schedule',
+      label: '일정 관리',
+      icon: <CalendarCheck size={15} />,
     },
     {
       id: 'monitoring',
@@ -445,6 +452,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'testdatamgr' && (
             <div className="w-full h-full bg-slate-50 overflow-y-auto">
               <TestDataManagerMain />
+            </div>
+          )}
+
+          {/* ✅ 일정 관리 (학사일정 & 주요일정 포스트잇) */}
+          {activeMenu === 'schedule' && (
+            <div className="w-full h-full bg-white overflow-hidden">
+              <ScheduleManagerMain />
             </div>
           )}
 

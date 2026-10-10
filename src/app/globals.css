@@ -24,3 +24,51 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* 🎨 일정 관리 커스텀 애니메이션 효과 (번쩍임, 떨림, 도장, 반짝임) */
+@keyframes schedule-glow {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(234, 179, 8, 0.4), 0 0 15px rgba(234, 179, 8, 0.2);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(245, 158, 11, 0.9), 0 0 28px rgba(234, 88, 12, 0.6);
+    filter: brightness(1.15);
+  }
+}
+
+@keyframes schedule-shake {
+  0%, 100% { transform: rotate(0deg); }
+  20% { transform: rotate(-3deg) scale(1.02); }
+  40% { transform: rotate(3deg) scale(1.02); }
+  60% { transform: rotate(-2deg); }
+  80% { transform: rotate(2deg); }
+}
+
+@keyframes schedule-sparkle {
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 2px rgba(99, 102, 241, 0.5)); }
+  50% { transform: scale(1.05); filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.8)) hue-rotate(25deg); }
+}
+
+@keyframes schedule-stamp {
+  0% { transform: scale(1.6) rotate(-15deg); opacity: 0; }
+  60% { transform: scale(0.95) rotate(-2deg); opacity: 1; }
+  100% { transform: scale(1) rotate(-1deg); opacity: 1; }
+}
+
+.effect-glow {
+  animation: schedule-glow 2.2s infinite ease-in-out;
+}
+
+.effect-shake {
+  animation: schedule-shake 1.8s infinite ease-in-out;
+}
+
+.effect-sparkle {
+  animation: schedule-sparkle 2.5s infinite ease-in-out;
+}
+
+.effect-stamp {
+  animation: schedule-stamp 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+

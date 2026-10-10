@@ -15,12 +15,21 @@ import {
   Check, 
   Trash2, 
   RefreshCw,
+  School,
+  Pin,
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import { ClassItem, StudentBasicInfo, SuggestionItem } from './types';
 import ClassModal from './ClassModal';
 import ClassDetail from './ClassDetail';
 import AbsenteeModal from './AbsenteeModal';
+import ScheduleInlineModal from './ScheduleInlineModal';
+import { 
+  ScheduleItem, 
+  SCHEDULES_STORAGE_KEY, 
+  COLOR_PRESETS, 
+  isDateInScheduleRange 
+} from '@/lib/scheduleTypes';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -81,11 +90,32 @@ export default function ClassManagerMain() {
   // Toast
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'warn' } | null>(null);
 
+  // Schedules State (학사일정 & 주요일정 연동)
+  const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [scheduleModalDate, setScheduleModalDate] = useState<string>(selectedDate);
+
   const showToast = (text: string, type: 'success' | 'info' | 'warn' = 'info') => {
     setToastMessage({ text, type });
     setTimeout(() => {
       setToastMessage(null);
     }, 2800);
+  };
+
+  const handleSaveSchedules = async (updated: ScheduleItem[]) => {
+    setSchedules(updated);
+    localStorage.setItem(SCHEDULES_STORAGE_KEY, JSON.stringify(updated));
+    try {
+      await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedules: updated }),
+      });
+      showToast('✨ 일정이 저장되었습니다!', 'success');
+    } catch (e) {
+      console.error('Failed to save schedules:', e);
+      showToast('클라우드 저장 실패 (로컬에 보관됨)', 'warn');
+    }
   };
 
   // 1. Fetch Students
@@ -180,6 +210,26 @@ export default function ClassManagerMain() {
           localStorage.setItem(ACTIONS_STORAGE_KEY, JSON.stringify(data.custom_actions));
         }
       }
+
+      // 📅 학사일정 및 주요일정 로드 (캐시 우선 & API 동기화)
+      const localSched = localStorage.getItem(SCHEDULES_STORAGE_KEY);
+      if (localSched) {
+        try {
+          const parsed = JSON.parse(localSched);
+          if (Array.isArray(parsed)) setSchedules(parsed);
+        } catch (_) {}
+      }
+
+      try {
+        const schedRes = await fetch('/api/schedules');
+        if (schedRes.ok) {
+          const schedData = await schedRes.json();
+          if (Array.isArray(schedData.schedules)) {
+            setSchedules(schedData.schedules);
+            localStorage.setItem(SCHEDULES_STORAGE_KEY, JSON.stringify(schedData.schedules));
+          }
+        }
+      } catch (_) {}
     } catch (err) {
       console.error('Error fetching classes:', err);
     } finally {
@@ -401,7 +451,36 @@ export default function ClassManagerMain() {
         (activeElem as HTMLElement)?.isContentEditable;
 
       if (isInput) return;
-      if (isClassModalOpen || isAbsenteeModalOpen || activeClassId) return;
+      if (isClassModalOpen || isAbsenteeModalOpen || activeClassId || isScheduleModalOpen) return;
+
+      // ⌨️ 키보드 방향키 날짜 이동
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        const [y, m, d] = selectedDate.split('-').map(Number);
+        const curr = new Date(y, m - 1, d);
+
+        if (e.key === 'ArrowLeft') curr.setDate(curr.getDate() - 1);
+        if (e.key === 'ArrowRight') curr.setDate(curr.getDate() + 1);
+        if (e.key === 'ArrowUp') curr.setDate(curr.getDate() - 7);
+        if (e.key === 'ArrowDown') curr.setDate(curr.getDate() + 7);
+
+        const newDateStr = `${curr.getFullYear()}-${String(curr.getMonth() + 1).padStart(2, '0')}-${String(curr.getDate()).padStart(2, '0')}`;
+        setSelectedDate(newDateStr);
+
+        // 월 변경 자동 동기화
+        if (curr.getMonth() !== currentDate.getMonth() || curr.getFullYear() !== currentDate.getFullYear()) {
+          setCurrentDate(new Date(curr.getFullYear(), curr.getMonth(), 1));
+        }
+        return;
+      }
+
+      // Enter 키로 수업 빠른 등록
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setEditingClass(null);
+        setIsClassModalOpen(true);
+        return;
+      }
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         e.preventDefault();
@@ -416,10 +495,12 @@ export default function ClassManagerMain() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     selectedDate,
+    currentDate,
     handleCopyDateClasses,
     handlePasteClassesToDate,
     isClassModalOpen,
     isAbsenteeModalOpen,
+    isScheduleModalOpen,
     activeClassId,
   ]);
 
@@ -648,8 +729,9 @@ export default function ClassManagerMain() {
               <span className="font-bold flex items-center gap-1 text-slate-700">
                 💡 단축키 가이드:
               </span>
-              <span>날짜 클릭 후 <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + C</kbd> 로 해당 날짜 전체 수업 복사,</span>
-              <span>다른 날짜 클릭 후 <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + V</kbd> 로 수업 붙여넣기!</span>
+              <span>방향키 <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">← ↑ ↓ →</kbd> 날짜 이동, <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Enter</kbd> 수업 등록 |</span>
+              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + C</kbd> 로 해당 날짜 전체 수업 복사,</span>
+              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + V</kbd> 로 수업 붙여넣기!</span>
             </div>
             {clipboardClasses.length > 0 && (
               <div className="text-emerald-700 font-bold flex items-center gap-1">
@@ -697,6 +779,11 @@ export default function ClassManagerMain() {
                   const isSelected = selectedDate === dayItem.dateString;
                   const isToday = todayStr === dayItem.dateString;
 
+                  // 📅 학사일정 및 주요일정 필터링
+                  const daySchedules = schedules.filter(s => isDateInScheduleRange(dayItem.dateString, s.startDate, s.endDate));
+                  const dayAcademicSchedules = daySchedules.filter(s => s.type === 'ACADEMIC');
+                  const daySpecialSchedules = daySchedules.filter(s => s.type === 'SPECIAL');
+
                   // Total absent count for all classes on this date
                   const dayAbsentCount = dayClasses.reduce((acc, c) => {
                     const count = Object.values(c.students_attendance || {}).filter(
@@ -717,11 +804,11 @@ export default function ClassManagerMain() {
                           : 'hover:bg-slate-50/80 bg-white'
                       }`}
                     >
-                      {/* 날짜 번호 및 상단 + 버튼 */}
+                      {/* 날짜 번호 및 상단 + 버튼 & 일정 미니 배지 */}
                       <div className="flex items-center justify-between mb-1.5 flex-shrink-0">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1 min-w-0">
                           <span
-                            className={`w-7 h-7 flex items-center justify-center rounded-xl text-xs font-black transition-all ${
+                            className={`w-7 h-7 flex items-center justify-center rounded-xl text-xs font-black transition-all shrink-0 ${
                               isToday
                                 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200'
                                 : isSelected
@@ -736,12 +823,51 @@ export default function ClassManagerMain() {
                             {dayItem.dayNumber}
                           </span>
                           {isToday && (
-                            <span className="text-[10px] font-black text-indigo-600">오늘</span>
+                            <span className="text-[10px] font-black text-indigo-600 shrink-0">오늘</span>
+                          )}
+
+                          {/* 🏫 학사일정 미니 뱃지 (학교 시험) */}
+                          {dayAcademicSchedules.slice(0, 1).map(ac => {
+                            const preset = COLOR_PRESETS[ac.color] || COLOR_PRESETS.yellow;
+                            return (
+                              <button
+                                key={ac.id}
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setScheduleModalDate(dayItem.dateString);
+                                  setIsScheduleModalOpen(true);
+                                }}
+                                className={`px-1.5 py-0.5 rounded-md text-[10px] font-black border flex items-center gap-0.5 transition-all hover:scale-105 cursor-pointer max-w-[85px] truncate shadow-2xs ${preset.lightBg} ${preset.border} ${preset.badgeText}`}
+                                title={`[학사일정] ${ac.title}\n클릭 시 상세 확인 & 바로 수정!`}
+                              >
+                                <School size={10} className="shrink-0 text-rose-500" />
+                                <span className="truncate">{ac.schoolName || '시험'}</span>
+                              </button>
+                            );
+                          })}
+
+                          {/* 📌 주요일정 미니 포스트잇 핀 아이콘 */}
+                          {daySpecialSchedules.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setScheduleModalDate(dayItem.dateString);
+                                setIsScheduleModalOpen(true);
+                              }}
+                              className={`w-5 h-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer shrink-0 shadow-2xs ${
+                                daySpecialSchedules[0].effect ? `effect-${daySpecialSchedules[0].effect}` : ''
+                              } bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300`}
+                              title={`[주요일정] ${daySpecialSchedules.map(s => s.title).join(', ')}\n클릭 시 메모 확인 & 바로 수정!`}
+                            >
+                              <Pin size={10} className="fill-amber-600 text-amber-700" />
+                            </button>
                           )}
                         </div>
 
                         {/* 빠른 수업 추가 버튼 */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                           <button
                             type="button"
                             onClick={e => {
@@ -861,6 +987,16 @@ export default function ClassManagerMain() {
         onClose={() => setIsAbsenteeModalOpen(false)}
         date={absenteeReportDate}
         classes={classes}
+      />
+
+      {/* 🌟 학사일정 & 주요일정 인라인 확인 / 수정 팝업 모달 */}
+      <ScheduleInlineModal
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        dateString={scheduleModalDate}
+        schedules={schedules.filter(s => isDateInScheduleRange(scheduleModalDate, s.startDate, s.endDate))}
+        allSchedules={schedules}
+        onUpdateAllSchedules={handleSaveSchedules}
       />
     </div>
   );
