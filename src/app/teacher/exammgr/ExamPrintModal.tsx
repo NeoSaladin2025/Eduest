@@ -49,6 +49,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   // 📝 빠른 정답표 전용 레이아웃 & 옵션 상태
   const [answerKeyColumns, setAnswerKeyColumns] = useState<1 | 2>(2); // 디폴트: 2단 (컴팩트 용지절약)
   const [showAnswerKeyType, setShowAnswerKeyType] = useState(false); // 디폴트: OFF (군더더기 제거, 정답란 넓게)
+  const [showAnswerKeyPoints, setShowAnswerKeyPoints] = useState(true); // 디폴트: ON (정답표 배점 표기 토글)
   const [answersPerPage1Col, setAnswersPerPage1Col] = useState(22); // 1단 기준 기본 출력수
   const [answersPerPage2Col, setAnswersPerPage2Col] = useState(44); // 2단 기준 기본 출력수
 
@@ -142,6 +143,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       const savedAnsType = localStorage.getItem('eduest_print_ans_show_type');
       if (savedAnsType !== null) {
         setShowAnswerKeyType(savedAnsType === 'true');
+      }
+
+      const savedAnsPoints = localStorage.getItem('eduest_print_ans_show_points');
+      if (savedAnsPoints !== null) {
+        setShowAnswerKeyPoints(savedAnsPoints === 'true');
       }
 
       const savedAns1Col = localStorage.getItem('eduest_print_ans_per_page_1col');
@@ -302,6 +308,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const handleToggleAnswerKeyType = (checked: boolean) => {
     setShowAnswerKeyType(checked);
     localStorage.setItem('eduest_print_ans_show_type', String(checked));
+  };
+
+  const handleToggleAnswerKeyPoints = (checked: boolean) => {
+    setShowAnswerKeyPoints(checked);
+    localStorage.setItem('eduest_print_ans_show_points', String(checked));
   };
 
   const handleAnswersPerPageChange = (delta: number) => {
@@ -546,7 +557,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                   유형
                 </th>
               )}
-              {showPoints && (
+              {showAnswerKeyPoints && (
                 <th className={`py-1.5 px-2 border-r border-slate-300 ${isCompactCol ? 'w-12' : 'w-16'}`}>
                   배점
                 </th>
@@ -575,7 +586,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       {q.is_descriptive ? '서술형' : isSub ? '소문항' : '단답/객관'}
                     </td>
                   )}
-                  {showPoints && (
+                  {showAnswerKeyPoints && (
                     <td className="py-1.5 px-2 border-r border-slate-200 text-slate-600 font-mono font-bold text-[11px]">
                       {points}.0점
                     </td>
@@ -1332,6 +1343,32 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                         <span
                           className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
                             showAnswerKeyType ? 'translate-x-3.5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* 3. 정답표 배점(1.0점) 표기 토글 */}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-700/60">
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1 cursor-pointer">
+                          <span>정답표 배점(1.0점) 표기</span>
+                        </label>
+                        <p className="text-[9px] text-slate-400">
+                          OFF 시 [번호 | 정답]으로 정답란 폭이 극대화됩니다.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAnswerKeyPoints(!showAnswerKeyPoints)}
+                        className={`relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                          showAnswerKeyPoints ? 'bg-violet-600' : 'bg-slate-700'
+                        }`}
+                        title={showAnswerKeyPoints ? '배점 표기 끄기 (OFF)' : '배점 표기 켜기 (ON)'}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                            showAnswerKeyPoints ? 'translate-x-3.5' : 'translate-x-0'
                           }`}
                         />
                       </button>
