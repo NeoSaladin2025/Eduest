@@ -419,7 +419,25 @@ export async function POST(req: NextRequest) {
     });
 
     const totalQuestions = exam.questions.length;
-    const score = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+    // 🌟 문항별 배점(points) 기반 실시간 총점 및 획득 점수 계산
+    let earnedPoints10 = 0;
+    let totalExamPoints10 = 0;
+    exam.questions.forEach((q) => {
+      const qPoint = typeof q.points === 'number' && q.points > 0
+        ? q.points
+        : (totalQuestions > 0 ? 100 / totalQuestions : 0);
+      const qPoint10 = Math.round(qPoint * 10);
+      totalExamPoints10 += qPoint10;
+      const gAns = gradedAnswers[q.id];
+      if (gAns && gAns.is_correct === true) {
+        earnedPoints10 += qPoint10;
+      }
+    });
+
+    const calculatedScore = totalExamPoints10 > 0
+      ? Math.round((earnedPoints10 / totalExamPoints10) * 1000) / 10
+      : (totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0);
+    const score = Number.isInteger(calculatedScore) ? calculatedScore : Number(calculatedScore.toFixed(1));
 
     const newSubmission: StudentSubmission = {
       id: `${studentId}_${examId}`,

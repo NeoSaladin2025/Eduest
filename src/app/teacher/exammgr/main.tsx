@@ -172,6 +172,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionDone, setExtractionDone] = useState(false);
 
+  // 🌟 문항 배점 모드 ('auto' | 'manual') 및 양방향 스마트 보정 상태
+  const [pointsMode, setPointsMode] = useState<'auto' | 'manual'>('auto');
+  // 'none' | 'add' (올리는 보정) | 'subtract' (깎는 보정) | 'micro_add' (미세 올림) | 'micro_sub' (미세 깎기)
+  const [adjustMode, setAdjustMode] = useState<'none' | 'add' | 'subtract' | 'micro_add' | 'micro_sub'>('none');
+  const [selectedAdjustIndices, setSelectedAdjustIndices] = useState<Set<number>>(new Set());
+
   // 🌟 문항별 단독 병렬 재추출 상태 및 비교 모달 상태
   const [reExtractingIds, setReExtractingIds] = useState<Set<string>>(new Set());
   const [diffModalInfo, setDiffModalInfo] = useState<{
@@ -598,8 +604,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       const data = await res.json();
 
       if (data.success && Array.isArray(data.questions)) {
-        setExtractedQuestions(data.questions);
+        const count = data.questions.length;
+        // 100 / N 의 소수 둘째 자리 버림 (1자리 취함) 기본 배점 계산
+        const basePoint10 = count > 0 ? Math.floor(1000 / count) : 0;
+        const initializedQuestions = data.questions.map((q: ExamQuestion) => ({
+          ...q,
+          points: typeof q.points === 'number' && q.points > 0 ? q.points : basePoint10 / 10,
+        }));
+        setExtractedQuestions(initializedQuestions);
         setExtractionDone(true);
+        setAdjustMode('none');
+        setSelectedAdjustIndices(new Set());
       } else {
         alert(`문제 추출 중 오류: ${data.error || '알 수 없는 오류'}`);
       }
@@ -767,6 +782,174 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
   };
 
+  // 🌟 문항 배점 총합 및 오차 계산 (소수 1자리 정밀도, 10배 정수 연산으로 자바스크립트 소수점 오차 방지)
+  const totalPoints10 = useMemo(() => {
+    return extractedQuestions.reduce((sum, q) => sum + Math.round((Number(q.points) || 0) * 10), 0);
+  }, [extractedQuestions]);
+
+  const totalPoints = useMemo(() => Math.round(totalPoints10) / 10, [totalPoints10]);
+  const pointsDiff10 = useMemo(() => 1000 - totalPoints10, [totalPoints10]); // 100.0 * 10 = 1000
+  const pointsDiff = useMemo(() => Math.round(pointsDiff10) / 10, [pointsDiff10]);
+
+  // 문항별 배점 수동 직접 수정
+  const handleUpdateQuestionPoints = (qIndex: number, newPoints: number) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      if (next[qIndex]) {
+        const p10 = isNaN(newPoints) ? 0 : Math.max(0, Math.round(newPoints * 10));
+        next[qIndex] = { ...next[qIndex], points: p10 / 10 };
+      }
+      return next;
+    });
+  };
+
+  // 문항별 배점 스텝 증감 (+0.5, -0.5, +0.1, -0.1)
+  const handleStepQuestionPoints = (qIndex: number, delta: number) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      if (next[qIndex]) {
+        const cur10 = Math.round((Number(next[qIndex].points) || 0) * 10);
+        const d10 = Math.round(delta * 10);
+        const next10 = Math.max(0, cur10 + d10);
+        next[qIndex] = { ...next[qIndex], points: next10 / 10 };
+      }
+      return next;
+    });
+  };
+
+  // 🤖 자동 균등 배점 (100 / N 의 소수 둘째 자리 버림 기본값 적용)
+  const handleApplyAutoPoints = () => {
+    const count = extractedQuestions.length;
+    if (count === 0) return;
+    const basePoint10 = Math.floor(1000 / count);
+    setExtractedQuestions(prev => prev.map(q => ({
+      ...q,
+      points: basePoint10 / 10,
+    })));
+    setAdjustMode('none');
+    setSelectedAdjustIndices(new Set());
+  };
+
+  // ⚡ 원클릭 스마트 100점 완성 (기본 균등 + 부족분을 뒤쪽 고난도/서술형 문항부터 0.1점씩 자동 채움)
+  const handleApplySmart100Points = () => {
+    const count = extractedQuestions.length;
+    if (count === 0) return;
+    const basePoint10 = Math.floor(1000 / count);
+    const remainder10 = 1000 - (basePoint10 * count);
+    setExtractedQuestions(prev => prev.map((q, idx) => {
+      const shouldAdd = idx >= count - remainder10;
+      const pt10 = basePoint10 + (shouldAdd ? 1 : 0);
+      return {
+        ...q,
+        points: pt10 / 10,
+      };
+    }));
+    setAdjustMode('none');
+    setSelectedAdjustIndices(new Set());
+  };
+
+  // 🌟 보정 문항 선택 토글 (보정 모드 시 문항 카드 클릭)
+  const handleToggleAdjustQuestion = (qIndex: number) => {
+    if (adjustMode === 'micro_add') {
+      // 미세 올림: 클릭한 1개 문항에 남은 부족분(pointsDiff) 바로 추가!
+      if (pointsDiff10 > 0) {
+        setExtractedQuestions(prev => {
+          const next = [...prev];
+          if (next[qIndex]) {
+            const cur10 = Math.round((Number(next[qIndex].points) || 0) * 10);
+            next[qIndex] = { ...next[qIndex], points: (cur10 + pointsDiff10) / 10 };
+          }
+          return next;
+        });
+      }
+      setAdjustMode('none');
+      setSelectedAdjustIndices(new Set());
+      return;
+    }
+
+    if (adjustMode === 'micro_sub') {
+      // 미세 깎기: 클릭한 1개 문항에서 남은 초과분(|pointsDiff|) 바로 차감!
+      if (pointsDiff10 < 0) {
+        const excess10 = Math.abs(pointsDiff10);
+        setExtractedQuestions(prev => {
+          const next = [...prev];
+          if (next[qIndex]) {
+            const cur10 = Math.round((Number(next[qIndex].points) || 0) * 10);
+            const next10 = Math.max(5, cur10 - excess10); // 최소 0.5점 유지
+            next[qIndex] = { ...next[qIndex], points: next10 / 10 };
+          }
+          return next;
+        });
+      }
+      setAdjustMode('none');
+      setSelectedAdjustIndices(new Set());
+      return;
+    }
+
+    // 일반 'add' (올리는 보정) 또는 'subtract' (깎는 보정) 모드
+    setSelectedAdjustIndices(prev => {
+      const next = new Set(prev);
+      if (next.has(qIndex)) {
+        next.delete(qIndex);
+      } else {
+        next.add(qIndex);
+      }
+      return next;
+    });
+  };
+
+  // 🌟 선택된 문항들에 보정 점수 적용 (n분의 1 분배)
+  const handleExecuteBatchAdjustment = () => {
+    const k = selectedAdjustIndices.size;
+    if (k === 0) return;
+
+    if (adjustMode === 'add') {
+      if (pointsDiff10 <= 0) return;
+      const step10 = Math.floor(pointsDiff10 / k);
+      if (step10 <= 0) {
+        alert(`선택한 문항 수(${k}개)가 남은 부족 점수(${pointsDiff.toFixed(1)}점)보다 많아 균등 분배할 수 없습니다.\n문항 수를 줄이거나 [미세 올림] 버튼을 이용해주세요.`);
+        return;
+      }
+      const rem10 = pointsDiff10 - (step10 * k);
+      setExtractedQuestions(prev => prev.map((q, idx) => {
+        if (selectedAdjustIndices.has(idx)) {
+          const cur10 = Math.round((Number(q.points) || 0) * 10);
+          return { ...q, points: (cur10 + step10) / 10 };
+        }
+        return q;
+      }));
+      setSelectedAdjustIndices(new Set());
+      if (rem10 === 0) {
+        setAdjustMode('none');
+      } else {
+        setAdjustMode('micro_add');
+      }
+    } else if (adjustMode === 'subtract') {
+      const excess10 = Math.abs(pointsDiff10);
+      if (excess10 <= 0) return;
+      const step10 = Math.floor(excess10 / k);
+      if (step10 <= 0) {
+        alert(`선택한 문항 수(${k}개)가 초과 점수(${Math.abs(pointsDiff).toFixed(1)}점)보다 많아 균등 분배할 수 없습니다.\n문항 수를 줄이거나 [미세 깎기] 버튼을 이용해주세요.`);
+        return;
+      }
+      const rem10 = excess10 - (step10 * k);
+      setExtractedQuestions(prev => prev.map((q, idx) => {
+        if (selectedAdjustIndices.has(idx)) {
+          const cur10 = Math.round((Number(q.points) || 0) * 10);
+          const next10 = Math.max(5, cur10 - step10);
+          return { ...q, points: next10 / 10 };
+        }
+        return q;
+      }));
+      setSelectedAdjustIndices(new Set());
+      if (rem10 === 0) {
+        setAdjustMode('none');
+      } else {
+        setAdjustMode('micro_sub');
+      }
+    }
+  };
+
   // 학생 배정 체크박스 토글
   const toggleStudentAssign = (studentId: string) => {
     setAssignedStudentIds(prev =>
@@ -802,6 +985,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     if (!isNoTimeLimit && (!examDuration || examDuration <= 0)) {
       alert('제한 시간을 분 단위로 입력하거나 [제한시간 없음]을 체크해주세요.');
       return;
+    }
+    if (pointsDiff !== 0) {
+      const proceed = confirm(
+        `⚠️ 현재 문항들의 총점 합계가 ${totalPoints.toFixed(1)}점입니다 (100.0점이 아닙니다).\n\n그래도 이 배점으로 시험지를 생성하시겠습니까?`
+      );
+      if (!proceed) return;
     }
 
     try {
@@ -2485,11 +2674,252 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </span>
                 </div>
 
+                {/* 🌟 문항 배점 및 양방향 스마트 보정 툴바 */}
+                <div className="bg-white p-4 rounded-2xl border border-violet-100 shadow-xs space-y-3">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    {/* 좌측: 모드 선택 (자동 / 수동) 및 원클릭 버튼 */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-black text-slate-700 mr-0.5">배점 설정:</span>
+                      <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-xs font-black">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPointsMode('auto');
+                            handleApplyAutoPoints();
+                          }}
+                          className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                            pointsMode === 'auto'
+                              ? 'bg-violet-600 text-white shadow-2xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          🤖 자동 균등
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPointsMode('manual')}
+                          className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                            pointsMode === 'manual'
+                              ? 'bg-violet-600 text-white shadow-2xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          ✍️ 수동 조절
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleApplySmart100Points}
+                        className="px-3 py-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="기본 균등 배점 후 부족분을 뒷번호 문항에 자동 분배하여 1초 만에 100.0점을 완성합니다"
+                      >
+                        <Sparkles size={13} className="text-amber-600" />
+                        <span>⚡ 100점 원클릭 완성</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleApplyAutoPoints}
+                        className="px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl flex items-center gap-1 transition-colors cursor-pointer"
+                        title="모든 문항을 균등 배점 기본값으로 초기화합니다"
+                      >
+                        <RotateCcw size={12} />
+                        <span>균등 리셋</span>
+                      </button>
+                    </div>
+
+                    {/* 우측: 총점 상태 배지 및 보정 트리거 버튼 */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* 총점 신호등 배지 */}
+                      <div className={`px-3.5 py-1.5 rounded-xl border font-black text-xs flex items-center gap-1.5 ${
+                        pointsDiff === 0
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                          : pointsDiff > 0
+                          ? 'bg-amber-50 text-amber-800 border-amber-300 animate-pulse'
+                          : 'bg-rose-50 text-rose-800 border-rose-300'
+                      }`}>
+                        {pointsDiff === 0 ? (
+                          <>
+                            <Check size={14} className="text-emerald-600" />
+                            <span>총점: {totalPoints.toFixed(1)} / 100.0점 (완벽)</span>
+                          </>
+                        ) : pointsDiff > 0 ? (
+                          <>
+                            <AlertCircle size={14} className="text-amber-600" />
+                            <span>총점: {totalPoints.toFixed(1)} / 100.0점 (+{pointsDiff.toFixed(1)}점 부족)</span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle size={14} className="text-rose-600" />
+                            <span>총점: {totalPoints.toFixed(1)} / 100.0점 (-{Math.abs(pointsDiff).toFixed(1)}점 초과)</span>
+                          </>
+                        )}
+                      </div>
+
+                      {/* ➕ 올리는 보정 버튼 (부족 시 활성화) */}
+                      {pointsDiff > 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (adjustMode === 'add') {
+                                setAdjustMode('none');
+                                setSelectedAdjustIndices(new Set());
+                              } else {
+                                setAdjustMode('add');
+                                setSelectedAdjustIndices(new Set());
+                              }
+                            }}
+                            className={`px-3 py-1.5 text-xs font-black rounded-xl border transition-all cursor-pointer flex items-center gap-1 ${
+                              adjustMode === 'add'
+                                ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-xs'
+                                : 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
+                            }`}
+                          >
+                            <span>{adjustMode === 'add' ? '✖ 보정 취소' : '➕ 올리는 보정'}</span>
+                          </button>
+
+                          {/* 미세 올림 버튼 */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (adjustMode === 'micro_add') {
+                                setAdjustMode('none');
+                              } else {
+                                setAdjustMode('micro_add');
+                                setSelectedAdjustIndices(new Set());
+                              }
+                            }}
+                            className={`px-2.5 py-1.5 text-xs font-black rounded-xl border transition-all cursor-pointer flex items-center gap-1 ${
+                              adjustMode === 'micro_add'
+                                ? 'bg-amber-600 text-white border-amber-700 shadow-xs animate-bounce'
+                                : 'bg-white text-amber-800 border-amber-300 hover:bg-amber-50'
+                            }`}
+                            title="남은 부족분을 더할 1개 문항을 바로 클릭합니다"
+                          >
+                            <span>🎯 미세 올림 (+{pointsDiff.toFixed(1)})</span>
+                          </button>
+                        </div>
+                      )}
+
+                      {/* ➖ 깎는 보정 버튼 (초과 시 활성화) */}
+                      {pointsDiff < 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (adjustMode === 'subtract') {
+                                setAdjustMode('none');
+                                setSelectedAdjustIndices(new Set());
+                              } else {
+                                setAdjustMode('subtract');
+                                setSelectedAdjustIndices(new Set());
+                              }
+                            }}
+                            className={`px-3 py-1.5 text-xs font-black rounded-xl border transition-all cursor-pointer flex items-center gap-1 ${
+                              adjustMode === 'subtract'
+                                ? 'bg-rose-600 text-white border-rose-700 shadow-xs'
+                                : 'bg-rose-100 text-rose-900 border-rose-300 hover:bg-rose-200'
+                            }`}
+                          >
+                            <span>{adjustMode === 'subtract' ? '✖ 깎기 취소' : '➖ 깎는 보정'}</span>
+                          </button>
+
+                          {/* 미세 깎기 버튼 */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (adjustMode === 'micro_sub') {
+                                setAdjustMode('none');
+                              } else {
+                                setAdjustMode('micro_sub');
+                                setSelectedAdjustIndices(new Set());
+                              }
+                            }}
+                            className={`px-2.5 py-1.5 text-xs font-black rounded-xl border transition-all cursor-pointer flex items-center gap-1 ${
+                              adjustMode === 'micro_sub'
+                                ? 'bg-rose-700 text-white border-rose-800 shadow-xs animate-bounce'
+                                : 'bg-white text-rose-800 border-rose-300 hover:bg-rose-50'
+                            }`}
+                            title="초과분을 깎을 1개 문항을 바로 클릭합니다"
+                          >
+                            <span>🎯 미세 깎기 (-{Math.abs(pointsDiff).toFixed(1)})</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 보정 활성 상태 안내 배너 */}
+                  {adjustMode !== 'none' && (
+                    <div className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-between gap-3 flex-wrap ${
+                      adjustMode === 'add' || adjustMode === 'micro_add'
+                        ? 'bg-amber-50 text-amber-900 border-amber-300'
+                        : 'bg-rose-50 text-rose-900 border-rose-300'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <Sparkles size={16} className={adjustMode.includes('add') ? 'text-amber-600' : 'text-rose-600'} />
+                        {adjustMode === 'micro_add' ? (
+                          <span>🎯 <strong>미세 올림 모드 활성</strong>: 잔여 부족분 <strong>+{pointsDiff.toFixed(1)}점</strong>을 더할 <strong>1개 문항</strong>을 아래 카드에서 클릭하세요!</span>
+                        ) : adjustMode === 'micro_sub' ? (
+                          <span>🎯 <strong>미세 깎기 모드 활성</strong>: 잔여 초과분 <strong>-{Math.abs(pointsDiff).toFixed(1)}점</strong>을 깎을 <strong>1개 문항</strong>을 아래 카드에서 클릭하세요!</span>
+                        ) : adjustMode === 'add' ? (
+                          <span>
+                            {selectedAdjustIndices.size === 0 ? (
+                              <span>부족한 <strong>+{pointsDiff.toFixed(1)}점</strong>을 분배할 문항들을 아래 카드에서 콕콕 클릭해 선택하세요!</span>
+                            ) : (
+                              <span>
+                                선택한 <strong>{selectedAdjustIndices.size}개</strong> 문항에 각각 <strong>+{(Math.floor(pointsDiff10 / selectedAdjustIndices.size) / 10).toFixed(1)}점</strong> 분배 
+                                (적용 후 남는 잔여: {((pointsDiff10 - Math.floor(pointsDiff10 / selectedAdjustIndices.size) * selectedAdjustIndices.size) / 10).toFixed(1)}점)
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span>
+                            {selectedAdjustIndices.size === 0 ? (
+                              <span>초과된 <strong>-{Math.abs(pointsDiff).toFixed(1)}점</strong>을 깎을 문항들을 아래 카드에서 콕콕 클릭해 선택하세요!</span>
+                            ) : (
+                              <span>
+                                선택한 <strong>{selectedAdjustIndices.size}개</strong> 문항에서 각각 <strong>-{(Math.floor(Math.abs(pointsDiff10) / selectedAdjustIndices.size) / 10).toFixed(1)}점</strong> 차감 
+                                (적용 후 남는 초과: {((Math.abs(pointsDiff10) - Math.floor(Math.abs(pointsDiff10) / selectedAdjustIndices.size) * selectedAdjustIndices.size) / 10).toFixed(1)}점)
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+
+                      {(adjustMode === 'add' || adjustMode === 'subtract') && selectedAdjustIndices.size > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleExecuteBatchAdjustment}
+                          className="px-3.5 py-1.5 bg-violet-600 text-white rounded-lg font-black hover:bg-violet-700 shadow-xs transition-all cursor-pointer text-xs"
+                        >
+                          {adjustMode === 'add' ? '선택 문항에 점수 가산 확정' : '선택 문항에서 점수 차감 확정'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                   {extractedQuestions.map((q, idx) => (
                     <div
                       key={q.id || idx}
-                      className="bg-white p-3.5 rounded-xl border border-violet-100 shadow-xs space-y-2.5 text-xs"
+                      onClick={() => {
+                        if (adjustMode !== 'none') {
+                          handleToggleAdjustQuestion(idx);
+                        }
+                      }}
+                      className={`bg-white p-3.5 rounded-xl border shadow-xs space-y-2.5 text-xs transition-all relative ${
+                        adjustMode !== 'none'
+                          ? 'cursor-pointer hover:border-violet-400'
+                          : ''
+                      } ${
+                        selectedAdjustIndices.has(idx)
+                          ? 'ring-2 ring-violet-500 border-violet-500 bg-violet-50/30 shadow-md'
+                          : 'border-violet-100'
+                      }`}
                     >
                       {/* 문항 헤더: 번호 및 유형 세그먼트 */}
                       <div className="flex items-center justify-between gap-1 flex-wrap">
@@ -2503,6 +2933,32 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[9px] font-bold">
                               단답/객관식
                             </span>
+                          )}
+
+                          {/* 보정 모드 시 배지/버튼 */}
+                          {adjustMode !== 'none' && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleAdjustQuestion(idx);
+                              }}
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-black border transition-all cursor-pointer ${
+                                adjustMode.startsWith('micro')
+                                  ? 'bg-amber-500 text-slate-950 border-amber-600 animate-pulse'
+                                  : selectedAdjustIndices.has(idx)
+                                  ? 'bg-violet-600 text-white border-violet-700 shadow-2xs'
+                                  : 'bg-white text-violet-700 border-violet-300 hover:bg-violet-50'
+                              }`}
+                            >
+                              {adjustMode === 'micro_add'
+                                ? `🎯 +${pointsDiff.toFixed(1)}점`
+                                : adjustMode === 'micro_sub'
+                                ? `🎯 -${Math.abs(pointsDiff).toFixed(1)}점`
+                                : selectedAdjustIndices.has(idx)
+                                ? '✓ 선택됨'
+                                : '+ 선택'}
+                            </button>
                           )}
                         </div>
 
@@ -2541,6 +2997,61 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           >
                             서술형
                           </button>
+                        </div>
+                      </div>
+
+                      {/* 🌟 문항 배점 입력 및 스텝 증감 UI */}
+                      <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200/80">
+                        <span className="font-black text-slate-600 text-[11px] flex items-center gap-1">
+                          <span>문항 배점</span>
+                        </span>
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => handleStepQuestionPoints(idx, -0.5)}
+                            className="w-5 h-5 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-black text-[10px] flex items-center justify-center cursor-pointer shadow-2xs transition-colors"
+                            title="-0.5점"
+                          >
+                            -
+                          </button>
+                          <div className="relative flex items-center">
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              max="100"
+                              value={q.points !== undefined ? q.points : ''}
+                              onChange={(e) => handleUpdateQuestionPoints(idx, parseFloat(e.target.value))}
+                              className="w-14 px-1 py-0.5 text-center font-black text-xs bg-white border border-slate-300 rounded focus:border-violet-500 focus:outline-none"
+                            />
+                            <span className="ml-1 text-[10px] font-bold text-slate-500">점</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleStepQuestionPoints(idx, 0.5)}
+                            className="w-5 h-5 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-600 font-black text-[10px] flex items-center justify-center cursor-pointer shadow-2xs transition-colors"
+                            title="+0.5점"
+                          >
+                            +
+                          </button>
+                          <div className="flex items-center gap-0.5 ml-1">
+                            <button
+                              type="button"
+                              onClick={() => handleStepQuestionPoints(idx, 0.1)}
+                              className="px-1.5 py-0.5 rounded bg-white hover:bg-violet-50 border border-violet-200 text-violet-700 font-black text-[9px] cursor-pointer shadow-2xs transition-colors"
+                              title="+0.1점"
+                            >
+                              +0.1
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleStepQuestionPoints(idx, -0.1)}
+                              className="px-1.5 py-0.5 rounded bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 font-black text-[9px] cursor-pointer shadow-2xs transition-colors"
+                              title="-0.1점"
+                            >
+                              -0.1
+                            </button>
+                          </div>
                         </div>
                       </div>
 

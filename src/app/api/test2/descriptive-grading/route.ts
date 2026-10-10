@@ -224,7 +224,29 @@ export async function POST(req: NextRequest) {
     });
 
     const totalQuestions = submission.total_questions || answerEntries.length;
-    const newScore = totalQuestions > 0 ? Math.round((newCorrectCount / totalQuestions) * 100) : 0;
+    // 🌟 시험지의 문항별 배점(points)을 조회하여 실시간 획득 점수 재계산
+    let earnedPoints10 = 0;
+    let totalExamPoints10 = 0;
+    const allExams = await getExamPapers();
+    const matchedExam = allExams.find((e) => e.id === submission.exam_id);
+
+    if (matchedExam && Array.isArray(matchedExam.questions)) {
+      matchedExam.questions.forEach((q) => {
+        const qPoint = typeof q.points === 'number' && q.points > 0
+          ? q.points
+          : (totalQuestions > 0 ? 100 / totalQuestions : 0);
+        const qPoint10 = Math.round(qPoint * 10);
+        totalExamPoints10 += qPoint10;
+        if (submission.answers[q.id]?.is_correct === true) {
+          earnedPoints10 += qPoint10;
+        }
+      });
+    }
+
+    const calculatedScore = totalExamPoints10 > 0
+      ? Math.round((earnedPoints10 / totalExamPoints10) * 1000) / 10
+      : (totalQuestions > 0 ? Math.round((newCorrectCount / totalQuestions) * 100) : 0);
+    const newScore = Number.isInteger(calculatedScore) ? calculatedScore : Number(calculatedScore.toFixed(1));
 
     submission.correct_count = newCorrectCount;
     submission.score = newScore;

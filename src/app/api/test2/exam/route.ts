@@ -224,7 +224,7 @@ export async function POST(req: NextRequest) {
           answer: ans,
           raw_answer: String(q.raw_answer ?? "").trim(),
           solution_drive_id: q.solution_drive_id || q.drive_id,
-          points: q.points || Math.round(100 / questions.length),
+          points: typeof q.points === 'number' && !isNaN(q.points) ? q.points : (questions.length > 0 ? Math.floor(1000 / questions.length) / 10 : 0),
           folder_name: q.folder_name || null,
           question_number: typeof q.question_number === 'number' ? q.question_number : null,
           display_name: q.display_name || null,
