@@ -37,6 +37,7 @@ import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { supabase } from '@/lib/supabase';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
+import BatchAnswerModal from './BatchAnswerModal';
 
 interface StudentTest2ViewProps {
   studentId: string;
@@ -211,6 +212,7 @@ export default function StudentTest2View({
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
+  const [showBatchAnswerModal, setShowBatchAnswerModal] = useState(false);
 
   // 제출 결과 정보
   const [submissionResult, setSubmissionResult] = useState<StudentSubmission | null>(null);
@@ -1718,6 +1720,16 @@ export default function StudentTest2View({
               })}
             </div>
 
+            {/* 📋 종이 시험 일괄 입력 (디지털 OMR) 버튼 */}
+            <button
+              onClick={() => setShowBatchAnswerModal(true)}
+              className="px-4 py-3 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 font-black text-xs rounded-2xl transition-all shadow-lg shadow-emerald-500/10 flex items-center gap-2 shrink-0 active:scale-95"
+              title="종이 시험지로 풀이한 답안을 한 번에 빠르게 마킹합니다"
+            >
+              <FileText size={15} />
+              <span>일괄 마킹 (OMR)</span>
+            </button>
+
             {/* 답안 제출 버튼 */}
             <button
               onClick={() => setShowSubmitConfirm(true)}
@@ -2714,6 +2726,27 @@ export default function StudentTest2View({
           </div>
         </div>
       )}
+
+      {/* 🌟 6. 종이 시험지 답안 일괄 마킹 (OMR) 모달 */}
+      <BatchAnswerModal
+        isOpen={showBatchAnswerModal}
+        onClose={() => setShowBatchAnswerModal(false)}
+        exam={currentExam}
+        userAnswers={userAnswers}
+        customSubLabels={customSubLabels}
+        descriptiveSubmitModes={descriptiveSubmitModes}
+        onApplyAnswers={(updatedAnswers, updatedSubLabels, updatedModes, andSubmit) => {
+          setUserAnswers(updatedAnswers);
+          setCustomSubLabels(updatedSubLabels);
+          setDescriptiveSubmitModes(updatedModes);
+          if (currentExam) {
+            localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(updatedAnswers));
+          }
+          if (andSubmit) {
+            setShowSubmitConfirm(true);
+          }
+        }}
+      />
 
     </div>
   );

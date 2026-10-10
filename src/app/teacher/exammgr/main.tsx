@@ -48,6 +48,7 @@ import RealtimeProctorTab from './RealtimeProctorTab';
 import DescriptiveGradingModal from './DescriptiveGradingModal';
 import QuestionDiffModal from './QuestionDiffModal';
 import ExamPrintModal from './ExamPrintModal';
+import TeacherBatchGradingModal from './TeacherBatchGradingModal';
 
 interface Student {
   id: string;
@@ -203,6 +204,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
   const [examSubmissions, setExamSubmissions] = useState<any[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [batchGradingExam, setBatchGradingExam] = useState<ExamPaper | null>(null);
+  const [batchGradingInitialStudentId, setBatchGradingInitialStudentId] = useState<string | undefined>(undefined);
 
   // 🌟 학생별 응시 상세 모달 (문항별 맞음/틀림/모름 및 소요시간)
   const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any } | null>(null);
@@ -3576,6 +3579,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => {
+                    setBatchGradingExam(resultsModalExam);
+                    setBatchGradingInitialStudentId(undefined);
+                  }}
+                  className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+                  title="종이 시험지를 걷어 선생님이 일괄로 빠르게 O/X 채점"
+                >
+                  <CheckSquare size={14} />
+                  <span>선생 일괄 채점</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setPrintModalExam(resultsModalExam)}
                   className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border border-emerald-200 cursor-pointer"
                   title="이 시험지 인쇄 및 출력 미리보기"
@@ -3619,27 +3634,41 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           <td className="p-3">
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-slate-800">{st?.name || '미등록 학생'}</span>
-                              {sub && (
-                                <div className="flex items-center gap-1.5 ml-1">
-                                  <button
-                                    onClick={() => handleOpenStudentDetail(st, sub)}
-                                    className="px-2.5 py-1 bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1"
-                                    title="문항별 맞음/틀림/모름 및 풀이 소요시간 상세 보기"
-                                  >
-                                    <Search size={12} />
-                                    <span>상세보기</span>
-                                  </button>
-                                  <button
-                                    onClick={() => handleCreateWrongExam(st, sub)}
-                                    disabled={creatingWrongExamModal}
-                                    className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 disabled:opacity-50"
-                                    title="학생이 틀린 문제만 모아 오답 시험지 생성 및 배정"
-                                  >
-                                    <RotateCcw size={12} className={creatingWrongExamModal ? 'animate-spin' : ''} />
-                                    <span>{creatingWrongExamModal ? '생성 중...' : '오답 처리'}</span>
-                                  </button>
-                                </div>
-                              )}
+                              <div className="flex items-center gap-1.5 ml-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setBatchGradingExam(resultsModalExam);
+                                    setBatchGradingInitialStudentId(studentId);
+                                  }}
+                                  className="px-2.5 py-1 bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                  title="이 학생의 종이 시험지 결과를 선생님이 O/X로 바로 입력 및 채점"
+                                >
+                                  <CheckSquare size={12} />
+                                  <span>선생 채점</span>
+                                </button>
+                                {sub && (
+                                  <>
+                                    <button
+                                      onClick={() => handleOpenStudentDetail(st, sub)}
+                                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                      title="문항별 맞음/틀림/모름 및 풀이 소요시간 상세 보기"
+                                    >
+                                      <Search size={12} />
+                                      <span>상세보기</span>
+                                    </button>
+                                    <button
+                                      onClick={() => handleCreateWrongExam(st, sub)}
+                                      disabled={creatingWrongExamModal}
+                                      className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+                                      title="학생이 틀린 문제만 모아 오답 시험지 생성 및 배정"
+                                    >
+                                      <RotateCcw size={12} className={creatingWrongExamModal ? 'animate-spin' : ''} />
+                                      <span>{creatingWrongExamModal ? '생성 중...' : '오답 처리'}</span>
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           </td>
                           <td className="p-3 text-slate-500">{st?.grade || '-'}</td>
@@ -3674,7 +3703,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setResultsModalExam(null)}
-                className="px-5 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+                className="px-5 py-2 text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
               >
                 닫기
               </button>
@@ -3682,6 +3711,28 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           </div>
         </div>
       )}
+
+      {/* 🌟 5-0. 선생 일괄 채점 모달 */}
+      <TeacherBatchGradingModal
+        isOpen={!!batchGradingExam}
+        onClose={() => setBatchGradingExam(null)}
+        exam={batchGradingExam}
+        students={students}
+        submissions={examSubmissions}
+        initialStudentId={batchGradingInitialStudentId}
+        onSubmissionUpdated={(updatedSub) => {
+          setExamSubmissions(prev => {
+            const next = [...prev];
+            const idx = next.findIndex(s => s.student_id === updatedSub.student_id && s.exam_id === updatedSub.exam_id);
+            if (idx !== -1) {
+              next[idx] = updatedSub;
+            } else {
+              next.push(updatedSub);
+            }
+            return next;
+          });
+        }}
+      />
 
       {/* 5-1. 학생별 응시 상세 결과 모달 (맞음/틀림/모름 및 문항별 소요시간) */}
       {detailStudent && resultsModalExam && (

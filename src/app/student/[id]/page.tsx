@@ -10,6 +10,7 @@ import StudentReviewExplorer from './StudentReviewExplorer';
 import StudentTest2View from './StudentTest2View';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
+import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 
@@ -117,6 +118,16 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [pwdVerified, setPwdVerified] = useState(false);
   const [pwdInput, setPwdInput] = useState('');
   const [pwdError, setPwdError] = useState(false);
+
+  // 🛡️ 10분 무입력 자동 로그아웃 및 1계정 1로그인(단일 세션) 실시간 감지
+  const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
+    studentId: student?.id,
+    studentName: student?.name,
+    enabled: !!student?.id && (!student?.password || pwdVerified),
+    onLogout: () => {
+      setPwdVerified(false);
+    },
+  });
 
   // 🌟 [사용자 요청] 관리자(선생님)의 학생화면관리 설정에 따른 상단 메뉴 제어 상태
   const [menuConfig, setMenuConfig] = useState<StudentMenuConfig>(DEFAULT_MENU_CONFIG);
@@ -720,6 +731,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   if (!loading && student?.password && !pwdVerified) {
     return (
       <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6">
+        {renderSessionGuardModals()}
         <div className="w-full max-w-sm">
           <div className="text-center mb-10">
             <div className="text-5xl font-black italic tracking-tighter text-white mb-2">
@@ -762,6 +774,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
   return (
     <div className="min-h-screen bg-[#020617] p-4 md:p-12 font-sans text-slate-200 overflow-x-hidden">
+      {renderSessionGuardModals()}
       <div className="max-w-[1400px] mx-auto">
         
         {!showReviewer && (

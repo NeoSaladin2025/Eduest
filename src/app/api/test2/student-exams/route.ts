@@ -21,6 +21,7 @@ export interface StudentSubmission {
   correct_count: number;
   has_pending_review?: boolean;
   pending_count?: number;
+  submitted_by?: string;
   answers: {
     [questionId: string]: {
       user_answer: string;
@@ -315,7 +316,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, answers, questionTimes, proofImages } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
+    const { studentId, examId, answers, questionTimes, proofImages, teacherGrading, submittedBy } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
 
     if (!studentId || !examId) {
       return NextResponse.json(
@@ -349,7 +350,14 @@ export async function POST(req: NextRequest) {
       let subAnswers: Record<string, string> | undefined = undefined;
       let subResults: Record<string, boolean> | undefined = undefined;
 
-      if (isDescriptive) {
+      // 🌟 선생님 직접 O/X 채점 모드 처리
+      if (teacherGrading && typeof teacherGrading === 'object' && q.id in teacherGrading) {
+        const teacherCorr = Boolean(teacherGrading[q.id]);
+        isCorrect = teacherCorr;
+        gradingStatus = 'graded';
+        userAns = rawUserAns || (teacherCorr ? (q.answer || '정답') : '오답');
+        if (teacherCorr) correctCount++;
+      } else if (isDescriptive) {
         // 서술형: 즉시 오답으로 확정하지 않고 선생님 채점 대기(pending)로 설정
         isCorrect = null;
         gradingStatus = 'pending';
@@ -462,6 +470,7 @@ export async function POST(req: NextRequest) {
       has_pending_review: pendingCount > 0,
       pending_count: pendingCount,
       proof_images: collectedProofImages,
+      submitted_by: submittedBy || 'student',
     };
 
     const allSubmissions = await getSubmissions();
