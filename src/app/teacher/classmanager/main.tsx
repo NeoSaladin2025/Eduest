@@ -243,7 +243,7 @@ export default function ClassManagerMain() {
   }, []);
 
   // Save classes & suggestions to cloud & localStorage
-  const saveToCloud = async (
+  const saveToCloud = useCallback(async (
     newClasses: ClassItem[],
     newReasons?: SuggestionItem[],
     newActions?: SuggestionItem[]
@@ -281,7 +281,7 @@ export default function ClassManagerMain() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [reasons, actions]);
 
   const handleSaveReasons = (updatedReasons: SuggestionItem[]) => {
     setReasons(updatedReasons);
@@ -397,13 +397,61 @@ export default function ClassManagerMain() {
     );
   }, [classes]);
 
+  // Delete all classes on target date (via Del key or UI button)
+  const handleDeleteDateClasses = useCallback((targetDate: string) => {
+    const targetClasses = classes.filter(c => c.date === targetDate);
+    if (targetClasses.length === 0) {
+      showToast(`선택한 날짜(${targetDate})에 삭제할 수업이 없습니다.`, 'warn');
+      return;
+    }
+
+    const classNames = targetClasses.map(c => `'${c.name}'`).join(', ');
+    const confirmMessage = targetClasses.length === 1
+      ? `선택한 날짜(${targetDate})의 ${classNames} 수업을 삭제하시겠습니까?`
+      : `선택한 날짜(${targetDate})의 수업 ${targetClasses.length}개(${classNames})를 모두 삭제하시겠습니까?`;
+
+    if (!window.confirm(confirmMessage)) return;
+
+    const updated = classes.filter(c => c.date !== targetDate);
+    saveToCloud(updated);
+    showToast(`🗑️ [${targetDate}]의 수업 ${targetClasses.length}개가 삭제되었습니다.`, 'info');
+  }, [classes, saveToCloud]);
+
   const handlePasteClassesToDate = useCallback((targetDate: string) => {
     if (!clipboardClasses || clipboardClasses.length === 0) {
       showToast('복사된 수업이 없습니다. 먼저 복사할 날짜를 선택하고 Ctrl+C를 누르세요.', 'warn');
       return;
     }
 
-    const newItems: ClassItem[] = clipboardClasses.map(c => {
+    // 🌟 스마트 중복 방지 시스템:
+    // 이미 해당 날짜에 동일한 이름의 수업이 존재하면 제외하고 신규 수업만 스마트하게 추가!
+    const existingOnTarget = classes.filter(c => c.date === targetDate);
+    const normalize = (str: string) => (str || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const existingNameSet = new Set(existingOnTarget.map(c => normalize(c.name)));
+
+    const classesToAdd: ClassItem[] = [];
+    const duplicateNames: string[] = [];
+
+    clipboardClasses.forEach(c => {
+      const normName = normalize(c.name);
+      if (existingNameSet.has(normName)) {
+        duplicateNames.push(c.name);
+      } else {
+        existingNameSet.add(normName); // 클립보드 내 동일 수업 중복도 함께 방지
+        classesToAdd.push(c);
+      }
+    });
+
+    if (classesToAdd.length === 0) {
+      const dupListStr = duplicateNames.map(n => `'${n}'`).join(', ');
+      showToast(
+        `⚠️ [${targetDate}]에 이미 동일한 수업(${dupListStr})이 모두 등록되어 있어 추가되지 않았습니다.`,
+        'warn'
+      );
+      return;
+    }
+
+    const newItems: ClassItem[] = classesToAdd.map(c => {
       const freshAttendance: Record<string, any> = {};
       (c.student_ids || []).forEach(sid => {
         const studentInfo = allStudents.find(s => s.id === sid);
@@ -438,10 +486,22 @@ export default function ClassManagerMain() {
 
     const updated = [...classes, ...newItems];
     saveToCloud(updated);
-    showToast(`✅ [${targetDate}]에 수업 ${newItems.length}개가 성공적으로 복사 및 등록되었습니다!`, 'success');
-  }, [clipboardClasses, classes, allStudents, reasons, actions]);
 
-  // Global Keyboard listener for Ctrl+C and Ctrl+V
+    if (duplicateNames.length > 0) {
+      const dupListStr = duplicateNames.map(n => `'${n}'`).join(', ');
+      showToast(
+        `✨ [${targetDate}]에 수업 ${newItems.length}개가 등록되었습니다! (이미 존재하는 ${dupListStr} 제외)`,
+        'success'
+      );
+    } else {
+      showToast(
+        `✅ [${targetDate}]에 수업 ${newItems.length}개가 성공적으로 복사 및 등록되었습니다!`,
+        'success'
+      );
+    }
+  }, [clipboardClasses, classes, allStudents, saveToCloud]);
+
+  // Global Keyboard listener for Ctrl+C, Ctrl+V, Del, and Navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const activeElem = document.activeElement;
@@ -482,6 +542,13 @@ export default function ClassManagerMain() {
         return;
       }
 
+      // ⌨️ Del 키로 해당 날짜 전체 수업 삭제
+      if (e.key === 'Delete' || e.key === 'Del') {
+        e.preventDefault();
+        handleDeleteDateClasses(selectedDate);
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         e.preventDefault();
         handleCopyDateClasses(selectedDate);
@@ -498,6 +565,7 @@ export default function ClassManagerMain() {
     currentDate,
     handleCopyDateClasses,
     handlePasteClassesToDate,
+    handleDeleteDateClasses,
     isClassModalOpen,
     isAbsenteeModalOpen,
     isScheduleModalOpen,
@@ -709,6 +777,17 @@ export default function ClassManagerMain() {
                 )}
               </button>
 
+              {/* 수업 삭제 버튼 (Del) */}
+              <button
+                onClick={() => handleDeleteDateClasses(selectedDate)}
+                disabled={selectedDateClasses.length === 0}
+                className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-rose-300 hover:bg-rose-50/50 text-slate-700 hover:text-rose-600 disabled:opacity-40 disabled:pointer-events-none rounded-xl text-xs font-bold transition-all shadow-xs"
+                title="선택된 날짜의 수업 삭제 (Del)"
+              >
+                <Trash2 size={14} className="text-rose-500" />
+                수업 삭제 <span className="text-[10px] text-slate-400 font-mono">Del</span>
+              </button>
+
               {/* 수업 등록 버튼 */}
               <button
                 onClick={() => {
@@ -730,8 +809,9 @@ export default function ClassManagerMain() {
                 💡 단축키 가이드:
               </span>
               <span>방향키 <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">← ↑ ↓ →</kbd> 날짜 이동, <kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Enter</kbd> 수업 등록 |</span>
-              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + C</kbd> 로 해당 날짜 전체 수업 복사,</span>
-              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + V</kbd> 로 수업 붙여넣기!</span>
+              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + C</kbd> 복사,</span>
+              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Ctrl + V</kbd> 스마트 붙여넣기(중복 방지) |</span>
+              <span><kbd className="px-1.5 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-[11px]">Del</kbd> 수업 삭제</span>
             </div>
             {clipboardClasses.length > 0 && (
               <div className="text-emerald-700 font-bold flex items-center gap-1">
@@ -904,9 +984,24 @@ export default function ClassManagerMain() {
                                 <span className="text-[11px] font-black text-slate-800 truncate group-hover/card:text-indigo-600">
                                   {c.name}
                                 </span>
-                                <span className="text-[10px] text-slate-400 font-medium">
-                                  {c.time.split('~')[0]?.trim()}
-                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="text-[10px] text-slate-400 font-medium">
+                                    {c.time.split('~')[0]?.trim()}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      if (confirm(`'${c.name}' 수업을 삭제하시겠습니까?`)) {
+                                        handleDeleteClass(c.id);
+                                      }
+                                    }}
+                                    className="opacity-0 group-hover/card:opacity-100 p-0.5 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded transition-all"
+                                    title="이 수업 삭제"
+                                  >
+                                    <Trash2 size={11} />
+                                  </button>
+                                </div>
                               </div>
                               <div className="flex items-center justify-between mt-1 text-[10px] text-slate-500">
                                 <span className="flex items-center gap-1 font-bold">

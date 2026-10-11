@@ -42,4 +42,5 @@ next-env.d.ts
 
 # local test
 샘플확인용/
+.agents/
 
