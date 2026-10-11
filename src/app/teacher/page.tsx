@@ -15,7 +15,8 @@ import {
   Layers,
   Radio,
   ChevronDown,
-  CalendarCheck
+  CalendarCheck,
+  ShieldCheck
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -31,6 +32,9 @@ import ScheduleManagerMain from './schedule/main';
 
 // 🌟 신규 통합 알림 센터 모달
 import NotificationHubModal from './notifications/NotificationHubModal';
+
+// 👑 교직원(선생님) 계정 관리 모달
+import StaffManagerModal from './StaffManagerModal';
 
 interface NavDropdownItem {
   id: string;
@@ -51,6 +55,7 @@ export default function TeacherAdminPage() {
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [pendingGradingCount, setPendingGradingCount] = useState<number>(0);
   const [isNotificationHubOpen, setIsNotificationHubOpen] = useState<boolean>(false);
+  const [isStaffModalOpen, setIsStaffModalOpen] = useState<boolean>(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -134,6 +139,12 @@ export default function TeacherAdminPage() {
           label: '학생화면 관리', 
           desc: '학생 태블릿 화면 레이아웃 설정', 
           icon: <SlidersHorizontal size={15} /> 
+        },
+        {
+          id: 'staff_management',
+          label: '선생님(교직원) 관리',
+          desc: '선생님 계정 생성, 수정, 삭제',
+          icon: <ShieldCheck size={15} className="text-amber-500" />
         },
       ],
     },
@@ -299,6 +310,11 @@ export default function TeacherAdminPage() {
                               key={sub.id}
                               type="button"
                               onClick={() => {
+                                if (sub.id === 'staff_management') {
+                                  setIsStaffModalOpen(true);
+                                  setOpenDropdown(null);
+                                  return;
+                                }
                                 setActiveMenu(sub.id);
                                 setOpenDropdown(null);
                               }}
@@ -377,12 +393,34 @@ export default function TeacherAdminPage() {
 
           <div className="h-6 w-[1px] bg-slate-200 mx-0.5 hidden sm:block"></div>
 
+          {/* 👑 교직원/선생님 계정 관리 퀵 버튼 (원장님 곽명용 전용) */}
+          {adminName === '곽명용' && (
+            <button
+              onClick={() => setIsStaffModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100 text-indigo-700 border border-indigo-200/80 rounded-xl text-xs font-black transition-all cursor-pointer shadow-2xs hover:scale-102"
+              title="교직원(선생님) 계정 생성 / 수정 / 삭제"
+            >
+              <Users size={14} className="text-indigo-600" />
+              <span className="hidden md:inline">선생님 관리</span>
+              <span className="md:hidden">계정</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>
+            </button>
+          )}
+
           {/* 선생님 프로필 */}
-          <div className="text-right hidden sm:block">
-            <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] leading-none mb-1">
-              {adminName === '곽명용' ? 'Super Administrator' : 'Authenticated Teacher'}
+          <div 
+            onClick={() => {
+              if (adminName === '곽명용') setIsStaffModalOpen(true);
+            }}
+            className={`text-right hidden sm:block ${
+              adminName === '곽명용' ? 'cursor-pointer group' : ''
+            }`}
+            title={adminName === '곽명용' ? '클릭 시 교직원 계정 관리 열기' : undefined}
+          >
+            <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] leading-none mb-1 group-hover:text-indigo-600 transition-colors">
+              {adminName === '곽명용' ? '👑 Super Administrator' : 'Authenticated Teacher'}
             </p>
-            <p className="text-xs md:text-sm font-bold text-slate-700">{adminName} 선생님</p>
+            <p className="text-xs md:text-sm font-bold text-slate-700 group-hover:text-indigo-900 transition-colors">{adminName} 선생님</p>
           </div>
           
           <div className="h-7 w-[1px] bg-slate-200 mx-0.5 hidden sm:block"></div>
@@ -485,6 +523,13 @@ export default function TeacherAdminPage() {
         pendingGradingCount={pendingGradingCount}
         onGradedChange={(cnt) => setPendingGradingCount(cnt)}
         adminName={adminName}
+      />
+
+      {/* 👑 교직원(선생님) 계정 관리 모달 */}
+      <StaffManagerModal
+        isOpen={isStaffModalOpen}
+        onClose={() => setIsStaffModalOpen(false)}
+        currentAdminName={adminName}
       />
     </div>
   );

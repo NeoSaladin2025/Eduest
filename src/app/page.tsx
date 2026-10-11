@@ -26,21 +26,22 @@ export default function LandingPage() {
     setLoading(true);
 
     try {
-      // 1. managers 테이블에서 성함(name)과 비밀번호가 일치하는 데이터 탐색
+      // 1. managers 테이블에서 성함(name) 또는 계정ID(login_id)와 비밀번호가 일치하는 데이터 탐색
+      const targetIdentifier = adminName.trim();
       const { data: manager, error } = await supabase
         .from('managers')
         .select('*')
-        .eq('name', adminName) // DB의 'name' 컬럼과 대조
-        .eq('password', password)
-        .single();
+        .or(`name.eq."${targetIdentifier}",login_id.eq."${targetIdentifier}"`)
+        .eq('password', password.trim())
+        .maybeSingle();
 
       if (error || !manager) {
-        alert('등록된 성함 또는 비밀번호가 일치하지 않습니다, 자기야! 😢');
+        alert('등록된 성함/아이디 또는 비밀번호가 일치하지 않습니다! 😢');
         setLoading(false);
         return;
       }
 
-      // 2. 로그인 성공 시 성함을 로컬 스토리지에 잠깐 저장 (선생님 페이지에서 보여주기용)
+      // 2. 로그인 성공 시 성함을 로컬 스토리지에 저장 (선생님 페이지에서 보여주기용)
       localStorage.setItem('currentAdminName', manager.name);
       document.cookie = `currentAdminName=${encodeURIComponent(manager.name)}; path=/; max-age=86400; SameSite=Strict; Secure`;
 
@@ -113,7 +114,7 @@ export default function LandingPage() {
 
             <div className="text-center mb-8">
               <h2 className="text-2xl font-black italic mb-2 tracking-tight">MANAGER ACCESS</h2>
-              <p className="text-neutral-500 text-sm">등록된 성함으로 인증을 진행해 주세요.</p>
+              <p className="text-neutral-500 text-sm">등록된 성함 또는 계정 ID로 인증을 진행해 주세요.</p>
             </div>
 
             <form onSubmit={handleAdminLogin} className="space-y-4">
@@ -121,7 +122,7 @@ export default function LandingPage() {
                 <User className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={18} />
                 <input 
                   type="text"
-                  placeholder="관리자 성함"
+                  placeholder="관리자 성함 또는 계정 ID"
                   value={adminName}
                   onChange={(e) => setAdminName(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:border-indigo-500 transition-colors placeholder:text-neutral-600"
