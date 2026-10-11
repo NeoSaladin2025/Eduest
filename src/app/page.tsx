@@ -31,7 +31,7 @@ export default function LandingPage() {
       const { data: manager, error } = await supabase
         .from('managers')
         .select('*')
-        .or(`name.eq."${targetIdentifier}",login_id.eq."${targetIdentifier}"`)
+        .or(`name.eq.${targetIdentifier},login_id.eq.${targetIdentifier}`)
         .eq('password', password.trim())
         .maybeSingle();
 
