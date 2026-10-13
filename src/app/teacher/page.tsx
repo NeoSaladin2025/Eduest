@@ -16,7 +16,8 @@ import {
   Radio,
   ChevronDown,
   CalendarCheck,
-  ShieldCheck
+  ShieldCheck,
+  PlaySquare
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -29,6 +30,7 @@ import TestDataManagerMain from './testdatamgr/main';
 import ReviewManagerMain from './reviewmgr/main';
 import MonitoringCenterMain from './monitoring/main';
 import ScheduleManagerMain from './schedule/main';
+import VideoManagerMain from './videomgr/main';
 
 // 🌟 신규 통합 알림 센터 모달
 import NotificationHubModal from './notifications/NotificationHubModal';
@@ -190,6 +192,19 @@ export default function TeacherAdminPage() {
       id: 'schedule',
       label: '일정 관리',
       icon: <CalendarCheck size={15} />,
+    },
+    {
+      id: 'group_content',
+      label: '컨텐츠 관리',
+      icon: <PlaySquare size={15} />,
+      children: [
+        {
+          id: 'videomgr',
+          label: '인강 관리',
+          desc: '유튜브 및 구글 드라이브 영상강의 등록 및 관리',
+          icon: <PlaySquare size={15} className="text-rose-600" />,
+        },
+      ],
     },
     {
       id: 'monitoring',
@@ -497,6 +512,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'schedule' && (
             <div className="w-full h-full bg-white overflow-hidden">
               <ScheduleManagerMain />
+            </div>
+          )}
+
+          {/* ✅ 컨텐츠 관리 - 인강 관리 */}
+          {activeMenu === 'videomgr' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <VideoManagerMain />
             </div>
           )}
 

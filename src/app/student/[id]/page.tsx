@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect, use, useRef, useCallback } from 'react';
 import { 
-  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck 
+  Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck, PlaySquare 
 } from 'lucide-react';
 import { useStudentData } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
 import StudentTest2View from './StudentTest2View';
+import StudentVideoView from './StudentVideoView';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
 import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
@@ -20,6 +21,7 @@ interface StudentMenuConfig {
   homework: boolean;
   review: boolean;
   library: boolean;
+  video: boolean;
 }
 
 const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
@@ -28,6 +30,7 @@ const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
   homework: true,
   review: true,
   library: true,
+  video: true,
 };
 
 /** `extractNumber`와 동일: `N번` 우선, 없으면 이름 안 첫 숫자열 — 없으면 null */
@@ -99,7 +102,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
-  const [mode, setMode] = useState<'test' | 'homework' | 'review' | 'library'>('review');
+  const [mode, setMode] = useState<'test' | 'homework' | 'review' | 'library' | 'video'>('review');
   const [isTesting, setIsTesting] = useState(false);
   const [currentPath, setCurrentPath] = useState<any[]>([]);
   const [displayLibrary, setDisplayLibrary] = useState<any[]>([]);
@@ -170,6 +173,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               homework: parsed.homework ?? true,
               review: parsed.review ?? true,
               library: parsed.library ?? true,
+              video: parsed.video ?? true,
             };
             setMenuConfig(cfg);
             localStorage.setItem('eduest_student_menu_config', JSON.stringify(cfg));
@@ -800,6 +804,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   <Library size={18}/> Library
                 </button>
               )}
+              {menuConfig.video && (
+                <button onClick={() => changeMode('video')} className={`flex items-center gap-3 px-6 md:px-10 py-4 md:py-5 rounded-[24px] text-xs font-black uppercase tracking-widest transition-all ${mode === 'video' ? 'bg-rose-600 text-white shadow-xl scale-105' : 'text-slate-500 hover:text-white'}`}>
+                  <PlaySquare size={18}/> 유용한 영상강의
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -836,6 +845,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 onUpdateReviewData={saveReviewData}
                 onOpenFileForReview={handleOpenFileForReview}
               />
+            ) : mode === 'video' ? (
+              /* 🌟 [사용자 요청] 유용한 영상강의 (인강 시청 & 학년별/태그별 탐색) */
+              <StudentVideoView student={student} />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 pb-20">
                 {!student?.is_unlocked ? (

@@ -14,6 +14,7 @@ export interface StudentMenuConfig {
   homework: boolean;
   review: boolean;
   library: boolean;
+  video: boolean;
 }
 
 const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
@@ -22,6 +23,7 @@ const DEFAULT_MENU_CONFIG: StudentMenuConfig = {
   homework: true,
   review: true,
   library: true,
+  video: true,
 };
 
 // GET: 학생 상단 메뉴 노출 설정 불러오기
@@ -44,6 +46,7 @@ export async function GET() {
       homework: parsed.homework ?? true,
       review: parsed.review ?? true,
       library: parsed.library ?? true,
+      video: parsed.video ?? true,
     };
 
     return NextResponse.json({ config });
@@ -63,6 +66,7 @@ export async function POST(req: Request) {
       homework: body.homework ?? true,
       review: body.review ?? true,
       library: body.library ?? true,
+      video: body.video ?? true,
     };
 
     const jsonString = JSON.stringify({

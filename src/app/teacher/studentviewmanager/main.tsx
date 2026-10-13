@@ -13,7 +13,8 @@ import {
   AlertCircle,
   Save,
   Check,
-  FileCheck
+  FileCheck,
+  PlaySquare
 } from 'lucide-react';
 
 interface MenuConfig {
@@ -22,6 +23,7 @@ interface MenuConfig {
   homework: boolean;
   review: boolean;
   library: boolean;
+  video: boolean;
 }
 
 const DEFAULT_CONFIG: MenuConfig = {
@@ -30,6 +32,7 @@ const DEFAULT_CONFIG: MenuConfig = {
   homework: true,
   review: true,
   library: true,
+  video: true,
 };
 
 export default function StudentViewManagerMain() {
@@ -113,7 +116,7 @@ export default function StudentViewManagerMain() {
 
   // 전체 켜기
   const handleSelectAll = () => {
-    const allOn: MenuConfig = { test: true, test2: true, homework: true, review: true, library: true };
+    const allOn: MenuConfig = { test: true, test2: true, homework: true, review: true, library: true, video: true };
     setConfig(allOn);
     saveConfig(allOn);
   };
@@ -170,6 +173,17 @@ export default function StudentViewManagerMain() {
       badgeColor: 'bg-indigo-100 text-indigo-700 border-indigo-200',
       previewIcon: <Library size={18} />,
       previewActiveStyle: 'bg-indigo-600 text-white shadow-xl scale-105',
+    },
+    {
+      id: 'video' as keyof MenuConfig,
+      name: '유용한 영상강의',
+      korLabel: '인강 시청',
+      desc: '선생님이 엄선한 학년별 유튜브 및 구글 드라이브 영상강의 시청',
+      icon: <PlaySquare size={22} className="text-rose-500" />,
+      activeColor: 'bg-rose-500/10 border-rose-500 text-rose-600',
+      badgeColor: 'bg-rose-100 text-rose-700 border-rose-200',
+      previewIcon: <PlaySquare size={18} />,
+      previewActiveStyle: 'bg-rose-600 text-white shadow-xl scale-105',
     },
   ];
 
