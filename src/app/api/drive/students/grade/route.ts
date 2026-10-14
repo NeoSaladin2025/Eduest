@@ -1,11 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { verifyAdminToken } from '@/lib/authUtils';
 
 // 1. Supabase 클라이언트 초기화
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 // 2. 구글 드라이브 인증 초기화
@@ -57,6 +59,14 @@ function getPromotedGrade(currentGrade: string, high3Action: 'graduated' | 'keep
 
 export async function POST(req: Request) {
   try {
+    // 🛡️ 관리자 권한 확인
+    const cookieStore = await cookies();
+    const token = cookieStore.get('admin_session_token')?.value;
+    const session = verifyAdminToken(token);
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '관리자 권한이 필요합니다. (로그인 필요)' }, { status: 401 });
+    }
+
     const body = await req.json();
     const {
       action,

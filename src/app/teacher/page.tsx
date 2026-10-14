@@ -54,6 +54,7 @@ interface NavGroup {
 
 export default function TeacherAdminPage() {
   const [adminName, setAdminName] = useState('');
+  const [adminRole, setAdminRole] = useState('TEACHER');
   const [activeMenu, setActiveMenu] = useState('dashboard');
   const [pendingGradingCount, setPendingGradingCount] = useState<number>(0);
   const [isNotificationHubOpen, setIsNotificationHubOpen] = useState<boolean>(false);
@@ -62,6 +63,8 @@ export default function TeacherAdminPage() {
   const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   const navRef = useRef<HTMLDivElement>(null);
+
+  const isSuperAdmin = adminRole === 'SUPER_ADMIN';
 
   const handleMouseEnterDropdown = (groupId: string) => {
     if (closeTimerRef.current) {
@@ -97,6 +100,10 @@ export default function TeacherAdminPage() {
     const storedName = localStorage.getItem('currentAdminName');
     if (storedName) {
       setAdminName(storedName);
+    }
+    const storedRole = localStorage.getItem('currentAdminRole');
+    if (storedRole) {
+      setAdminRole(storedRole);
     }
 
     checkPendingGrading();
@@ -408,8 +415,8 @@ export default function TeacherAdminPage() {
 
           <div className="h-6 w-[1px] bg-slate-200 mx-0.5 hidden sm:block"></div>
 
-          {/* 👑 교직원/선생님 계정 관리 퀵 버튼 (원장님 곽명용 전용) */}
-          {adminName === '곽명용' && (
+          {/* 👑 교직원/선생님 계정 관리 퀵 버튼 (원장님 곽명용 / Super Admin 전용) */}
+          {isSuperAdmin && (
             <button
               onClick={() => setIsStaffModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100 text-indigo-700 border border-indigo-200/80 rounded-xl text-xs font-black transition-all cursor-pointer shadow-2xs hover:scale-102"
@@ -425,15 +432,15 @@ export default function TeacherAdminPage() {
           {/* 선생님 프로필 */}
           <div 
             onClick={() => {
-              if (adminName === '곽명용') setIsStaffModalOpen(true);
+              if (isSuperAdmin) setIsStaffModalOpen(true);
             }}
             className={`text-right hidden sm:block ${
-              adminName === '곽명용' ? 'cursor-pointer group' : ''
+              isSuperAdmin ? 'cursor-pointer group' : ''
             }`}
-            title={adminName === '곽명용' ? '클릭 시 교직원 계정 관리 열기' : undefined}
+            title={isSuperAdmin ? '클릭 시 교직원 계정 관리 열기' : undefined}
           >
             <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em] leading-none mb-1 group-hover:text-indigo-600 transition-colors">
-              {adminName === '곽명용' ? '👑 Super Administrator' : 'Authenticated Teacher'}
+              {isSuperAdmin ? '👑 Super Administrator' : 'Authenticated Teacher'}
             </p>
             <p className="text-xs md:text-sm font-bold text-slate-700 group-hover:text-indigo-900 transition-colors">{adminName} 선생님</p>
           </div>
@@ -445,6 +452,7 @@ export default function TeacherAdminPage() {
             onClick={() => { 
               localStorage.clear(); 
               document.cookie = 'currentAdminName=; path=/; max-age=0; SameSite=Strict; Secure';
+              document.cookie = 'admin_session_token=; path=/; max-age=0; SameSite=Strict; Secure';
               window.location.href = '/'; 
             }}
             className="p-2 md:p-2.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-500 rounded-xl transition-all border border-slate-100 cursor-pointer"

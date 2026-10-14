@@ -189,7 +189,7 @@ export default function StudentManagerMain() {
     const noPasswd = students.filter(s => !s.password);
     if (noPasswd.length === 0) return;
 
-    const usedSet = new Set(students.filter(s => s.password).map(s => s.password!));
+    const usedSet = new Set(students.filter(s => s.password && !s.password.startsWith('$2')).map(s => s.password!));
     const genPwd = (): string => {
       let p: string;
       do { p = String(Math.floor(1000 + Math.random() * 9000)); } while (usedSet.has(p));
@@ -815,7 +815,13 @@ export default function StudentManagerMain() {
                 onKeyDown={e => e.key === 'Enter' && handleSavePwd()}
               />
             </div>
-            <p className="text-[10px] text-slate-400 mb-6 text-center">현재: <span className="font-black text-amber-600">{pwdStudent.password ?? '없음'}</span></p>
+            <p className="text-[10px] text-slate-400 mb-6 text-center">
+              현재: <span className="font-black text-amber-600">
+                {pwdStudent.password 
+                  ? (pwdStudent.password.startsWith('$2') ? '🔒 Bcrypt 암호화 보호됨' : pwdStudent.password) 
+                  : '없음'}
+              </span>
+            </p>
             <div className="flex gap-3">
               <button onClick={() => { setPwdStudent(null); setNewPwd(''); }} className="flex-1 py-3.5 bg-slate-100 text-slate-500 rounded-2xl font-bold hover:bg-slate-200 transition-all">취소</button>
               <button
@@ -1420,13 +1426,15 @@ export default function StudentManagerMain() {
                         onClick={(e) => {
                           e.stopPropagation();
                           setPwdStudent(student);
-                          setNewPwd(student.password || '');
+                          setNewPwd(student.password && !student.password.startsWith('$2') ? student.password : '');
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
                         title="비번 변경"
                       >
                         <KeyRound size={13} />
-                        {student.password ?? '배정 중...'}
+                        {student.password 
+                          ? (student.password.startsWith('$2') ? '🔒 암호화' : student.password) 
+                          : '배정 중...'}
                       </button>
                     </div>
                     

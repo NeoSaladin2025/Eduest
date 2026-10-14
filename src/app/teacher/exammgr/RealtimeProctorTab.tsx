@@ -143,7 +143,9 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
   // 초기 학생 데이터 로드
   useEffect(() => {
     const fetchStudentsData = async () => {
-      const { data } = await supabase.from('students').select('*');
+      const { data } = await supabase
+        .from('students')
+        .select('id, name, grade, test_status, test_remaining_sec, updated_at, last_away_at');
       if (data) {
         const map: Record<string, Student> = {};
         data.forEach((s: any) => {

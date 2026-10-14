@@ -48,7 +48,11 @@ export default function TestModule({ studentId, studentName, onStatusChange }: T
   // 📥 [세션 복구]
   useEffect(() => {
     const restoreSession = async () => {
-      const { data } = await supabase.from('students').select('*').eq('id', studentId).single();
+      const { data } = await supabase
+        .from('students')
+        .select('id, test_status, test_remaining_sec, test_duration_min, updated_at')
+        .eq('id', studentId)
+        .single();
       if (data) {
         if (data.test_status === 'FINISHED') {
           setIsFinished(true);

@@ -122,7 +122,7 @@ export default function StaffManagerModal({
       showToast('계정 ID를 입력해 주세요.', 'warn');
       return;
     }
-    if (!formPassword.trim()) {
+    if (!editingTeacher && !formPassword.trim()) {
       showToast('비밀번호를 입력해 주세요.', 'warn');
       return;
     }
@@ -130,17 +130,21 @@ export default function StaffManagerModal({
     try {
       setFormSubmitting(true);
       if (editingTeacher) {
-        // 수정
+        // 수정 (비밀번호는 입력했을 때만 변경 적용)
+        const updateBody: Record<string, any> = {
+          id: editingTeacher.id,
+          name: formName.trim(),
+          login_id: formLoginId.trim(),
+          role: formRole,
+        };
+        if (formPassword.trim()) {
+          updateBody.password = formPassword.trim();
+        }
+
         const res = await fetch('/api/teachers', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id: editingTeacher.id,
-            name: formName.trim(),
-            login_id: formLoginId.trim(),
-            password: formPassword.trim(),
-            role: formRole,
-          }),
+          body: JSON.stringify(updateBody),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -180,8 +184,8 @@ export default function StaffManagerModal({
 
   // 삭제 처리
   const handleDeleteTeacher = async (teacher: TeacherAccount) => {
-    if (teacher.is_protected || teacher.name === '곽명용') {
-      alert('최고 관리자(곽명용 원장님) 계정은 삭제할 수 없습니다!');
+    if (teacher.is_protected || teacher.role === 'SUPER_ADMIN') {
+      alert('최고 관리자 계정은 보호 대상이므로 삭제할 수 없습니다!');
       return;
     }
 
@@ -327,7 +331,7 @@ export default function StaffManagerModal({
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700 bg-white">
                   {filteredTeachers.map(teacher => {
-                    const isProtected = teacher.is_protected || teacher.name === '곽명용';
+                    const isProtected = teacher.is_protected || teacher.role === 'SUPER_ADMIN';
                     const isSuper = teacher.role === 'SUPER_ADMIN' || isProtected;
                     const showPwd = !!showPasswordMap[teacher.id];
 
@@ -380,28 +384,13 @@ export default function StaffManagerModal({
                           </div>
                         </td>
 
-                        {/* 비밀번호 */}
+                        {/* 비밀번호 (Bcrypt 암호화 보호) */}
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-1.5 font-mono">
-                            <span className="bg-slate-100 px-2 py-1 rounded-lg text-slate-800 border border-slate-200 min-w-[70px] text-center font-bold">
-                              {showPwd ? (teacher.password || '••••') : '••••••'}
+                            <span className="bg-emerald-50 px-2.5 py-1 rounded-lg text-emerald-700 border border-emerald-200 text-[11px] font-black flex items-center gap-1.5">
+                              <Lock size={12} className="text-emerald-600" />
+                              <span>Bcrypt 암호화 보호</span>
                             </span>
-                            <button
-                              onClick={() => setShowPasswordMap(prev => ({ ...prev, [teacher.id]: !prev[teacher.id] }))}
-                              className="p-1 text-slate-400 hover:text-slate-700 rounded transition-colors"
-                              title={showPwd ? '비밀번호 가리기' : '비밀번호 확인'}
-                            >
-                              {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
-                            </button>
-                            {teacher.password && (
-                              <button
-                                onClick={() => handleCopyText(teacher.password || '', '비밀번호')}
-                                className="p-1 text-slate-400 hover:text-slate-700 rounded transition-colors"
-                                title="비밀번호 복사"
-                              >
-                                <Copy size={13} />
-                              </button>
-                            )}
                           </div>
                         </td>
 
@@ -536,20 +525,22 @@ export default function StaffManagerModal({
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-black text-slate-700">
-                    비밀번호 <span className="text-rose-500">*</span>
+                    비밀번호 {editingTeacher ? '(변경 시에만 입력)' : <span className="text-rose-500">*</span>}
                   </label>
-                  <span className="text-[10px] text-emerald-600 font-bold">자릿수 제한 없음</span>
+                  <span className="text-[10px] text-emerald-600 font-bold">
+                    {editingTeacher ? '미입력 시 기존 비밀번호 유지' : '자릿수 제한 없음'}
+                  </span>
                 </div>
                 <input
                   type="text"
-                  placeholder="예: 1, 1234, 0000 등 자유롭게"
+                  placeholder={editingTeacher ? '변경할 새 비밀번호를 입력하세요' : '예: 1, 1234, 0000 등 자유롭게'}
                   value={formPassword}
                   onChange={e => setFormPassword(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs font-bold font-mono text-slate-900 focus:outline-none focus:border-indigo-600 focus:bg-white transition-all"
-                  required
+                  required={!editingTeacher}
                 />
                 <p className="text-[10px] text-slate-400 mt-1">
-                  💡 복잡한 특수문자 규칙 없이 편한 길이로 설정하세요.
+                  💡 {editingTeacher ? '비밀번호를 재설정할 때만 새 값을 입력해 주세요.' : '복잡한 특수문자 규칙 없이 편한 길이로 설정하세요.'}
                 </p>
               </div>
 

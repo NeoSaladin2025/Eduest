@@ -60,20 +60,29 @@ export function useStudentData(studentId: string) {
       try {
         setLoading(true);
         
-        // 1. 학생 기본 정보 로드 (보안: 비밀번호 원문은 클라이언트 상태에서 제거)
+        // 1. 학생 기본 정보 로드 (보안: password 컬럼을 아예 DB에 요청하지 않음!)
         const { data: studentData } = await supabase
           .from('students')
-          .select('*')
+          .select('id, name, grade, drive_folder_id, is_unlocked, unlocked_folders')
           .eq('id', studentId)
           .single();
           
         if (!studentData) return;
-        const sanitized = {
+
+        // 2. 비밀번호 설정 여부는 전용 보안 API로 확인 (비밀번호 내용은 전송하지 않음)
+        let hasPassword = false;
+        try {
+          const checkRes = await fetch(`/api/student/verify-password?studentId=${encodeURIComponent(studentId)}`);
+          const checkData = await checkRes.json();
+          hasPassword = !!checkData.hasPassword;
+        } catch (e) {
+          console.error('Check password status error:', e);
+        }
+
+        setStudent({
           ...studentData,
-          has_password: !!studentData.password,
-        };
-        delete sanitized.password; // 🛡️ 브라우저 노출 방지
-        setStudent(sanitized);
+          has_password: hasPassword,
+        });
 
         // 2. 라이브러리 트리 로드 (전체 구조를 가져와야 부모-자식 연결이 유지됨)
         // PostgREST 기본 max-rows(예: 1000) 때문에 한 번에만 select 하면 하위 폴더 행이 잘리고

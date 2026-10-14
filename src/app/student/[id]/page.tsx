@@ -121,6 +121,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [pwdVerified, setPwdVerified] = useState(false);
   const [pwdInput, setPwdInput] = useState('');
   const [pwdError, setPwdError] = useState(false);
+  const [pwdErrorMsg, setPwdErrorMsg] = useState('');
 
   // 🛡️ 10분 무입력 자동 로그아웃 및 1계정 1로그인(단일 세션) 실시간 감지
   const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
@@ -736,12 +737,15 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       if (res.ok && data.success) {
         setPwdVerified(true);
         setPwdError(false);
+        setPwdErrorMsg('');
       } else {
         setPwdError(true);
+        setPwdErrorMsg(data.error || '틀렸어. 다시 입력해줘.');
         setPwdInput('');
       }
     } catch {
       setPwdError(true);
+      setPwdErrorMsg('틀렸어. 다시 입력해줘.');
       setPwdInput('');
     }
   };
@@ -771,7 +775,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               className={`w-full bg-white/5 border rounded-2xl py-5 px-6 text-center text-4xl font-black tracking-[0.5em] text-white focus:outline-none transition-all ${pwdError ? 'border-rose-500 animate-pulse' : 'border-white/10 focus:border-indigo-500'}`}
               autoFocus
             />
-            {pwdError && <p className="text-rose-400 text-xs font-bold text-center mt-3">틀렸어. 다시 입력해줘.</p>}
+            {pwdError && <p className="text-rose-400 text-xs font-bold text-center mt-3">{pwdErrorMsg || '틀렸어. 다시 입력해줘.'}</p>}
             <button
               onClick={handlePwdSubmit}
               disabled={pwdInput.length !== 4}

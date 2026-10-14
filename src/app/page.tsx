@@ -43,8 +43,9 @@ export default function LandingPage() {
         return;
       }
 
-      // 2. 로그인 성공 시 성함을 로컬 스토리지에 저장 (선생님 화면 표시용)
+      // 2. 로그인 성공 시 성함과 역할을 로컬 스토리지에 저장 (선생님 화면 표시용)
       localStorage.setItem('currentAdminName', data.adminName);
+      localStorage.setItem('currentAdminRole', data.role || 'TEACHER');
 
       // 3. 선생님 전용 메인으로 이동
       router.push('/teacher');

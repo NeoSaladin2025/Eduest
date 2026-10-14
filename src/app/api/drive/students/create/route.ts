@@ -1,11 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { verifyAdminToken } from '@/lib/authUtils';
 
 // 1️⃣ Supabase 클라이언트 초기화 (환경 변수 사용)
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 // 2️⃣ 구글 드라이브 인증 설정
@@ -23,6 +25,14 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx47YS3s2V6-PWU
 
 export async function POST(req: Request) {
   try {
+    // 🛡️ 관리자 권한 확인 (외부 무단 호출 차단)
+    const cookieStore = await cookies();
+    const token = cookieStore.get('admin_session_token')?.value;
+    const session = verifyAdminToken(token);
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '관리자 권한이 필요합니다. (로그인 필요)' }, { status: 401 });
+    }
+
     const { name, grade } = await req.json();
 
     // 🚀 STEP 1: 구글 드라이브 학생 폴더 생성

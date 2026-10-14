@@ -1,10 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { verifyAdminToken } from '@/lib/authUtils';
 import { VideoLectureItem, VideoTagItem, DEFAULT_TAGS } from '@/lib/videoTypes';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 const RECORD_DRIVE_ID = 'content_videos_root_data';
@@ -77,6 +79,14 @@ export async function GET() {
 // POST: 영상 및 태그 칩 관리 (추가, 수정, 삭제, 태그 수정 시 영상 연동 변경)
 export async function POST(req: Request) {
   try {
+    // 🛡️ 관리자 권한 확인 (외부 무단 호출 차단)
+    const cookieStore = await cookies();
+    const token = cookieStore.get('admin_session_token')?.value;
+    const session = verifyAdminToken(token);
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '관리자 권한이 필요합니다. (로그인 필요)' }, { status: 401 });
+    }
+
     const body = await req.json();
     const { action } = body;
 

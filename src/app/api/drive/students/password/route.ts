@@ -1,11 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { verifyAdminToken } from '@/lib/authUtils';
+import { verifyAdminToken, hashPassword } from '@/lib/authUtils';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
 export async function PATCH(req: Request) {
@@ -24,9 +24,12 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: '필수 값이 없습니다.' }, { status: 400 });
     }
 
+    // 🔒 [보안 강화]: 학생 비밀번호도 Bcrypt 해시로 안전하게 암호화하여 저장
+    const hashedPassword = await hashPassword(String(password).trim());
+
     const { error } = await supabase
       .from('students')
-      .update({ password })
+      .update({ password: hashedPassword })
       .eq('id', studentId);
 
     if (error) throw error;
