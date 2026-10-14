@@ -103,12 +103,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3. 역할 판정 (DB의 role 기준 + 초기 마스터 계정 DB 역할 마이그레이션)
-    let isSuperAdmin = manager.role === 'SUPER_ADMIN';
+    // 3. 역할 판정 (DB의 role 기준: ADMIN 또는 SUPER_ADMIN)
+    let isSuperAdmin = manager.role === 'ADMIN' || manager.role === 'SUPER_ADMIN';
     if (!isSuperAdmin && (manager.login_id === 'master_kwak' || manager.name === '곽명용')) {
       isSuperAdmin = true;
       try {
-        await supabase.from('managers').update({ role: 'SUPER_ADMIN' }).eq('id', manager.id);
+        await supabase.from('managers').update({ role: 'ADMIN' }).eq('id', manager.id);
       } catch (e) {
         console.error('Role update error:', e);
       }

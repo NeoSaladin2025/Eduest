@@ -17,7 +17,7 @@ async function checkAdminAuth() {
 
 // 🛡️ 최고 관리자 판정 헬퍼 (역할 기반)
 function isSuperAdmin(manager: { role?: string; login_id?: string }) {
-  return manager.role === 'SUPER_ADMIN' || manager.login_id?.trim().toLowerCase() === 'master_kwak';
+  return manager.role === 'ADMIN' || manager.role === 'SUPER_ADMIN' || manager.login_id?.trim().toLowerCase() === 'master_kwak';
 }
 
 // 1. GET: 선생님 목록 전체 조회 (보안: password 필드 원천 제외)
@@ -103,7 +103,7 @@ export async function POST(req: Request) {
         name: trimmedName,
         login_id: trimmedLoginId,
         password: hashedPassword,
-        role: role === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'TEACHER',
+        role: (role === 'SUPER_ADMIN' || role === 'ADMIN') ? 'ADMIN' : 'TEACHER',
       })
       .select('id, login_id, name, role, created_at')
       .single();
@@ -186,7 +186,7 @@ export async function PUT(req: Request) {
     if (trimmedName) updatePayload.name = trimmedName;
     if (trimmedLoginId) updatePayload.login_id = trimmedLoginId;
     if (role && !isSuperAdmin(currentTeacher)) {
-      updatePayload.role = role === 'SUPER_ADMIN' ? 'SUPER_ADMIN' : 'TEACHER';
+      updatePayload.role = (role === 'SUPER_ADMIN' || role === 'ADMIN') ? 'ADMIN' : 'TEACHER';
     }
 
     // 🔒 [보안 강화]: 비밀번호가 전달된 경우 Bcrypt 해시로 변환하여 덮어쓰기
