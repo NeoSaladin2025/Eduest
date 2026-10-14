@@ -20,30 +20,31 @@ export default function LandingPage() {
     setIsVisible(true);
   }, []);
 
-  // 🔑 관리자 로그인 로직 (성함 + 비밀번호 대조)
+  // 🔑 관리자 로그인 로직 (보안 강화: 서버 측 서명 세션 발급)
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
     try {
-      // 1. managers 테이블에서 성함(name) 또는 계정ID(login_id)와 비밀번호가 일치하는 데이터 탐색
-      const targetIdentifier = adminName.trim();
-      const { data: manager, error } = await supabase
-        .from('managers')
-        .select('*')
-        .or(`name.eq.${targetIdentifier},login_id.eq.${targetIdentifier}`)
-        .eq('password', password.trim())
-        .maybeSingle();
+      const res = await fetch('/api/auth/teacher-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier: adminName.trim(),
+          password: password.trim(),
+        }),
+      });
 
-      if (error || !manager) {
-        alert('등록된 성함/아이디 또는 비밀번호가 일치하지 않습니다! 😢');
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        alert(data.error || '등록된 성함/아이디 또는 비밀번호가 일치하지 않습니다! 😢');
         setLoading(false);
         return;
       }
 
-      // 2. 로그인 성공 시 성함을 로컬 스토리지에 저장 (선생님 페이지에서 보여주기용)
-      localStorage.setItem('currentAdminName', manager.name);
-      document.cookie = `currentAdminName=${encodeURIComponent(manager.name)}; path=/; max-age=86400; SameSite=Strict; Secure`;
+      // 2. 로그인 성공 시 성함을 로컬 스토리지에 저장 (선생님 화면 표시용)
+      localStorage.setItem('currentAdminName', data.adminName);
 
       // 3. 선생님 전용 메인으로 이동
       router.push('/teacher');

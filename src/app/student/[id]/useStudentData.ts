@@ -60,7 +60,7 @@ export function useStudentData(studentId: string) {
       try {
         setLoading(true);
         
-        // 1. 학생 기본 정보 로드 (unlocked_folders 배열 포함)
+        // 1. 학생 기본 정보 로드 (보안: 비밀번호 원문은 클라이언트 상태에서 제거)
         const { data: studentData } = await supabase
           .from('students')
           .select('*')
@@ -68,7 +68,12 @@ export function useStudentData(studentId: string) {
           .single();
           
         if (!studentData) return;
-        setStudent(studentData);
+        const sanitized = {
+          ...studentData,
+          has_password: !!studentData.password,
+        };
+        delete sanitized.password; // 🛡️ 브라우저 노출 방지
+        setStudent(sanitized);
 
         // 2. 라이브러리 트리 로드 (전체 구조를 가져와야 부모-자식 연결이 유지됨)
         // PostgREST 기본 max-rows(예: 1000) 때문에 한 번에만 select 하면 하위 폴더 행이 잘리고

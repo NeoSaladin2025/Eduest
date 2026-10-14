@@ -1,15 +1,20 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function proxy(request: NextRequest) {
-  // 쿠키에서 currentAdminName 가져오기
-  const adminName = request.cookies.get('currentAdminName')?.value;
+import { verifyAdminToken } from './lib/authUtils';
 
+export function proxy(request: NextRequest) {
   // /teacher 경로 및 하위 경로로 들어오는 요청 검증
   if (request.nextUrl.pathname.startsWith('/teacher')) {
-    if (!adminName) {
-      // 쿠키가 없거나 유효하지 않다면 홈 화면(/)으로 즉시 리다이렉트
-      return NextResponse.redirect(new URL('/', request.url));
+    const adminToken = request.cookies.get('admin_session_token')?.value;
+    const session = verifyAdminToken(adminToken);
+
+    // 서명된 유효 세션 토큰이 없거나 만료/위조된 경우 홈(/)으로 즉시 차단 리다이렉트
+    if (!session || !session.adminName) {
+      const response = NextResponse.redirect(new URL('/', request.url));
+      response.cookies.delete('admin_session_token');
+      response.cookies.delete('currentAdminName');
+      return response;
     }
   }
 

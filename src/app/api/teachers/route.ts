@@ -1,10 +1,19 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { verifyAdminToken } from '@/lib/authUtils';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+// 🛡️ 관리자 권한 검증 헬퍼
+async function checkAdminAuth() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get('admin_session_token')?.value;
+  return verifyAdminToken(token);
+}
 
 // 🛡️ 수퍼 관리자 식별 기준 (곽명용 원장님 절대 보호)
 function isSuperAdmin(manager: { login_id?: string; name?: string }) {
@@ -14,9 +23,14 @@ function isSuperAdmin(manager: { login_id?: string; name?: string }) {
   );
 }
 
-// 1. GET: 선생님 목록 전체 조회
+// 1. GET: 선생님 목록 전체 조회 (오직 유효한 관리자만 열람 가능)
 export async function GET() {
   try {
+    const session = await checkAdminAuth();
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '인증되지 않은 요청입니다. (로그인 필요)' }, { status: 401 });
+    }
+
     const { data: managers, error } = await supabase
       .from('managers')
       .select('id, login_id, name, password, role, created_at')
@@ -44,6 +58,14 @@ export async function GET() {
 // 2. POST: 신규 선생님 등록 (한글 ID 및 자유 자릿수 비밀번호 허용)
 export async function POST(req: Request) {
   try {
+    const session = await checkAdminAuth();
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '인증되지 않은 요청입니다. (로그인 필요)' }, { status: 401 });
+    }
+    if (session.role !== 'SUPER_ADMIN' && session.adminName !== '곽명용') {
+      return NextResponse.json({ error: '선생님 계정 생성 권한이 없습니다. (원장님 전용)' }, { status: 403 });
+    }
+
     const body = await req.json();
     const { name, login_id, password, role = 'TEACHER' } = body;
 
@@ -108,6 +130,14 @@ export async function POST(req: Request) {
 // 3. PUT: 선생님 정보 수정 (성함, ID, 비밀번호 등)
 export async function PUT(req: Request) {
   try {
+    const session = await checkAdminAuth();
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '인증되지 않은 요청입니다. (로그인 필요)' }, { status: 401 });
+    }
+    if (session.role !== 'SUPER_ADMIN' && session.adminName !== '곽명용') {
+      return NextResponse.json({ error: '선생님 계정 수정 권한이 없습니다. (원장님 전용)' }, { status: 403 });
+    }
+
     const body = await req.json();
     const { id, name, login_id, password, role } = body;
 
@@ -187,6 +217,14 @@ export async function PUT(req: Request) {
 // 4. DELETE: 선생님 계정 삭제 (수퍼 관리자 삭제 절대 금지!)
 export async function DELETE(req: Request) {
   try {
+    const session = await checkAdminAuth();
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '인증되지 않은 요청입니다. (로그인 필요)' }, { status: 401 });
+    }
+    if (session.role !== 'SUPER_ADMIN' && session.adminName !== '곽명용') {
+      return NextResponse.json({ error: '선생님 계정 삭제 권한이 없습니다. (원장님 전용)' }, { status: 403 });
+    }
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get('id');
 

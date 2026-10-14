@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis'; // 👈 구글 API 추가
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { verifyAdminToken } from '@/lib/authUtils';
 
 // 1️⃣ Supabase 초기화
 const supabase = createClient(
@@ -24,6 +26,14 @@ const getGoogleAuth = () => {
 
 export async function DELETE(req: Request) {
   try {
+    // 🛡️ 관리자 권한 확인 (외부 무단 호출 차단)
+    const cookieStore = await cookies();
+    const token = cookieStore.get('admin_session_token')?.value;
+    const session = verifyAdminToken(token);
+    if (!session || !session.adminName) {
+      return NextResponse.json({ error: '관리자 권한이 필요합니다.' }, { status: 401 });
+    }
+
     const { studentId, folderId } = await req.json();
 
     if (!studentId) {

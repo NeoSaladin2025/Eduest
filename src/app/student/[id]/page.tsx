@@ -126,7 +126,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
     studentId: student?.id,
     studentName: student?.name,
-    enabled: !!student?.id && (!student?.password || pwdVerified),
+    enabled: !!student?.id && (!student?.has_password && !student?.password || pwdVerified),
     onLogout: () => {
       setPwdVerified(false);
     },
@@ -720,19 +720,35 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
   }, [selectedRecord, selectedTab, dataCache, fetchFileContent]);
 
-  // ── 비번 확인 ──────────────────────────────────────────────
-  const handlePwdSubmit = () => {
-    if (pwdInput.trim() === student?.password) {
-      setPwdVerified(true);
-      setPwdError(false);
-    } else {
+  // ── 비번 확인 (보안 강화: 서버 측 안전 검증) ──────────────────────────────────────────────
+  const handlePwdSubmit = async () => {
+    if (!pwdInput.trim()) return;
+    try {
+      const res = await fetch('/api/student/verify-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: resolvedParams.id,
+          password: pwdInput.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPwdVerified(true);
+        setPwdError(false);
+      } else {
+        setPwdError(true);
+        setPwdInput('');
+      }
+    } catch {
       setPwdError(true);
       setPwdInput('');
     }
   };
 
   // 비번 잠금 화면 (로딩 끝, 비번 있는 학생, 미인증)
-  if (!loading && student?.password && !pwdVerified) {
+  const isLocked = !loading && (student?.has_password || student?.password) && !pwdVerified;
+  if (isLocked) {
     return (
       <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6">
         {renderSessionGuardModals()}
