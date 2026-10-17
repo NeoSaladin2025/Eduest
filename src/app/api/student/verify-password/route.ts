@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
-import { signStudentToken, comparePassword, hashPassword, isBcryptHash } from '@/lib/authUtils';
+import { signStudentToken, comparePassword } from '@/lib/authUtils';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -130,20 +130,6 @@ export async function POST(req: Request) {
 
     // 성공 시 실패 카운트 초기화
     clearStudentFailure(rateKey);
-
-    // 🌟 [자동 보안 업그레이드]: 아직 평문인 학생 비밀번호는 로그인 성공 즉시 Bcrypt 해시로 자동 치환 저장!
-    if (!isBcryptHash(student.password)) {
-      try {
-        const secureHash = await hashPassword(trimmedPw);
-        await supabase
-          .from('students')
-          .update({ password: secureHash })
-          .eq('id', trimmedId);
-        console.log(`🔒 [학생 보안 업그레이드] '${student.name}' 학생 비밀번호가 Bcrypt 해시로 자동 암호화되었습니다.`);
-      } catch (hashErr) {
-        console.error('Student auto hash upgrade error:', hashErr);
-      }
-    }
 
     // 2. 인증 성공: 암호화된 학생 세션 서명 토큰 발급
     const token = signStudentToken(trimmedId);

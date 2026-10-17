@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { verifyAdminToken, hashPassword } from '@/lib/authUtils';
+import { verifyAdminToken } from '@/lib/authUtils';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -24,12 +24,12 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: '필수 값이 없습니다.' }, { status: 400 });
     }
 
-    // 🔒 [보안 강화]: 학생 비밀번호도 Bcrypt 해시로 안전하게 암호화하여 저장
-    const hashedPassword = await hashPassword(String(password).trim());
+    // 💡 학생 비밀번호는 선생님 관리 화면에서 식별 및 발급을 위해 평문(4자리 등)으로 저장
+    const plainPassword = String(password).trim();
 
     const { error } = await supabase
       .from('students')
-      .update({ password: hashedPassword })
+      .update({ password: plainPassword })
       .eq('id', studentId);
 
     if (error) throw error;

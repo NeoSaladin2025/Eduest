@@ -818,7 +818,7 @@ export default function StudentManagerMain() {
             <p className="text-[10px] text-slate-400 mb-6 text-center">
               현재: <span className="font-black text-amber-600">
                 {pwdStudent.password 
-                  ? (pwdStudent.password.startsWith('$2') ? '🔒 Bcrypt 암호화 보호됨' : pwdStudent.password) 
+                  ? (pwdStudent.password.startsWith('$2') ? '🔒 이전 버전 암호화됨 (새 번호 설정 시 평문 유지)' : pwdStudent.password) 
                   : '없음'}
               </span>
             </p>
