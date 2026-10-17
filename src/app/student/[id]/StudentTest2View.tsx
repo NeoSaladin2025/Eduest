@@ -38,6 +38,7 @@ import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { supabase } from '@/lib/supabase';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
+import ZoomableImageViewer from './ZoomableImageViewer';
 
 interface StudentTest2ViewProps {
   studentId: string;
@@ -1780,11 +1781,11 @@ export default function StudentTest2View({
                   </div>
 
                   {question.image_url ? (
-                    <div className="w-full flex-1 flex justify-center items-center py-4">
-                      <img
+                    <div className="w-full flex-1 flex justify-center items-center py-2 min-h-[400px]">
+                      <ZoomableImageViewer
                         src={question.image_url}
                         alt={`문제 ${currentQuestionIndex + 1}번`}
-                        className="max-w-full max-h-[65vh] object-contain rounded-2xl shadow-2xl bg-white p-2"
+                        resetKey={question.id || currentQuestionIndex}
                       />
                     </div>
                   ) : question.question_html ? (
