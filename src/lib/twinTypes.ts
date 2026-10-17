@@ -7,6 +7,7 @@ export interface TwinQuestionItem {
   raw_answer: string;
   answer: string;
   solution_drive_id: string;
+  question_html?: string;
 }
 
 export interface TwinRoundData {

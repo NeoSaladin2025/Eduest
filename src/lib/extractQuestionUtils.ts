@@ -263,21 +263,43 @@ export function extractQuestionData(
     }
   }
 
+  // 1-6. HTML 문제 지문 추출 (이미지가 없는 순수 HTML 문제인 경우 대비)
+  let questionHtml = "";
+  const mQuestion = html.match(/<div\b[^>]*class=["'][^"']*tex2jax_process[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<hr/i);
+  if (mQuestion) {
+    questionHtml = mQuestion[1].trim();
+  }
+
   // 2. 정답 추출
   let rawAnswer = "";
   let cleanAnswer = "";
 
-  // 2-1. final-answer-text 태그 검색 (온전한 </span>까지 매칭하여 내부 MathML 수식 태그 조기 종료 방지)
-  const mAnsSpan = html.match(/<span\b[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
-  if (mAnsSpan) {
-    rawAnswer = mAnsSpan[1]
+  // 2-0. Details summary 참고 정답 패턴 (<summary>...정답...</summary>\s*<div...>...</div>)
+  const mDetails = html.match(/<summary\b[^>]*>[\s\S]*?정답[\s\S]*?<\/summary>\s*<div\b[^>]*>([\s\S]*?)<\/div>/i);
+  if (mDetails) {
+    rawAnswer = mDetails[1]
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/&nbsp;/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/[ \t]+/g, ' ')
       .trim();
-  } else {
-    // 2-2. final-answer-box 박스 전체 검색
+  }
+
+  // 2-1. final-answer-text 태그 검색 (온전한 </span>까지 매칭하여 내부 MathML 수식 태그 조기 종료 방지)
+  if (!rawAnswer) {
+    const mAnsSpan = html.match(/<span\b[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+    if (mAnsSpan) {
+      rawAnswer = mAnsSpan[1]
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .trim();
+    }
+  }
+
+  // 2-2. final-answer-box 박스 전체 검색
+  if (!rawAnswer) {
     const mAnsBox = html.match(/class=["'][^"']*final-answer-box[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
     if (mAnsBox) {
       rawAnswer = mAnsBox[1]
@@ -287,24 +309,38 @@ export function extractQuestionData(
         .replace(/<[^>]+>/g, ' ')
         .replace(/[ \t]+/g, ' ')
         .trim();
-    } else {
-      // 2-3. 정답 표기 패턴 검색
-      const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
-      if (mAns2) {
-        rawAnswer = mAns2[1].replace(/<[^>]+>/g, ' ').trim();
-      }
+    }
+  }
+
+  // 2-3. 정답 표기 패턴 검색
+  if (!rawAnswer) {
+    const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
+    if (mAns2) {
+      rawAnswer = mAns2[1].replace(/<[^>]+>/g, ' ').trim();
     }
   }
 
   if (rawAnswer) {
-    // 객관식 번호(①~⑤ 또는 1~5) 추출 시도
-    const normalized = normalizeCircledNumber(rawAnswer);
-    const numMatch = normalized.match(/^([1-5])\b/);
-    if (numMatch) {
-      cleanAnswer = numMatch[1];
+    // 1) 원형 기호(①~⑤ 또는 ❶~❺)가 본문 어디든 포함되어 있는지 우선 탐색
+    const circledMatch = rawAnswer.match(/[①②③④⑤❶❷❸❹❺]/);
+    if (circledMatch) {
+      cleanAnswer = normalizeCircledNumber(circledMatch[0]);
     } else {
-      // 주관식 답안
-      cleanAnswer = normalized.trim();
+      // 2) '정답: 3' 또는 '답: 3' 패턴
+      const ansLabelMatch = rawAnswer.match(/(?:정답|답)\s*[:：]?\s*([1-5])\b/);
+      if (ansLabelMatch) {
+        cleanAnswer = ansLabelMatch[1];
+      } else {
+        // 3) 맨 앞이 숫자로 시작하는 경우
+        const normalized = normalizeCircledNumber(rawAnswer);
+        const numMatch = normalized.match(/^([1-5])\b/);
+        if (numMatch) {
+          cleanAnswer = numMatch[1];
+        } else {
+          // 주관식 답안
+          cleanAnswer = normalized.trim();
+        }
+      }
     }
   }
 
@@ -315,6 +351,7 @@ export function extractQuestionData(
 
   return {
     imageUrl,
+    questionHtml,
     rawAnswer: rawAnswer || "정답 정보 없음",
     answer: finalAns,
     is_descriptive: isDescriptive,

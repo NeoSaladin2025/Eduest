@@ -70,7 +70,7 @@ async function saveTwinStore(store: TwinStoreData) {
   if (error) throw new Error(`쌍둥이 데이터 저장 실패: ${error.message}`);
 }
 
-// GET: 쌍둥이 데이터 조회 및 (옵션) 구글 드라이브 스캔
+// GET: 쌍둥이 데이터 조회 및 구글 드라이브 정밀 스캔
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -95,83 +95,86 @@ export async function GET(req: NextRequest) {
       }, { status: 500 });
     }
 
-    // 1. 드라이브에서 이름에 '쌍둥이'가 포함된 폴더들 검색
-    const twinFoldersRes = await drive.files.list({
-      q: "name contains '쌍둥이' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
-      fields: "files(id, name, parents)",
-      pageSize: 100,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-    });
+    // 1. 해당 학년(grade)의 원천 라이브러리 폴더 목록 조회 (Supabase)
+    const { data: dbFolders } = await supabase
+      .from("exam_library")
+      .select("drive_id, name, parent_id")
+      .eq("type", "folder")
+      .eq("grade", grade);
 
-    const twinFolders = twinFoldersRes.data.files || [];
+    const candidateFolders = dbFolders || [];
     const detected: DetectedTwinFolder[] = [];
 
-    // 2. 각 [쌍둥이] 폴더의 부모(원본 회차 폴더) 정보 조회
-    for (const tf of twinFolders) {
-      if (!tf.id || !tf.parents || tf.parents.length === 0) continue;
-      const parentFolderId = tf.parents[0];
+    // 2. 각 회차/상위 폴더 하위에 [쌍둥이] 폴더가 있는지 병렬 정밀 검색 (10개씩 청크)
+    const CHUNK_SIZE = 10;
+    for (let i = 0; i < candidateFolders.length; i += CHUNK_SIZE) {
+      const chunk = candidateFolders.slice(i, i + CHUNK_SIZE);
+      await Promise.all(
+        chunk.map(async (folder) => {
+          try {
+            const twinFoldersRes = await drive.files.list({
+              q: `'${folder.drive_id}' in parents and name contains '쌍둥이' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+              fields: "files(id, name, parents)",
+              pageSize: 20,
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+            });
 
-      // 부모 폴더 이름 조회
-      let parentName = "회차 폴더";
-      try {
-        const parentRes = await drive.files.get({
-          fileId: parentFolderId,
-          fields: "id, name",
-          supportsAllDrives: true,
-        });
-        if (parentRes.data.name) {
-          parentName = parentRes.data.name;
-        }
-      } catch (e) {
-        console.warn(`Parent folder get failed for ${parentFolderId}:`, e);
-      }
+            const twinFolders = twinFoldersRes.data.files || [];
+            for (const tf of twinFolders) {
+              if (!tf.id) continue;
 
-      // [쌍둥이] 하위의 회차 폴더들(1차, 2차, 3차...) 조회
-      const subRoundsRes = await drive.files.list({
-        q: `'${tf.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        fields: "files(id, name)",
-        orderBy: "name",
-        pageSize: 50,
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-      });
+              // [쌍둥이] 하위의 회차 폴더들(1차, 2차, 3차...) 조회
+              const subRoundsRes = await drive.files.list({
+                q: `'${tf.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+                fields: "files(id, name)",
+                orderBy: "name",
+                pageSize: 50,
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+              });
 
-      const subRounds = subRoundsRes.data.files || [];
-      const detectedRounds: Array<{ round_name: string; folder_id: string; file_count: number }> = [];
+              const subRounds = subRoundsRes.data.files || [];
+              const detectedRounds: Array<{ round_name: string; folder_id: string; file_count: number }> = [];
 
-      for (const sr of subRounds) {
-        if (!sr.id || !sr.name) continue;
-        // 각 회차 폴더 내 파일 개수
-        const filesRes = await drive.files.list({
-          q: `'${sr.id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
-          fields: "files(id)",
-          pageSize: 100,
-          supportsAllDrives: true,
-          includeItemsFromAllDrives: true,
-        });
-        const count = filesRes.data.files?.length || 0;
-        detectedRounds.push({
-          round_name: sr.name,
-          folder_id: sr.id,
-          file_count: count,
-        });
-      }
+              for (const sr of subRounds) {
+                if (!sr.id || !sr.name) continue;
+                // 각 회차 폴더 내 파일 개수 조회
+                const filesRes = await drive.files.list({
+                  q: `'${sr.id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+                  fields: "files(id)",
+                  pageSize: 100,
+                  supportsAllDrives: true,
+                  includeItemsFromAllDrives: true,
+                });
+                const count = filesRes.data.files?.length || 0;
+                detectedRounds.push({
+                  round_name: sr.name,
+                  folder_id: sr.id,
+                  file_count: count,
+                });
+              }
 
-      // 기존 동기화 상태와 비교하여 신규 유무 판별
-      const existingFolderData = store.folders[parentFolderId];
-      const existingRounds = existingFolderData ? Object.keys(existingFolderData.rounds || {}) : [];
-      const hasNew = detectedRounds.some((r: any) => !existingRounds.includes(r.round_name));
+              // 기존 동기화 상태와 비교하여 신규 유무 판별
+              const existingFolderData = store.folders[folder.drive_id];
+              const existingRounds = existingFolderData ? Object.keys(existingFolderData.rounds || {}) : [];
+              const hasNew = detectedRounds.length === 0 || detectedRounds.some((r) => !existingRounds.includes(r.round_name));
 
-      detected.push({
-        parent_folder_id: parentFolderId,
-        parent_folder_name: parentName,
-        twin_root_folder_id: tf.id,
-        grade,
-        detected_rounds: detectedRounds,
-        has_new: hasNew,
-        synced_round_count: existingRounds.length,
-      });
+              detected.push({
+                parent_folder_id: folder.drive_id,
+                parent_folder_name: folder.name,
+                twin_root_folder_id: tf.id,
+                grade,
+                detected_rounds: detectedRounds,
+                has_new: hasNew,
+                synced_round_count: existingRounds.length,
+              });
+            }
+          } catch (scanErr: any) {
+            console.warn(`Scan failed for folder ${folder.name} (${folder.drive_id}):`, scanErr?.message);
+          }
+        })
+      );
     }
 
     return NextResponse.json({
@@ -185,7 +188,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST: 특정 폴더 또는 전체 감지된 폴더의 쌍둥이 문제 고속 동기화
+// POST: 특정 폴더 또는 선택 폴더의 쌍둥이 문제 고속 동기화
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -202,129 +205,188 @@ export async function POST(req: NextRequest) {
 
     const store = await getTwinStore();
 
-    // 1. 드라이브에서 '쌍둥이' 폴더 검색
-    const twinFoldersRes = await drive.files.list({
-      q: "name contains '쌍둥이' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
-      fields: "files(id, name, parents)",
-      pageSize: 100,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-    });
+    // 1. 전체 폴더 목록 조회 (자식 폴더 재귀 확장용)
+    const { data: allFolders } = await supabase
+      .from("exam_library")
+      .select("drive_id, name, parent_id, grade")
+      .eq("type", "folder");
 
-    const twinFolders = twinFoldersRes.data.files || [];
+    const allFolderList = allFolders || [];
+    let targetFolderMap = new Map<string, string>(); // folderId -> folderName
+
+    if (Array.isArray(parentFolderIds) && parentFolderIds.length > 0) {
+      // 사용자가 선택한 폴더 및 하위 모든 폴더(자식, 손자) 재귀 탐색
+      const folderSet = new Set<string>(parentFolderIds);
+      const queue = [...parentFolderIds];
+
+      while (queue.length > 0) {
+        const currId = queue.shift()!;
+        const currObj = allFolderList.find((f) => f.drive_id === currId);
+        targetFolderMap.set(currId, currObj?.name || "회차 폴더");
+
+        const children = allFolderList.filter((f) => f.parent_id === currId);
+        for (const ch of children) {
+          if (!folderSet.has(ch.drive_id)) {
+            folderSet.add(ch.drive_id);
+            queue.push(ch.drive_id);
+          }
+        }
+      }
+    } else {
+      // 지정된 대상이 없으면 현재 학년의 모든 폴더 검사
+      const filtered = grade ? allFolderList.filter((f) => f.grade === grade) : allFolderList;
+      for (const f of filtered) {
+        targetFolderMap.set(f.drive_id, f.name);
+      }
+    }
+
+    const targetIds = Array.from(targetFolderMap.keys());
     let syncedRoundsCount = 0;
     let syncedQuestionsCount = 0;
 
-    for (const tf of twinFolders) {
-      if (!tf.id || !tf.parents || tf.parents.length === 0) continue;
-      const parentFolderId = tf.parents[0];
+    // 2. 대상 폴더들 각각의 직속 [쌍둥이] 폴더 검색 (병렬 청크 처리)
+    const CHUNK_SIZE = 10;
+    for (let i = 0; i < targetIds.length; i += CHUNK_SIZE) {
+      const chunk = targetIds.slice(i, i + CHUNK_SIZE);
 
-      // 필터링: parentFolderIds가 지정되어 있으면 그 대상만 진행
-      if (Array.isArray(parentFolderIds) && parentFolderIds.length > 0) {
-        if (!parentFolderIds.includes(parentFolderId)) continue;
-      }
-
-      // 부모 폴더 이름 조회
-      let parentName = "회차 폴더";
-      try {
-        const parentRes = await drive.files.get({
-          fileId: parentFolderId,
-          fields: "id, name",
-          supportsAllDrives: true,
-        });
-        if (parentRes.data.name) parentName = parentRes.data.name;
-      } catch (e) {}
-
-      // [쌍둥이] 하위의 회차 폴더들(1차, 2차, 3차...) 조회
-      const subRoundsRes = await drive.files.list({
-        q: `'${tf.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-        fields: "files(id, name)",
-        orderBy: "name",
-        pageSize: 50,
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-      });
-
-      const subRounds = subRoundsRes.data.files || [];
-      const roundsMap: Record<string, TwinRoundData> = store.folders[parentFolderId]?.rounds || {};
-
-      for (const sr of subRounds) {
-        if (!sr.id || !sr.name) continue;
-
-        // 회차 폴더 내 파일들(html, png) 조회
-        const filesRes = await drive.files.list({
-          q: `'${sr.id}' in parents and trashed = false`,
-          fields: "files(id, name, mimeType)",
-          pageSize: 200,
-          supportsAllDrives: true,
-          includeItemsFromAllDrives: true,
-        });
-
-        const files = filesRes.data.files || [];
-        const htmlFiles = files.filter((f: any) => f.name && f.name.toLowerCase().endsWith(".html"));
-        const pngFiles = files.filter((f: any) => f.name && (f.name.toLowerCase().endsWith(".png") || f.name.toLowerCase().endsWith(".jpg")));
-
-        const roundItems: TwinQuestionItem[] = [];
-
-        // HTML 파일별로 문제 이미지 및 정답 추출
-        for (const hf of htmlFiles) {
-          if (!hf.id || !hf.name) continue;
-          const qNum = parseQuestionNum(hf.name);
-          if (qNum === null) continue;
-
-          // 동일 번호의 PNG 파일 찾기
-          const stem = hf.name.replace(/\.[^/.]+$/, "");
-          const matchedPng = pngFiles.find((p: any) => p.name && p.name.replace(/\.[^/.]+$/, "") === stem);
-
-          const html = await fetchHtmlContent(hf.id);
-          let imageUrl = matchedPng?.id ? `https://lh3.googleusercontent.com/d/${matchedPng.id}` : "";
-          let rawAnswer = "";
-          let answer = "";
-
-          if (html) {
-            const extracted = extractQuestionData(html, {
-              drive_id: hf.id,
-              name: hf.name,
-              question_image_drive_id: matchedPng?.id || null,
+      await Promise.all(
+        chunk.map(async (pId) => {
+          try {
+            const twinFoldersRes = await drive.files.list({
+              q: `'${pId}' in parents and name contains '쌍둥이' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+              fields: "files(id, name)",
+              pageSize: 10,
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
             });
-            if (extracted.imageUrl) imageUrl = extracted.imageUrl;
-            rawAnswer = extracted.rawAnswer;
-            answer = extracted.answer;
+
+            const twinFolders = twinFoldersRes.data.files || [];
+            if (twinFolders.length === 0) return;
+
+            const parentName = targetFolderMap.get(pId) || "회차 폴더";
+
+            for (const tf of twinFolders) {
+              if (!tf.id) continue;
+
+              // [쌍둥이] 하위의 회차 폴더들(1차, 2차, 3차...) 조회
+              const subRoundsRes = await drive.files.list({
+                q: `'${tf.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+                fields: "files(id, name)",
+                orderBy: "name",
+                pageSize: 50,
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+              });
+
+              const subRounds = subRoundsRes.data.files || [];
+              const roundsMap: Record<string, TwinRoundData> = store.folders[pId]?.rounds || {};
+
+              for (const sr of subRounds) {
+                if (!sr.id || !sr.name) continue;
+
+                // 회차 폴더 내 파일들(html, png) 조회
+                const filesRes = await drive.files.list({
+                  q: `'${sr.id}' in parents and trashed = false`,
+                  fields: "files(id, name, mimeType)",
+                  pageSize: 200,
+                  supportsAllDrives: true,
+                  includeItemsFromAllDrives: true,
+                });
+
+                const files = filesRes.data.files || [];
+                const htmlFiles = files
+                  .filter((f: any) => f.name && f.name.toLowerCase().endsWith(".html"))
+                  .sort((a: any, b: any) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+                const pngFiles = files.filter(
+                  (f: any) => f.name && (f.name.toLowerCase().endsWith(".png") || f.name.toLowerCase().endsWith(".jpg"))
+                );
+
+                const roundItems: TwinQuestionItem[] = [];
+
+                // HTML 파일별로 문제 이미지 및 정답 추출 (10개씩 병렬 파싱)
+                for (let hIdx = 0; hIdx < htmlFiles.length; hIdx += 10) {
+                  const htmlChunk = htmlFiles.slice(hIdx, hIdx + 10);
+                  const parsedResults = await Promise.all(
+                    htmlChunk.map(async (hf: any) => {
+                      if (!hf.id || !hf.name) return null;
+                      const qNum = parseQuestionNum(hf.name);
+                      if (qNum === null) return null;
+
+                      // 동일 번호의 PNG 파일 찾기
+                      const stem = hf.name.replace(/\.[^/.]+$/, "");
+                      const matchedPng = pngFiles.find(
+                        (p: any) => p.name && p.name.replace(/\.[^/.]+$/, "") === stem
+                      );
+
+                      const html = await fetchHtmlContent(hf.id);
+                      let imageUrl = matchedPng?.id ? `https://lh3.googleusercontent.com/d/${matchedPng.id}` : "";
+                      let rawAnswer = "";
+                      let answer = "";
+                      let questionHtml = "";
+
+                      if (html) {
+                        const extracted = extractQuestionData(html, {
+                          drive_id: hf.id,
+                          name: hf.name,
+                          question_image_drive_id: matchedPng?.id || null,
+                        });
+                        if (extracted.imageUrl) imageUrl = extracted.imageUrl;
+                        rawAnswer = extracted.rawAnswer;
+                        answer = extracted.answer;
+                        if ((extracted as any).questionHtml) {
+                          questionHtml = (extracted as any).questionHtml;
+                        }
+                      }
+
+                      return {
+                        question_number: qNum,
+                        name: hf.name,
+                        drive_id: hf.id,
+                        question_image_drive_id: matchedPng?.id || null,
+                        image_url: imageUrl,
+                        raw_answer: rawAnswer,
+                        answer: answer,
+                        solution_drive_id: hf.id,
+                        question_html: questionHtml || undefined,
+                      } as TwinQuestionItem;
+                    })
+                  );
+
+                  for (const item of parsedResults) {
+                    if (item) {
+                      roundItems.push(item);
+                      syncedQuestionsCount++;
+                    }
+                  }
+                }
+
+                // 번호 오름차순 정렬
+                roundItems.sort((a, b) => a.question_number - b.question_number);
+
+                roundsMap[sr.name] = {
+                  round_name: sr.name,
+                  round_number: parseRoundNum(sr.name),
+                  folder_id: sr.id,
+                  items: roundItems,
+                };
+                syncedRoundsCount++;
+              }
+
+              store.folders[pId] = {
+                parent_folder_id: pId,
+                parent_folder_name: parentName,
+                twin_root_folder_id: tf.id,
+                grade: grade || "고1",
+                rounds: roundsMap,
+                updated_at: new Date().toISOString(),
+              };
+            }
+          } catch (syncFolderErr: any) {
+            console.warn(`Sync error on folder ${pId}:`, syncFolderErr?.message);
           }
-
-          roundItems.push({
-            question_number: qNum,
-            name: hf.name,
-            drive_id: hf.id,
-            question_image_drive_id: matchedPng?.id || null,
-            image_url: imageUrl,
-            raw_answer: rawAnswer,
-            answer: answer,
-            solution_drive_id: hf.id,
-          });
-          syncedQuestionsCount++;
-        }
-
-        // 번호 오름차순 정렬
-        roundItems.sort((a, b) => a.question_number - b.question_number);
-
-        roundsMap[sr.name] = {
-          round_name: sr.name,
-          round_number: parseRoundNum(sr.name),
-          folder_id: sr.id,
-          items: roundItems,
-        };
-        syncedRoundsCount++;
-      }
-
-      store.folders[parentFolderId] = {
-        parent_folder_id: parentFolderId,
-        parent_folder_name: parentName,
-        twin_root_folder_id: tf.id,
-        grade: grade || "고1",
-        rounds: roundsMap,
-        updated_at: new Date().toISOString(),
-      };
+        })
+      );
     }
 
     // DB 영구 저장

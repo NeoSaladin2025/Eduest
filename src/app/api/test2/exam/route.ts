@@ -30,6 +30,10 @@ export interface ExamQuestion {
   is_descriptive?: boolean;
   question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
   sub_questions?: ExamSubQuestion[];
+  is_twin?: boolean;
+  twin_round?: string;
+  parent_question_id?: string;
+  question_html?: string;
 }
 
 export interface StudentOverrideConfig {

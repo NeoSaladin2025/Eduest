@@ -1787,6 +1787,20 @@ export default function StudentTest2View({
                         className="max-w-full max-h-[65vh] object-contain rounded-2xl shadow-2xl bg-white p-2"
                       />
                     </div>
+                  ) : question.question_html ? (
+                    <div className="w-full flex-1 flex justify-center items-center py-4">
+                      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-4 overflow-hidden">
+                        <iframe
+                          srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
+<script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+<style>body{font-family:system-ui,-apple-system,sans-serif;font-size:16px;line-height:1.8;padding:12px;color:#1e293b;background:#ffffff;margin:0;}</style>
+</head><body><div class="tex2jax_process">${question.question_html}</div></body></html>`}
+                          className="w-full min-h-[350px] border-0"
+                          title="쌍둥이 문제 지문"
+                        />
+                      </div>
+                    </div>
                   ) : (
                     <div className="text-center space-y-2 py-20 text-slate-500 my-auto">
                       <AlertCircle size={40} className="mx-auto text-amber-500 opacity-60" />
@@ -2554,7 +2568,7 @@ export default function StudentTest2View({
                       </div>
                     </div>
 
-                    {q.image_url && (
+                    {q.image_url ? (
                       <div className="bg-white p-2 rounded-xl mb-4 max-h-48 overflow-hidden flex justify-center">
                         <img
                           src={q.image_url}
@@ -2562,7 +2576,19 @@ export default function StudentTest2View({
                           className="max-h-44 object-contain"
                         />
                       </div>
-                    )}
+                    ) : q.question_html ? (
+                      <div className="bg-white p-2 rounded-xl mb-4 max-h-48 overflow-hidden">
+                        <iframe
+                          srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
+<script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+<style>body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.6;padding:4px;color:#1e293b;background:#ffffff;margin:0;}</style>
+</head><body><div class="tex2jax_process">${q.question_html}</div></body></html>`}
+                          className="w-full h-40 border-0"
+                          title="쌍둥이 문제 지문"
+                        />
+                      </div>
+                    ) : null}
 
                     <div className="grid grid-cols-2 gap-2 text-xs pt-2 border-t border-white/5">
                       <div className="p-2 rounded-xl bg-white/5">

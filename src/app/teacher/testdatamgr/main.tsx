@@ -1366,6 +1366,29 @@ export default function TestDataManagerMain() {
                 )}
               </button>
 
+              {/* 🌟 신규 감지된 쌍둥이 일괄 동기화 버튼 (스캔 후 신규 회차가 감지된 경우 자동 노출) */}
+              {detectedTwinFolders.filter(d => d.has_new).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleSyncTwins(detectedTwinFolders.filter(d => d.has_new).map(d => d.parent_folder_id))}
+                  disabled={isSyncingTwins}
+                  className="px-3 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 text-white font-black rounded-xl transition-all shadow-xs flex items-center gap-1 cursor-pointer disabled:opacity-50 animate-pulse"
+                  title="감지된 모든 신규 쌍둥이 문제를 즉시 일괄 동기화합니다"
+                >
+                  {isSyncingTwins ? (
+                    <>
+                      <Loader2 size={13} className="animate-spin" />
+                      <span>동기화 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={12} />
+                      <span>신규 쌍둥이 일괄 동기화 ({detectedTwinFolders.filter(d => d.has_new).length})</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               {/* 선택된 폴더 쌍둥이 동기화 버튼 */}
               {selectedFolderIds.size > 0 && (
                 <button
