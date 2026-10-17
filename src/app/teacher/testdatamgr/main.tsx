@@ -183,7 +183,17 @@ export default function TestDataManagerMain() {
   const [detectedTwinFolders, setDetectedTwinFolders] = useState<DetectedTwinFolder[]>([]);
   const [isScanningTwins, setIsScanningTwins] = useState(false);
   const [isSyncingTwins, setIsSyncingTwins] = useState(false);
-  const [activeTwinDropdown, setActiveTwinDropdown] = useState<{ folderId: string; qNum: number } | null>(null);
+  // 👯 쌍둥이 하위 문항 아코디언 펼침 상태 (key: string)
+  const [expandedTwinKeys, setExpandedTwinKeys] = useState<Set<string>>(new Set());
+
+  const toggleTwinExpand = (key: string) => {
+    setExpandedTwinKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // 쌍둥이 저장소 로드
   const loadTwinStore = async (grade: string) => {
@@ -1046,93 +1056,122 @@ export default function TestDataManagerMain() {
                           const isSelected = selectedRawFiles.some(f => f.drive_id === fileNode.drive_id);
                           const qNum = parseQuestionNum(fileNode.name);
                           const twins = getQuestionTwins(node.drive_id, qNum);
-                          const isDropdownOpen = activeTwinDropdown?.folderId === node.drive_id && activeTwinDropdown?.qNum === qNum;
+                          const twinKey = `raw_${node.drive_id}_${qNum ?? fileNode.name}`;
+                          const isTwinExpanded = expandedTwinKeys.has(twinKey);
 
                           return (
-                            <div
-                              key={fileNode.drive_id}
-                              onClick={() => toggleRawFile({
-                                drive_id: fileNode.drive_id,
-                                name: fileNode.name,
-                                grade: selectedGrade,
-                                question_image_drive_id: fileNode.question_image_drive_id,
-                                folder_name: node.name,
-                                folder_path: currentPath.join(" > "),
-                                question_number: qNum,
-                                display_name: `[${node.name}] ${qNum ? `${qNum}번` : fileNode.name}`,
-                              })}
-                              className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
-                                isSelected ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200' : 'hover:bg-slate-100 text-slate-600'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 truncate flex-1 min-w-0">
-                                {isSelected ? (
-                                  <CheckSquare size={15} className="text-indigo-600 shrink-0" />
-                                ) : (
-                                  <Square size={15} className="text-slate-300 shrink-0" />
-                                )}
-                                <FileText size={14} className={isSelected ? 'text-indigo-600' : 'text-slate-400'} />
-                                
-                                {qNum && (
-                                  <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 rounded text-[10px] font-black shrink-0">
-                                    {qNum}번
-                                  </span>
-                                )}
-                                
-                                <span className="truncate">{fileNode.name}</span>
+                            <div key={fileNode.drive_id} className="space-y-1">
+                              {/* 1. 원본 문제 행 */}
+                              <div
+                                onClick={() => toggleRawFile({
+                                  drive_id: fileNode.drive_id,
+                                  name: fileNode.name,
+                                  grade: selectedGrade,
+                                  question_image_drive_id: fileNode.question_image_drive_id,
+                                  folder_name: node.name,
+                                  folder_path: currentPath.join(" > "),
+                                  question_number: qNum,
+                                  display_name: `[${node.name}] ${qNum ? `${qNum}번` : fileNode.name}`,
+                                })}
+                                className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
+                                  isSelected ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200' : 'hover:bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  {isSelected ? (
+                                    <CheckSquare size={15} className="text-indigo-600 shrink-0" />
+                                  ) : (
+                                    <Square size={15} className="text-slate-300 shrink-0" />
+                                  )}
+                                  <FileText size={14} className={isSelected ? 'text-indigo-600' : 'text-slate-400'} />
+                                  
+                                  {qNum && (
+                                    <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 rounded text-[10px] font-black shrink-0">
+                                      {qNum}번
+                                    </span>
+                                  )}
+                                  
+                                  <span className="truncate">{fileNode.name}</span>
 
-                                {/* 👯 쌍둥이 보유 뱃지 및 드롭다운 (스샷 1번 영역) */}
-                                {twins.length > 0 && (
-                                  <div className="relative shrink-0 ml-1" onClick={e => e.stopPropagation()}>
+                                  {/* 👯 쌍둥이 보유 뱃지 (클릭 시 하단에 쌍둥이 문제 아코디언 펼침/접기) */}
+                                  {twins.length > 0 && (
                                     <button
                                       type="button"
-                                      onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: node.drive_id, qNum: qNum! })}
-                                      className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
-                                      title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleTwinExpand(twinKey);
+                                      }}
+                                      className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer shrink-0 ml-1"
+                                      title="클릭하여 하위 쌍둥이 문제 목록 펼치기/접기"
                                     >
                                       <span>👯 쌍둥이 {twins.length}개</span>
-                                      <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+                                      <ChevronDown size={11} className={isTwinExpanded ? "rotate-180 transition-transform duration-200" : "transition-transform duration-200"} />
                                     </button>
+                                  )}
+                                </div>
 
-                                    {/* 회차별 쌍둥이 팝업 드롭다운 */}
-                                    {isDropdownOpen && (
-                                      <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
-                                        <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
-                                          <span>쌍둥이 문제 회차</span>
-                                          <span className="text-purple-600">{twins.length}개 보유</span>
-                                        </div>
-                                        {twins.map(tw => (
-                                          <button
-                                            key={tw.roundName}
-                                            type="button"
-                                            onClick={() => {
-                                              setActiveTwinDropdown(null);
-                                              handleOpenPreview(tw.item.drive_id);
-                                            }}
-                                            className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group"
-                                          >
-                                            <span>[{tw.roundName} 쌍둥이]</span>
-                                            <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
-                                              <Eye size={11} /> 열기
-                                            </span>
-                                          </button>
-                                        ))}
-                                      </div>
-                                    )}
+                                <div className="flex items-center gap-1 shrink-0 ml-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); handleOpenPreview(fileNode.drive_id); }}
+                                    className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors shrink-0"
+                                    title="원본 문제/해설 미리보기"
+                                  >
+                                    <Eye size={13} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* 2. 👯 클릭 시 하단에 펼쳐지는 쌍둥이 문제 목록 (아코디언 영역) */}
+                              {isTwinExpanded && twins.length > 0 && (
+                                <div className="ml-7 my-1 p-2 bg-gradient-to-r from-purple-50/90 to-indigo-50/70 border border-purple-200/90 rounded-xl space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                                  <div className="text-[10px] font-black text-purple-800 px-1.5 pb-1 border-b border-purple-100 flex items-center justify-between">
+                                    <span className="flex items-center gap-1">
+                                      <Sparkles size={11} className="text-purple-600" />
+                                      <span>연동된 쌍둥이 문제 ({twins.length}회차)</span>
+                                    </span>
+                                    <span className="text-[9px] text-purple-500 font-medium">눈(미리보기) 클릭 시 팝업</span>
                                   </div>
-                                )}
-                              </div>
 
-                              <div className="flex items-center gap-1 shrink-0 ml-2">
-                                <button
-                                  type="button"
-                                  onClick={(e) => { e.stopPropagation(); handleOpenPreview(fileNode.drive_id); }}
-                                  className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-white rounded transition-colors shrink-0"
-                                  title="원본 문제/해설 미리보기"
-                                >
-                                  <Eye size={13} />
-                                </button>
-                              </div>
+                                  {twins.map(tw => (
+                                    <div
+                                      key={tw.roundName}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenPreview(tw.item.drive_id);
+                                      }}
+                                      className="flex items-center justify-between px-2.5 py-1.5 bg-white hover:bg-purple-100/60 border border-purple-100 rounded-lg cursor-pointer transition-all text-xs group shadow-2xs"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="px-1.5 py-0.5 bg-purple-600 text-white rounded text-[9px] font-black shrink-0">
+                                          {tw.roundName} 쌍둥이
+                                        </span>
+                                        <span className="font-bold text-slate-700 truncate text-[11px]">
+                                          {tw.item.name}
+                                        </span>
+                                        {tw.item.answer && (
+                                          <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-[9px] font-bold shrink-0">
+                                            정답: {tw.item.answer}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenPreview(tw.item.drive_id);
+                                        }}
+                                        className="px-2 py-0.5 text-purple-600 hover:text-white hover:bg-purple-600 border border-purple-200 hover:border-purple-600 rounded-md transition-all flex items-center gap-1 text-[11px] font-black shrink-0 shadow-2xs cursor-pointer"
+                                        title="쌍둥이 문제 팝업 미리보기"
+                                      >
+                                        <Eye size={12} />
+                                        <span>미리보기</span>
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1723,100 +1762,122 @@ export default function TestDataManagerMain() {
                             const fallbackNum = parseQuestionNum(item.name);
                             const displayNum = item.question_number ?? fallbackNum;
 
+                            const bankTwins = getBankItemTwins(item);
+                            const bankTwinKey = `bank_${item.id}_${displayNum || 0}`;
+                            const isBankTwinExpanded = expandedTwinKeys.has(bankTwinKey);
+
                             return (
-                              <div
-                                key={item.id}
-                                className="flex items-center justify-between p-2 rounded-xl border border-slate-100 bg-slate-50/40 hover:bg-indigo-50/50 hover:border-indigo-100 transition-colors text-xs group"
-                              >
-                                <div className="flex items-center gap-2 min-w-0 flex-1">
-                                  {/* 번호 인덱스 */}
-                                  <span className="w-5 h-5 rounded-md bg-white text-slate-500 font-bold flex items-center justify-center text-[10px] shrink-0 border border-slate-200">
-                                    {itemIdx + 1}
-                                  </span>
-
-                                  {/* 회차 정보 배지 */}
-                                  {item.folder_name && item.folder_name !== group.title ? (
-                                    <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-black shrink-0 flex items-center gap-0.5">
-                                      <Folder size={10} className="text-indigo-600" />
-                                      <span>{item.folder_name}</span>
+                              <div key={item.id} className="space-y-1">
+                                <div className="flex items-center justify-between p-2 rounded-xl border border-slate-100 bg-slate-50/40 hover:bg-indigo-50/50 hover:border-indigo-100 transition-colors text-xs group">
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    {/* 번호 인덱스 */}
+                                    <span className="w-5 h-5 rounded-md bg-white text-slate-500 font-bold flex items-center justify-center text-[10px] shrink-0 border border-slate-200">
+                                      {itemIdx + 1}
                                     </span>
-                                  ) : null}
 
-                                  {/* 문제 번호 배지 */}
-                                  {displayNum ? (
-                                    <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
-                                      {displayNum}번
+                                    {/* 회차 정보 배지 */}
+                                    {item.folder_name && item.folder_name !== group.title ? (
+                                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-black shrink-0 flex items-center gap-0.5">
+                                        <Folder size={10} className="text-indigo-600" />
+                                        <span>{item.folder_name}</span>
+                                      </span>
+                                    ) : null}
+
+                                    {/* 문제 번호 배지 */}
+                                    {displayNum ? (
+                                      <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
+                                        {displayNum}번
+                                      </span>
+                                    ) : null}
+
+                                    {/* 파일명 */}
+                                    <span className="font-bold text-slate-700 truncate">
+                                      {item.name}
                                     </span>
-                                  ) : null}
 
-                                  {/* 파일명 */}
-                                  <span className="font-bold text-slate-700 truncate">
-                                    {item.name}
-                                  </span>
+                                    {/* 쌍둥이 배지 (클릭 시 아코디언 토글) */}
+                                    {bankTwins.length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleTwinExpand(bankTwinKey);
+                                        }}
+                                        className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer shrink-0 ml-1"
+                                        title="클릭하여 하위 쌍둥이 문제 목록 펼치기/접기"
+                                      >
+                                        <span>👯 쌍둥이 {bankTwins.length}개</span>
+                                        <ChevronDown size={11} className={isBankTwinExpanded ? "rotate-180 transition-transform duration-200" : "transition-transform duration-200"} />
+                                      </button>
+                                    )}
+                                  </div>
 
-                                  {/* 쌍둥이 배지 & 미리보기 드롭다운 */}
-                                  {(() => {
-                                    const bankTwins = getBankItemTwins(item);
-                                    const isDropdownOpen = activeTwinDropdown?.folderId === `bank_${item.id}` && activeTwinDropdown?.qNum === (displayNum || 0);
+                                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                                    <button
+                                      onClick={() => handleOpenPreview(item.drive_id)}
+                                      className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                    >
+                                      <Eye size={11} />
+                                      보기
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteBankItem(item)}
+                                      className="p-1 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+                                      title="카테고리에서 제거"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
+                                </div>
 
-                                    if (bankTwins.length === 0) return null;
-                                    return (
-                                      <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
+                                {/* 하단 펼침 쌍둥이 목록 */}
+                                {isBankTwinExpanded && bankTwins.length > 0 && (
+                                  <div className="ml-7 my-1 p-2 bg-gradient-to-r from-purple-50/90 to-indigo-50/70 border border-purple-200/90 rounded-xl space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                                    <div className="text-[10px] font-black text-purple-800 px-1.5 pb-1 border-b border-purple-100 flex items-center justify-between">
+                                      <span className="flex items-center gap-1">
+                                        <Sparkles size={11} className="text-purple-600" />
+                                        <span>연동된 쌍둥이 문제 ({bankTwins.length}회차)</span>
+                                      </span>
+                                      <span className="text-[9px] text-purple-500 font-medium">눈(미리보기) 클릭 시 팝업</span>
+                                    </div>
+                                    {bankTwins.map(tw => (
+                                      <div
+                                        key={tw.roundName}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenPreview(tw.item.drive_id);
+                                        }}
+                                        className="flex items-center justify-between px-2.5 py-1.5 bg-white hover:bg-purple-100/60 border border-purple-100 rounded-lg cursor-pointer transition-all text-xs group shadow-2xs"
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          <span className="px-1.5 py-0.5 bg-purple-600 text-white rounded text-[9px] font-black shrink-0">
+                                            {tw.roundName} 쌍둥이
+                                          </span>
+                                          <span className="font-bold text-slate-700 truncate text-[11px]">
+                                            {tw.item.name}
+                                          </span>
+                                          {tw.item.answer && (
+                                            <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-[9px] font-bold shrink-0">
+                                              정답: {tw.item.answer}
+                                            </span>
+                                          )}
+                                        </div>
                                         <button
                                           type="button"
-                                          onClick={() => setActiveTwinDropdown(isDropdownOpen ? null : { folderId: `bank_${item.id}`, qNum: displayNum || 0 })}
-                                          className="px-2 py-0.5 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white rounded-md text-[10px] font-black transition-all shadow-xs flex items-center gap-1 cursor-pointer"
-                                          title="클릭하여 쌍둥이 문제 회차별 미리보기"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleOpenPreview(tw.item.drive_id);
+                                          }}
+                                          className="px-2 py-0.5 text-purple-600 hover:text-white hover:bg-purple-600 border border-purple-200 hover:border-purple-600 rounded-md transition-all flex items-center gap-1 text-[11px] font-black shrink-0 shadow-2xs cursor-pointer"
+                                          title="쌍둥이 문제 팝업 미리보기"
                                         >
-                                          <span>👯 쌍둥이 {bankTwins.length}개</span>
-                                          <ChevronDown size={10} className={isDropdownOpen ? "rotate-180 transition-transform" : "transition-transform"} />
+                                          <Eye size={12} />
+                                          <span>미리보기</span>
                                         </button>
-
-                                        {isDropdownOpen && (
-                                          <div className="absolute left-0 top-full mt-1.5 z-40 bg-white border border-purple-200 rounded-xl shadow-xl p-2 w-48 space-y-1 animate-in fade-in zoom-in-95">
-                                            <div className="text-[10px] font-bold text-slate-400 px-1 pb-1 border-b border-slate-100 flex items-center justify-between">
-                                              <span>쌍둥이 문제 회차</span>
-                                              <span className="text-purple-600">{bankTwins.length}개 보유</span>
-                                            </div>
-                                            {bankTwins.map(tw => (
-                                              <button
-                                                key={tw.roundName}
-                                                type="button"
-                                                onClick={() => {
-                                                  setActiveTwinDropdown(null);
-                                                  handleOpenPreview(tw.item.drive_id);
-                                                }}
-                                                className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-purple-50 text-slate-700 hover:text-purple-700 text-xs font-bold transition-colors flex items-center justify-between group cursor-pointer"
-                                              >
-                                                <span>[{tw.roundName} 쌍둥이]</span>
-                                                <span className="text-[10px] text-slate-400 group-hover:text-purple-600 flex items-center gap-0.5">
-                                                  <Eye size={11} /> 열기
-                                                </span>
-                                              </button>
-                                            ))}
-                                          </div>
-                                        )}
                                       </div>
-                                    );
-                                  })()}
-                                </div>
-
-                                <div className="flex items-center gap-1 shrink-0 ml-2">
-                                  <button
-                                    onClick={() => handleOpenPreview(item.drive_id)}
-                                    className="px-2.5 py-1 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 border border-slate-200 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                                  >
-                                    <Eye size={11} />
-                                    보기
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteBankItem(item)}
-                                    className="p-1 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
-                                    title="카테고리에서 제거"
-                                  >
-                                    <Trash2 size={13} />
-                                  </button>
-                                </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
