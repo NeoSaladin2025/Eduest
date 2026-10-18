@@ -271,6 +271,12 @@ function collectWithDriveApi(folderId, parentId, currentGrade, targetGrade, resu
   for (var fIdx = 0; fIdx < subFolders.length; fIdx++) {
     var sub = subFolders[fIdx];
     var folderName = sub.title;
+
+    // 🌟 [핵심] '쌍둥이' 폴더는 일반 학습 라이브러리 동기화에서 완전 배제 (테스트자료 관리 전용)
+    if (folderName && folderName.indexOf("쌍둥이") !== -1) {
+      continue;
+    }
+
     var nextGrade = currentGrade;
     var gradeMatch = folderName.match(/([중고][123])/);
     if (gradeMatch) {
@@ -299,6 +305,9 @@ function collectWithDriveApi(folderId, parentId, currentGrade, targetGrade, resu
   // 2. HTML 파일들을 PNG 매핑과 함께 등록
   for (var hIdx = 0; hIdx < htmlFiles.length; hIdx++) {
     var hf = htmlFiles[hIdx];
+    if (hf.title && hf.title.indexOf("쌍둥이") !== -1) {
+      continue;
+    }
     var stemKey = fileStemKey(hf.title);
     var qImg = stemKey && stemToPngId[stemKey] ? stemToPngId[stemKey] : null;
 
@@ -332,6 +341,11 @@ function collectSyncItemsLegacy(folder, parentId, currentGrade, targetGrade, res
     var folderName = driveRetry_("folder getName", function () {
       return f.getName();
     });
+
+    // 🌟 [핵심] '쌍둥이' 폴더는 일반 학습 라이브러리 동기화에서 완전 배제 (테스트자료 관리 전용)
+    if (folderName && folderName.indexOf("쌍둥이") !== -1) {
+      continue;
+    }
 
     var nextGrade = currentGrade;
     var gradeMatch = folderName.match(/([중고][123])/);
@@ -385,6 +399,10 @@ function collectSyncItemsLegacy(folder, parentId, currentGrade, targetGrade, res
       continue;
     }
 
+    if (name && name.indexOf("쌍둥이") !== -1) {
+      continue;
+    }
+
     if (lower.endsWith(".png")) {
       stemToPngId[fileStemKey(name)] = driveRetry_("png getId", function () {
         return file.getId();
@@ -403,6 +421,9 @@ function collectSyncItemsLegacy(folder, parentId, currentGrade, targetGrade, res
       var hname = driveRetry_("html getName", function () {
         return hf.getName();
       });
+      if (hname && hname.indexOf("쌍둥이") !== -1) {
+        continue;
+      }
       var stemKey = fileStemKey(hname);
       var qImg = stemKey && stemToPngId[stemKey] ? stemToPngId[stemKey] : null;
       result.push({

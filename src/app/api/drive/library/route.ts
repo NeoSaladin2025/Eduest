@@ -22,12 +22,33 @@ export async function GET(request: Request) {
       .from('exam_library')
       .select('*')
       .eq('grade', grade)
-      .eq('type', 'folder')
-      .not('name', 'ilike', '%쌍둥이%');
+      .eq('type', 'folder');
 
     if (error) throw error;
 
-    return NextResponse.json({ items: data });
+    const items = data || [];
+    // 🌟 쌍둥이 폴더 및 그 모든 하위 폴더(자식/손자 등) 재귀적 배제
+    const twinIds = new Set<string>();
+    items.forEach((item: any) => {
+      if (item.name && item.name.includes('쌍둥이')) {
+        twinIds.add(item.drive_id);
+      }
+    });
+
+    let added = true;
+    while (added) {
+      added = false;
+      items.forEach((item: any) => {
+        if (item.parent_id && twinIds.has(item.parent_id) && !twinIds.has(item.drive_id)) {
+          twinIds.add(item.drive_id);
+          added = true;
+        }
+      });
+    }
+
+    const filteredItems = items.filter((item: any) => !twinIds.has(item.drive_id));
+
+    return NextResponse.json({ items: filteredItems });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

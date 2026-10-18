@@ -286,6 +286,7 @@ export async function GET(req: NextRequest) {
         question_count: e.questions.length,
         created_at: e.created_at,
         is_wrong_review: e.is_wrong_review,
+        remind_popup: e.remind_popup,
         is_special: e.is_special,
         require_proof_image: e.require_proof_image,
         enable_lockdown: e.enable_lockdown,

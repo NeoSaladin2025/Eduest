@@ -30,7 +30,8 @@ import {
   Plus,
   Minus,
   Info,
-  FileText
+  FileText,
+  Bell
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
@@ -177,6 +178,7 @@ export default function StudentTest2View({
   // 배정된 단일 시험지 및 묶음 시험지 목록
   const [examList, setExamList] = useState<any[]>([]);
   const [bundleList, setBundleList] = useState<ExamBundle[]>([]);
+  const [dismissedRemindPopups, setDismissedRemindPopups] = useState<boolean>(false);
 
   // 현재 응시 중인 시험지 & 묶음 정보
   const [currentExam, setCurrentExam] = useState<ExamPaper | null>(null);
@@ -264,6 +266,12 @@ export default function StudentTest2View({
   const singleExams = useMemo(() => {
     return examList.filter(e => !e.is_special && !e.title?.includes('[스페셜]') && !(e.is_wrong_review || e.title.startsWith('[오답]')));
   }, [examList]);
+
+  // 🔔 [신규] 선생님이 설정한 미완료 리마인드 팝업 대상 시험지 목록
+  const pendingReminderExams = useMemo(() => {
+    if (dismissedRemindPopups || viewMode !== 'list') return [];
+    return examList.filter((e: any) => e.remind_popup && !e.is_submitted);
+  }, [examList, dismissedRemindPopups, viewMode]);
 
   // 📸 풀이 인증샷 초고속 즉시 처리 & 백그라운드 구글 드라이브 업로드 핸들러
   const handleUploadProof = async (questionId: string, qNum: number, file?: File | null) => {
@@ -1148,6 +1156,84 @@ export default function StudentTest2View({
       ───────────────────────────────────────────────────────────── */}
       {viewMode === 'list' && (
         <div className="space-y-8 pb-16">
+          {/* 🔔 [신규] 선생님이 설정한 미완료 시험 리마인드 팝업 */}
+          {pendingReminderExams.length > 0 && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-purple-500/40 rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl space-y-6 text-white relative animate-in fade-in zoom-in duration-200">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-purple-600/20 border border-purple-500/40 text-purple-400 flex items-center justify-center shrink-0">
+                    <Bell size={24} className="animate-bounce" />
+                  </div>
+                  <div>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      선생님의 맞춤 알림
+                    </span>
+                    <h3 className="text-xl font-black text-white mt-1">
+                      풀어야 할 시험이 기다리고 있어요! 🎯
+                    </h3>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  선생님이 배정한 미완료 맞춤 시험이 있습니다.<br />
+                  지금 바로 응시하여 실력을 다잡아 보세요!
+                </p>
+
+                <div className="space-y-2.5 max-h-[240px] overflow-y-auto pr-1">
+                  {pendingReminderExams.map((exam: any) => (
+                    <div
+                      key={exam.id}
+                      className="p-3.5 bg-white/5 border border-white/10 hover:border-purple-500/50 rounded-2xl flex items-center justify-between gap-3 transition-all"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {exam.is_wrong_review ? (
+                            <span className="px-2 py-0.5 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-md">
+                              오답 클리닉
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[10px] font-black rounded-md">
+                              배정 시험
+                            </span>
+                          )}
+                          {exam.title?.includes('쌍둥이') && (
+                            <span className="px-1.5 py-0.5 bg-purple-500/30 text-purple-200 text-[10px] font-black rounded-md">
+                              👯 쌍둥이
+                            </span>
+                          )}
+                        </div>
+                        <h4 className="text-sm font-black text-white truncate">
+                          {exam.title}
+                        </h4>
+                        <p className="text-[11px] text-slate-400">
+                          총 {exam.question_count}문항 • {exam.duration_min > 0 ? `${exam.duration_min}분` : '시간제한 없음'}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setDismissedRemindPopups(true);
+                          handleStartExam(exam.id);
+                        }}
+                        className="px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-black shadow-lg shadow-purple-600/30 shrink-0 transition-all cursor-pointer"
+                      >
+                        지금 풀기 🚀
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-end pt-2 border-t border-white/10">
+                  <button
+                    onClick={() => setDismissedRemindPopups(true)}
+                    className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  >
+                    나중에 풀기 (닫기)
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="text-center space-y-3">
             <h2 className="text-3xl md:text-5xl font-black italic tracking-tighter uppercase text-white">
               ASSIGNED <span className="text-violet-500">EXAMS</span>

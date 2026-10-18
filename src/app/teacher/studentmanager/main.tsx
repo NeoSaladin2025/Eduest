@@ -53,8 +53,29 @@ function getPromotedGradeClient(currentGrade: string, high3Action: 'graduated' |
 }
 
 function buildFolderTree(items: any[], grade: string): FolderNode[] {
-  const nodeMap = new Map<string, FolderNode>();
+  // 🌟 쌍둥이 폴더 및 그 하위 자식 노드 프론트 방어 필터
+  const twinIds = new Set<string>();
   items.forEach(item => {
+    if (item.name && item.name.includes('쌍둥이')) {
+      twinIds.add(item.drive_id);
+    }
+  });
+
+  let added = true;
+  while (added) {
+    added = false;
+    items.forEach(item => {
+      if (item.parent_id && twinIds.has(item.parent_id) && !twinIds.has(item.drive_id)) {
+        twinIds.add(item.drive_id);
+        added = true;
+      }
+    });
+  }
+
+  const cleanItems = items.filter(item => !twinIds.has(item.drive_id));
+
+  const nodeMap = new Map<string, FolderNode>();
+  cleanItems.forEach(item => {
     nodeMap.set(item.drive_id, {
       drive_id: item.drive_id,
       parent_id: item.parent_id,
@@ -64,7 +85,7 @@ function buildFolderTree(items: any[], grade: string): FolderNode[] {
   });
 
   const gradeNodeIds = new Set<string>();
-  items.forEach(item => {
+  cleanItems.forEach(item => {
     if (item.name && item.name.trim() === grade.trim()) {
       gradeNodeIds.add(item.drive_id);
     }
@@ -76,8 +97,10 @@ function buildFolderTree(items: any[], grade: string): FolderNode[] {
     if (gradeNodeIds.has(node.drive_id)) return;
     if (node.parent_id && nodeMap.has(node.parent_id) && !gradeNodeIds.has(node.parent_id)) {
       nodeMap.get(node.parent_id)!.children.push(node);
-    } else {
+    } else if (!node.parent_id || gradeNodeIds.has(node.parent_id)) {
       roots.push(node);
+    } else {
+      // 🌟 부모가 삭제/제외되어 없는 고아 노드는 최상단 루트로 승급시키지 않고 안전 무시
     }
   });
 

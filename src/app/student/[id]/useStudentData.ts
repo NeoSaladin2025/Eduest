@@ -31,22 +31,57 @@ export function useStudentData(studentId: string) {
   };
 
   const buildTree = (items: any[]) => {
+    // 🌟 1. 특수 가상 레코드 및 쌍둥이 관련 데이터 원천 차단
+    const EXCLUDED_IDS = new Set([
+      'class_schedule_root_data',
+      'student_menu_config_data',
+      'test2_exam_papers_data',
+      'test2_student_submissions_data',
+      'test_bank_categories_data',
+      'test_bank_items_data',
+      'test_twin_problems_data',
+    ]);
+
+    const twinIds = new Set<string>();
+    items.forEach(item => {
+      if (item.name && item.name.includes('쌍둥이')) {
+        twinIds.add(item.drive_id);
+      }
+    });
+
+    let added = true;
+    while (added) {
+      added = false;
+      items.forEach(item => {
+        if (item.parent_id && twinIds.has(item.parent_id) && !twinIds.has(item.drive_id)) {
+          twinIds.add(item.drive_id);
+          added = true;
+        }
+      });
+    }
+
+    const filtered = items.filter(
+      item => !EXCLUDED_IDS.has(item.drive_id) && !twinIds.has(item.drive_id)
+    );
+
     const map: any = {};
     const roots: any[] = [];
     
-    // 1단계: 맵 구성
-    items.forEach(item => {
+    // 2단계: 맵 구성
+    filtered.forEach(item => {
       map[item.drive_id] = { ...item, id: item.drive_id, subFolders: [], files: [] };
     });
 
-    // 2단계: 트리 구조 연결
-    items.forEach(item => {
+    // 3단계: 트리 구조 연결
+    filtered.forEach(item => {
       const node = map[item.drive_id];
       if (item.parent_id && map[item.parent_id]) {
         if (item.type === 'folder') map[item.parent_id].subFolders.push(node);
         else map[item.parent_id].files.push(node);
-      } else { 
-        roots.push(node); 
+      } else if (!item.parent_id || item.parent_id === '1W1s2wPQnwXQI-i3Cwc8g1RfsajEGW-UC' || (node.name && ['고1', '고2', '고3', '중1', '중2', '중3'].some(g => node.name.includes(g)))) {
+        roots.push(node);
+      } else {
+        // 🌟 부모가 없는 고아 노드는 루트로 승급시키지 않고 스킵
       }
     });
     return roots;

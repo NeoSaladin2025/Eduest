@@ -37,7 +37,8 @@ import {
   Lock,
   Unlock,
   Camera,
-  Printer
+  Printer,
+  Bell
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -212,6 +213,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [overridingQuestionId, setOverridingQuestionId] = useState<string | null>(null);
   const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
 
+  // 🌟 전체 제출 기록 목록 (학생별 점수 뱃지 및 정렬, 통계용)
+  const [allSubmissions, setAllSubmissions] = useState<any[]>([]);
+
   // 👯 쌍둥이 저장소 및 오답 맞춤 시험지 모달 상태
   const [twinStore, setTwinStore] = useState<TwinStoreData | null>(null);
   const [wrongExamModal, setWrongExamModal] = useState<{
@@ -223,10 +227,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [wrongExamMode, setWrongExamMode] = useState<'twin' | 'original'>('twin');
   const [creatingWrongExamModal, setCreatingWrongExamModal] = useState(false);
 
-  // 🌟 [사용자 요청] 시험지 목록 필터링 상태 (검색어, 학년 필터, 시험지 종류 필터)
+  // 🌟 [오답 클리닉 세부 옵션 상태]
+  const [twinStrategy, setTwinStrategy] = useState<'unsolved' | 'specific_round' | 'lowest_accuracy'>('unsolved');
+  const [selectedSpecificRound, setSelectedSpecificRound] = useState<string>('1차');
+  const [twinQuestionOverrides, setTwinQuestionOverrides] = useState<Record<string, { roundName: string; item: TwinQuestionItem } | 'original'>>({});
+  const [wrongExamDurationMode, setWrongExamDurationMode] = useState<'auto' | 'custom' | 'unlimited'>('auto');
+  const [wrongExamCustomMinutes, setWrongExamCustomMinutes] = useState<number>(15);
+  const [wrongExamRemindPopup, setWrongExamRemindPopup] = useState<boolean>(false);
+  const [changingTwinQuestionId, setChangingTwinQuestionId] = useState<string | null>(null);
+
+  // 🌟 [사용자 요청] 시험지 목록 필터링 상태 (검색어, 학년 필터, 학생 필터, 정렬 옵션, 시험지 종류 필터)
   const [examSearchInput, setExamSearchInput] = useState('');
   const [appliedExamSearch, setAppliedExamSearch] = useState('');
   const [examListGradeFilter, setExamListGradeFilter] = useState('ALL');
+  const [selectedStudentFilterId, setSelectedStudentFilterId] = useState<string | 'ALL'>('ALL');
+  const [examSortOption, setExamSortOption] = useState<'latest' | 'unsolved_first' | 'solved_only' | 'score_asc' | 'score_desc'>('latest');
   const [examListTypeFilter, setExamListTypeFilter] = useState<'ALL' | 'NORMAL' | 'WRONG'>('ALL');
 
   // 문제 미리보기 모달
@@ -257,7 +272,23 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setStudents(studentList);
       }
 
-      // 3) 쌍둥이 메타데이터 로드
+      // 3) 전체 학생 제출 기록 로드 (학생별 성적 요약 및 시험지 카드 점수 노출용)
+      const { data: subData } = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', 'test2_student_submissions_data')
+        .maybeSingle();
+
+      if (subData?.file_data) {
+        try {
+          const parsed = JSON.parse(subData.file_data);
+          setAllSubmissions(Array.isArray(parsed.submissions) ? parsed.submissions : []);
+        } catch {
+          setAllSubmissions([]);
+        }
+      }
+
+      // 4) 쌍둥이 메타데이터 로드
       await loadTwins();
     } catch (e) {
       console.error('Failed to load initial data:', e);
@@ -1262,16 +1293,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
-  // 🌟 학생에게 배정할 다음 회차 쌍둥이 찾기 (1안: 학생 이력 검사 후 자동 승급 출제)
-  const getNextAvailableTwinForStudent = (
-    q: ExamQuestion,
-    studentId: string
-  ): { roundName: string; item: TwinQuestionItem } | null => {
-    if (!twinStore) return null;
+  // 🌟 특정 문항에 연결된 모든 쌍둥이 목록(1차, 2차...) 조회 헬퍼
+  const getAllAvailableTwinsForQuestion = (q: ExamQuestion): Array<{ roundName: string; item: TwinQuestionItem }> => {
+    if (!twinStore) return [];
     const qNum = q.question_number ?? parseQuestionNumber(q);
-    if (!qNum || isNaN(qNum)) return null;
+    if (!qNum || isNaN(qNum)) return [];
 
-    // 1. 해당 문항의 원본 회차 폴더 매칭
     let matchedFolderData = null;
     for (const fData of Object.values(twinStore.folders || {})) {
       if (
@@ -1284,21 +1311,75 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       }
     }
 
-    if (!matchedFolderData || !matchedFolderData.rounds) return null;
+    if (!matchedFolderData || !matchedFolderData.rounds) return [];
 
-    // 2. 해당 문항의 보유 쌍둥이 목록 (1차, 2차, 3차... 오름차순)
-    const availableTwins: Array<{ roundName: string; item: TwinQuestionItem }> = [];
+    const available: Array<{ roundName: string; item: TwinQuestionItem }> = [];
     Object.entries(matchedFolderData.rounds).forEach(([rName, rData]) => {
       const it = rData.items?.find(item => item.question_number === qNum);
       if (it) {
-        availableTwins.push({ roundName: rName, item: it });
+        available.push({ roundName: rName, item: it });
       }
     });
 
-    if (availableTwins.length === 0) return null;
-    availableTwins.sort((a, b) => parseRoundNumber(a.roundName) - parseRoundNumber(b.roundName));
+    available.sort((a, b) => parseRoundNumber(a.roundName) - parseRoundNumber(b.roundName));
+    return available;
+  };
 
-    // 3. 학생이 이미 응시했던 시험지들 중 이 문항의 어떤 쌍둥이를 풀었는지 검사
+  // 🌟 전략(미응시 우선 / 특정 회차 지정 / 오답률 높은 순)과 수동 오버라이드를 반영한 쌍둥이 문항 매칭
+  const getAssignedTwinForQuestion = (
+    q: ExamQuestion,
+    studentId: string,
+    strategy: 'unsolved' | 'specific_round' | 'lowest_accuracy',
+    specificRoundName: string,
+    overrides?: Record<string, { roundName: string; item: TwinQuestionItem } | 'original'>
+  ): { roundName: string; item: TwinQuestionItem } | null => {
+    // 1. 개별 문항 수동 변경(오버라이드)이 있는 경우 최우선 적용
+    if (overrides && overrides[q.id] !== undefined) {
+      const ov = overrides[q.id];
+      if (ov === 'original') return null; // 원본으로 강제 지정
+      return ov;
+    }
+
+    const availableTwins = getAllAvailableTwinsForQuestion(q);
+    if (availableTwins.length === 0) return null;
+
+    // 전략 A: 특정 회차 지정 (예: '1차만', '2차만', 'random')
+    if (strategy === 'specific_round') {
+      if (specificRoundName === 'random') {
+        const randIdx = Math.floor(Math.random() * availableTwins.length);
+        return availableTwins[randIdx];
+      }
+      const matched = availableTwins.find(at => at.roundName === specificRoundName);
+      if (matched) return matched;
+      return availableTwins[0];
+    }
+
+    // 전략 B: 오답률 높은 쌍둥이 우선 (전체 제출 이력 정답률 분석)
+    if (strategy === 'lowest_accuracy') {
+      const stats = availableTwins.map(at => {
+        let totalAttempts = 0;
+        let correctAttempts = 0;
+        exams.forEach(ex => {
+          ex.questions?.forEach(eq => {
+            if ((eq as any).drive_id === at.item.drive_id || (eq as any).solution_drive_id === at.item.solution_drive_id) {
+              allSubmissions.forEach((sub: any) => {
+                if (sub.exam_id === ex.id && sub.answers?.[eq.id]) {
+                  totalAttempts++;
+                  if (sub.answers[eq.id].is_correct) correctAttempts++;
+                }
+              });
+            }
+          });
+        });
+        const accuracy = totalAttempts > 0 ? correctAttempts / totalAttempts : 0.5;
+        return { ...at, accuracy, totalAttempts };
+      });
+      stats.sort((a, b) => a.accuracy - b.accuracy);
+      return stats[0];
+    }
+
+    // 전략 C (기본): 미응시 우선 자동 승급
+    const qNum = q.question_number ?? parseQuestionNumber(q);
     const solvedTwinRounds = new Set<string>();
     exams.forEach(ex => {
       if (ex.assigned_student_ids?.includes(studentId)) {
@@ -1315,11 +1396,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       }
     });
 
-    // 4. 아직 풀지 않은 가장 빠른 회차 쌍둥이 선택
     const unSolved = availableTwins.find(at => !solvedTwinRounds.has(at.roundName));
     if (unSolved) return unSolved;
 
-    // 만약 모든 쌍둥이를 다 풀었다면, 가장 마지막 회차(또는 1차) 제공
     return availableTwins[availableTwins.length - 1];
   };
 
@@ -1342,6 +1421,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       return;
     }
 
+    const recommendedMin = Math.max(10, wrongQuestions.length * 3);
+
     setWrongExamModal({
       student: st,
       submission: sub,
@@ -1349,6 +1430,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       wrongQuestions,
     });
     setWrongExamMode('twin'); // 기본값: 쌍둥이(변형) 문제 모드
+    setTwinStrategy('unsolved'); // 기본값: 미응시 우선 자동 승급
+    setSelectedSpecificRound('1차');
+    setTwinQuestionOverrides({});
+    setWrongExamDurationMode('auto');
+    setWrongExamCustomMinutes(recommendedMin);
+    setWrongExamRemindPopup(false);
+    setChangingTwinQuestionId(null);
   };
 
   // 🌟 맞춤 오답 시험지 실제 생성 및 배정
@@ -1365,7 +1453,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       if (wrongExamMode === 'twin') {
         examTitle = `[오답·쌍둥이] ${exam.title} (${student.name})`;
         finalQuestions = wrongQuestions.map(q => {
-          const assignedTwin = getNextAvailableTwinForStudent(q, student.id);
+          const assignedTwin = getAssignedTwinForQuestion(
+            q,
+            student.id,
+            twinStrategy,
+            selectedSpecificRound,
+            twinQuestionOverrides
+          );
           if (assignedTwin) {
             return {
               ...q,
@@ -1389,17 +1483,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         finalQuestions = [...wrongQuestions];
       }
 
+      // 시험 제한 시간 계산
+      const finalDuration = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+
       const res = await fetch('/api/test2/exam', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: examTitle,
           grade: exam.grade,
-          duration_min: Math.max(10, finalQuestions.length * 3),
+          duration_min: finalDuration,
           questions: finalQuestions,
           assigned_student_ids: [student.id],
           is_wrong_review: true,
           parent_exam_id: exam.id,
+          remind_popup: wrongExamRemindPopup,
         }),
       });
 
@@ -1428,9 +1526,42 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     return students.filter(s => s.grade.includes(studentGradeFilter));
   }, [students, studentGradeFilter]);
 
-  // 🌟 [사용자 요청] 필터링된 시험지 목록 (텍스트 검색 + 학년 필터 + 시험지 종류 필터)
+  // 🌟 [선택된 학생 통계] 학생 요약 배너에 표시할 정보 계산
+  const selectedStudentStats = useMemo(() => {
+    if (selectedStudentFilterId === 'ALL') return null;
+    const st = students.find(s => s.id === selectedStudentFilterId);
+    if (!st) return null;
+
+    const assignedExams = exams.filter(e => e.assigned_student_ids?.includes(selectedStudentFilterId));
+    const subs = allSubmissions.filter(s => s.student_id === selectedStudentFilterId);
+    const completedCount = assignedExams.filter(e => subs.some(s => s.exam_id === e.id)).length;
+    const uncompletedCount = Math.max(0, assignedExams.length - completedCount);
+    
+    // 평균 점수
+    const completedSubs = subs.filter(s => assignedExams.some(e => e.id === s.exam_id));
+    const avgScore = completedSubs.length > 0
+      ? Math.round(completedSubs.reduce((acc, cur) => acc + (cur.score ?? 0), 0) / completedSubs.length)
+      : null;
+
+    // 오답 시험지 완수율
+    const wrongExams = assignedExams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]'));
+    const completedWrongCount = wrongExams.filter(e => subs.some(s => s.exam_id === e.id)).length;
+    const wrongCompletionRate = wrongExams.length > 0 ? Math.round((completedWrongCount / wrongExams.length) * 100) : null;
+
+    return {
+      student: st,
+      totalAssigned: assignedExams.length,
+      completedCount,
+      uncompletedCount,
+      avgScore,
+      wrongTotal: wrongExams.length,
+      wrongCompletionRate,
+    };
+  }, [selectedStudentFilterId, students, exams, allSubmissions]);
+
+  // 🌟 [사용자 요청] 필터링 및 다중 정렬된 시험지 목록
   const filteredExams = useMemo(() => {
-    return exams.filter(exam => {
+    const list = exams.filter(exam => {
       // 1. 텍스트 검색어 필터 (시험지 이름 매칭)
       if (appliedExamSearch.trim()) {
         const query = appliedExamSearch.trim().toLowerCase();
@@ -1446,14 +1577,100 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         }
       }
 
-      // 3. 시험지 종류 필터 (전체 / 일반 / 오답)
+      // 3. 학생 필터 (특정 학생 선택 시 해당 학생에게 배정된 시험지만)
+      if (selectedStudentFilterId !== 'ALL') {
+        if (!exam.assigned_student_ids || !exam.assigned_student_ids.includes(selectedStudentFilterId)) {
+          return false;
+        }
+      }
+
+      // 4. 시험지 종류 필터 (전체 / 일반 / 오답)
       const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
       if (examListTypeFilter === 'NORMAL' && isWrong) return false;
       if (examListTypeFilter === 'WRONG' && !isWrong) return false;
 
+      // 5. '푼 것만 보기' (solved_only) 필터
+      if (examSortOption === 'solved_only') {
+        if (selectedStudentFilterId !== 'ALL') {
+          const hasSub = allSubmissions.some(s => s.exam_id === exam.id && s.student_id === selectedStudentFilterId);
+          if (!hasSub) return false;
+        } else {
+          const hasAnySub = allSubmissions.some(s => s.exam_id === exam.id);
+          if (!hasAnySub) return false;
+        }
+      }
+
       return true;
     });
-  }, [exams, appliedExamSearch, examListGradeFilter, examListTypeFilter]);
+
+    // 🌟 정렬 적용
+    list.sort((a, b) => {
+      if (examSortOption === 'latest') {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+
+      if (examSortOption === 'unsolved_first') {
+        if (selectedStudentFilterId !== 'ALL') {
+          const aSolved = allSubmissions.some(s => s.exam_id === a.id && s.student_id === selectedStudentFilterId);
+          const bSolved = allSubmissions.some(s => s.exam_id === b.id && s.student_id === selectedStudentFilterId);
+          if (!aSolved && bSolved) return -1;
+          if (aSolved && !bSolved) return 1;
+        } else {
+          const aSubCount = allSubmissions.filter(s => s.exam_id === a.id).length;
+          const bSubCount = allSubmissions.filter(s => s.exam_id === b.id).length;
+          const aUnsolved = (a.assigned_student_ids?.length || 0) - aSubCount;
+          const bUnsolved = (b.assigned_student_ids?.length || 0) - bSubCount;
+          if (aUnsolved !== bUnsolved) return bUnsolved - aUnsolved;
+        }
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+
+      if (examSortOption === 'score_desc' || examSortOption === 'score_asc') {
+        const getScore = (exam: ExamPaper) => {
+          if (selectedStudentFilterId !== 'ALL') {
+            const sub = allSubmissions.find(s => s.exam_id === exam.id && s.student_id === selectedStudentFilterId);
+            return sub ? (sub.score ?? 0) : -1;
+          }
+          const subs = allSubmissions.filter(s => s.exam_id === exam.id);
+          if (subs.length === 0) return -1;
+          const sum = subs.reduce((acc, cur) => acc + (cur.score ?? 0), 0);
+          return sum / subs.length;
+        };
+
+        const scoreA = getScore(a);
+        const scoreB = getScore(b);
+        if (examSortOption === 'score_desc') return scoreB - scoreA;
+        return scoreA - scoreB;
+      }
+
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+    return list;
+  }, [exams, appliedExamSearch, examListGradeFilter, selectedStudentFilterId, examListTypeFilter, examSortOption, allSubmissions]);
+
+  // 🌟 시험지 카드에서 미완료 리마인드 팝업 토글
+  const handleToggleRemindPopup = async (exam: ExamPaper) => {
+    try {
+      const nextVal = !exam.remind_popup;
+      const res = await fetch('/api/test2/exam', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: exam.id,
+          remind_popup: nextVal,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExams(prev => prev.map(e => e.id === exam.id ? { ...e, remind_popup: nextVal } : e));
+      } else {
+        alert(`알림 설정 변경 실패: ${data.error}`);
+      }
+    } catch (e: any) {
+      alert(`오류: ${e.message}`);
+    }
+  };
 
   // 돋보기 버튼 클릭 또는 Enter 검색 실행
   const handleExecuteSearch = () => {
@@ -1465,6 +1682,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setExamSearchInput('');
     setAppliedExamSearch('');
     setExamListGradeFilter('ALL');
+    setSelectedStudentFilterId('ALL');
+    setExamSortOption('latest');
     setExamListTypeFilter('ALL');
   };
 
@@ -1571,7 +1790,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       {/* 2. 탭 1: 시험지 목록 */}
       {activeTab === 'list' && (
         <div className="space-y-6">
-          {/* 🌟 [사용자 요청] 시험지 목록 상단 필터링 바 (학년별 필터 + 텍스트 검색 및 돋보기 + 종류 필터) */}
+          {/* 🌟 [사용자 요청] 시험지 목록 상단 필터링 바 (학년별 필터 + 학생 필터 + 정렬 + 검색 + 종류 필터) */}
           {exams.length > 0 && (
             <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs space-y-4">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -1583,8 +1802,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     return (
                       <button
                         key={grade}
-                        onClick={() => setExamListGradeFilter(grade)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                        onClick={() => {
+                          setExamListGradeFilter(grade);
+                          setSelectedStudentFilterId('ALL');
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
                           isSelected
                             ? 'bg-violet-600 text-white shadow-md shadow-violet-200 scale-105'
                             : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1596,9 +1818,24 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   })}
                 </div>
 
-                {/* 오른쪽: 텍스트 검색 입력창 및 돋보기 버튼 */}
-                <div className="flex items-center gap-2 max-w-md w-full lg:w-auto">
-                  <div className="relative flex-1 lg:w-72">
+                {/* 오른쪽: 정렬 드롭다운 & 텍스트 검색 입력창 */}
+                <div className="flex items-center gap-2 max-w-md w-full lg:w-auto flex-wrap sm:flex-nowrap">
+                  {/* 🌟 정렬 드롭다운 */}
+                  <div className="relative">
+                    <select
+                      value={examSortOption}
+                      onChange={e => setExamSortOption(e.target.value as any)}
+                      className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-violet-200 cursor-pointer"
+                    >
+                      <option value="latest">🕒 최신순</option>
+                      <option value="unsolved_first">⏳ 안 푼 것 우선</option>
+                      <option value="solved_only">✅ 푼 것만 보기</option>
+                      <option value="score_desc">🏆 점수 높은순</option>
+                      <option value="score_asc">📉 점수 낮은순 (취약 우선)</option>
+                    </select>
+                  </div>
+
+                  <div className="relative flex-1 lg:w-60">
                     <input
                       type="text"
                       value={examSearchInput}
@@ -1625,7 +1862,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </div>
                   <button
                     onClick={handleExecuteSearch}
-                    className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-black shadow-md shadow-violet-200 transition-all flex items-center gap-1.5 shrink-0"
+                    className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-black shadow-md shadow-violet-200 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
                     title="시험지 이름으로 검색"
                   >
                     <Search size={14} />
@@ -1634,15 +1871,57 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
               </div>
 
+              {/* 🌟 [사용자 요청] 학년 선택 시 해당 학년 소속 학생 목록 2단계 필터 칩 */}
+              {examListGradeFilter !== 'ALL' && (
+                <div className="flex items-center gap-1.5 flex-wrap pt-3 border-t border-slate-100">
+                  <span className="text-[11px] font-black text-indigo-600 mr-1 flex items-center gap-1">
+                    <Users size={13} />
+                    <span>{examListGradeFilter} 학생:</span>
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStudentFilterId('ALL')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      selectedStudentFilterId === 'ALL'
+                        ? 'bg-indigo-600 text-white shadow-xs font-black'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    전체 보기
+                  </button>
+
+                  {students
+                    .filter(st => st.grade === examListGradeFilter)
+                    .map(st => {
+                      const isSelected = selectedStudentFilterId === st.id;
+                      return (
+                        <button
+                          key={st.id}
+                          type="button"
+                          onClick={() => setSelectedStudentFilterId(st.id)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-xs scale-105 font-black'
+                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {st.name}
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
+
               {/* 하단 서브 필터: 시험지 유형 (전체 / 일반 시험지 / 오답 시험지) 및 필터 초기화 */}
               <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2 text-xs">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="font-bold text-slate-400 mr-1">분류:</span>
                   <button
                     onClick={() => setExamListTypeFilter('ALL')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
                       examListTypeFilter === 'ALL'
-                        ? 'bg-slate-800 text-white shadow-2xs'
+                        ? 'bg-slate-800 text-white shadow-2xs font-black'
                         : 'text-slate-500 hover:bg-slate-100'
                     }`}
                   >
@@ -1650,9 +1929,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </button>
                   <button
                     onClick={() => setExamListTypeFilter('NORMAL')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
                       examListTypeFilter === 'NORMAL'
-                        ? 'bg-violet-600 text-white shadow-2xs'
+                        ? 'bg-violet-600 text-white shadow-2xs font-black'
                         : 'text-slate-500 hover:bg-slate-100'
                     }`}
                   >
@@ -1660,9 +1939,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </button>
                   <button
                     onClick={() => setExamListTypeFilter('WRONG')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all ${
+                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
                       examListTypeFilter === 'WRONG'
-                        ? 'bg-rose-600 text-white shadow-2xs'
+                        ? 'bg-rose-600 text-white shadow-2xs font-black'
                         : 'text-slate-500 hover:bg-slate-100'
                     }`}
                   >
@@ -1670,20 +1949,69 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </button>
                 </div>
 
-                {(appliedExamSearch || examListGradeFilter !== 'ALL' || examListTypeFilter !== 'ALL') && (
+                {(appliedExamSearch || examListGradeFilter !== 'ALL' || selectedStudentFilterId !== 'ALL' || examSortOption !== 'latest' || examListTypeFilter !== 'ALL') && (
                   <div className="flex items-center gap-2">
                     <span className="text-slate-500 font-bold">
                       검색 결과: <strong className="text-violet-600">{filteredExams.length}</strong>개
                     </span>
                     <button
                       onClick={handleResetExamFilters}
-                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1"
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
                     >
                       <RotateCcw size={11} />
                       <span>필터 초기화</span>
                     </button>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* 🌟 [선택 학생 미니 서머리 카드] 특정 학생 선택 시 상단에 종합 통계 배너 노출 */}
+          {selectedStudentStats && (
+            <div className="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 p-0.5 rounded-3xl shadow-sm animate-in fade-in slide-in-from-top-2 duration-300">
+              <div className="bg-white rounded-[22px] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-black text-base shadow-2xs shrink-0">
+                    {selectedStudentStats.student.name[0]}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-black text-slate-800">
+                        {selectedStudentStats.student.name} <span className="text-xs text-indigo-600 font-bold">({selectedStudentStats.student.grade})</span>
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-50 text-purple-700 border border-purple-200">
+                        학생 맞춤 분석
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5 font-medium">
+                      이 학생에게 배정된 시험지와 응시 점수를 종합 집계합니다.
+                    </p>
+                  </div>
+                </div>
+
+                {/* 요약 메트릭 뱃지들 */}
+                <div className="flex items-center gap-2 flex-wrap text-xs">
+                  <div className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 font-bold text-slate-600">
+                    총 배정: <strong className="text-slate-900 font-black">{selectedStudentStats.totalAssigned}</strong>개
+                  </div>
+                  <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 font-bold text-emerald-800">
+                    응시 완료: <strong className="font-black text-emerald-900">{selectedStudentStats.completedCount}</strong>개
+                  </div>
+                  <div className="px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 font-bold text-amber-800">
+                    미응시: <strong className="font-black text-amber-900">{selectedStudentStats.uncompletedCount}</strong>개
+                  </div>
+                  {selectedStudentStats.avgScore !== null && (
+                    <div className="px-3 py-1.5 rounded-xl bg-purple-50 border border-purple-200 font-bold text-purple-800">
+                      평균 점수: <strong className="font-black text-purple-900">{selectedStudentStats.avgScore}</strong>점
+                    </div>
+                  )}
+                  {selectedStudentStats.wrongCompletionRate !== null && (
+                    <div className="px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 font-bold text-rose-800">
+                      오답 클리닉 완수: <strong className="font-black text-rose-900">{selectedStudentStats.wrongCompletionRate}%</strong>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -1701,7 +2029,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </div>
               <button
                 onClick={() => setActiveTab('create')}
-                className="mt-4 px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-black transition-all shadow-md shadow-violet-200"
+                className="mt-4 px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-black transition-all shadow-md shadow-violet-200 cursor-pointer"
               >
                 + 새 시험지 만들기
               </button>
@@ -1719,7 +2047,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </div>
               <button
                 onClick={handleResetExamFilters}
-                className="mt-2 px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1.5"
+                className="mt-2 px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw size={13} />
                 <span>필터 초기화</span>
@@ -1730,6 +2058,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               {filteredExams.map(exam => {
                 const assignedCount = exam.assigned_student_ids ? exam.assigned_student_ids.length : 0;
                 const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
+                const relatedSubs = allSubmissions.filter(s => s.exam_id === exam.id);
+                const isSingleStudentMode = selectedStudentFilterId !== 'ALL';
+                const studentSub = isSingleStudentMode 
+                  ? relatedSubs.find(s => s.student_id === selectedStudentFilterId)
+                  : null;
+
                 return (
                   <div
                     key={exam.id}
@@ -1786,6 +2120,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <Camera size={10} />
                             <span>{exam.require_proof_image ? '인증 ON' : '인증 OFF'}</span>
                           </button>
+
+                          {/* 🔔 [신규] 학생 접속 시 미완료 리마인드 팝업 알림 토글 */}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleToggleRemindPopup(exam); }}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-black border flex items-center gap-1 transition-all cursor-pointer ${
+                              exam.remind_popup
+                                ? 'bg-indigo-600 text-white border-indigo-700 shadow-2xs font-bold'
+                                : 'bg-slate-100 text-slate-400 border-slate-200 hover:bg-slate-200'
+                            }`}
+                            title={exam.remind_popup ? '학생 접속 시 미완료 알림 팝업 ON (클릭 시 OFF)' : '학생 접속 시 미완료 알림 팝업 OFF (클릭 시 ON)'}
+                          >
+                            <Bell size={10} className={exam.remind_popup ? 'fill-white' : ''} />
+                            <span>{exam.remind_popup ? '알림 ON' : '알림 OFF'}</span>
+                          </button>
                         </div>
                         <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold shrink-0">
                           <Clock size={14} />
@@ -1807,16 +2156,68 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </p>
                       </div>
 
-                      {/* 배정 현황 박스 */}
-                      <div className="bg-slate-50 rounded-2xl p-3 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Users size={16} className="text-slate-400" />
-                          <span className="text-xs font-bold text-slate-600">배정된 학생</span>
+                      {/* 🌟 특정 학생 필터가 걸려있을 때: 해당 학생의 점수 / 미응시 뱃지 직관적 노출 */}
+                      {isSingleStudentMode ? (
+                        studentSub ? (
+                          <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-3 flex items-center justify-between text-xs">
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-base">🎯</span>
+                                <span className="font-black text-emerald-950 text-sm">{studentSub.score}점</span>
+                                <span className="text-[11px] font-bold text-emerald-700">
+                                  ({studentSub.correct_count} / {studentSub.total_questions}문항 정답)
+                                </span>
+                              </div>
+                              {studentSub.submitted_at && (
+                                <span className="text-[10px] text-slate-400 font-medium block mt-0.5">
+                                  응시: {new Date(studentSub.submitted_at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const st = students.find(s => s.id === selectedStudentFilterId);
+                                handleOpenStudentDetail(st, studentSub);
+                              }}
+                              className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-emerald-800 font-black text-[11px] hover:bg-emerald-100 shadow-2xs transition-all cursor-pointer"
+                            >
+                              상세 보기
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl p-3 flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-base">⏳</span>
+                              <div>
+                                <span className="font-black text-amber-900 block leading-tight">미응시 (대기 중)</span>
+                                <span className="text-[10px] text-amber-700">아직 시험을 시작하지 않았습니다</span>
+                              </div>
+                            </div>
+                            {exam.remind_popup && (
+                              <span className="px-2 py-0.5 bg-amber-200 text-amber-900 font-black rounded-lg text-[10px]">
+                                팝업 예약됨
+                              </span>
+                            )}
+                          </div>
+                        )
+                      ) : (
+                        /* 전체 학생 모드일 때: 배정 현황 박스 */
+                        <div className="bg-slate-50 rounded-2xl p-3 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Users size={16} className="text-slate-400" />
+                            <span className="text-xs font-bold text-slate-600">배정된 학생</span>
+                          </div>
+                          <div className="text-right">
+                            <span className={`text-sm font-black ${isWrong ? 'text-rose-600' : 'text-violet-700'}`}>
+                              {assignedCount}명
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-bold block">
+                              제출: {relatedSubs.length}명
+                            </span>
+                          </div>
                         </div>
-                        <span className={`text-sm font-black ${isWrong ? 'text-rose-600' : 'text-violet-700'}`}>
-                          {assignedCount}명
-                        </span>
-                      </div>
+                      )}
                     </div>
 
                     {/* 카드 하단 액션 버튼바 */}
@@ -4094,10 +4495,202 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
               </div>
 
+              {/* 🌟 1-1. 쌍둥이 출제 세부 전략 선택 (쌍둥이 모드일 때만) */}
+              {wrongExamMode === 'twin' && (
+                <div className="bg-purple-50/50 border border-purple-200/80 rounded-2xl p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-purple-900 flex items-center gap-1.5">
+                      <span>🎯</span> 쌍둥이 문제 선택 전략
+                    </span>
+                    <span className="text-[11px] text-purple-600 font-medium">
+                      틀린 문제에 배정될 쌍둥이 기준 설정
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {/* 전략 1: 안 풀어본 쌍둥이 우선 */}
+                    <div
+                      onClick={() => setTwinStrategy('unsolved')}
+                      className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all select-none ${
+                        twinStrategy === 'unsolved'
+                          ? 'border-purple-600 bg-white shadow-xs ring-1 ring-purple-500'
+                          : 'border-purple-200/70 bg-white/70 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-black text-purple-950 flex items-center gap-1">
+                          <span>🎯</span> 미응시 우선
+                        </span>
+                        {twinStrategy === 'unsolved' && <Check size={14} className="text-purple-600" />}
+                      </div>
+                      <p className="text-[10px] text-slate-600 leading-tight">
+                        학생이 이전에 안 풀어본 다음 회차 쌍둥이(1차→2차...)로 자동 승급 배정
+                      </p>
+                    </div>
+
+                    {/* 전략 2: 특정 회차 일괄 지정 */}
+                    <div
+                      onClick={() => setTwinStrategy('specific_round')}
+                      className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all select-none ${
+                        twinStrategy === 'specific_round'
+                          ? 'border-purple-600 bg-white shadow-xs ring-1 ring-purple-500'
+                          : 'border-purple-200/70 bg-white/70 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-black text-purple-950 flex items-center gap-1">
+                          <span>🔢</span> 특정 회차 지정
+                        </span>
+                        {twinStrategy === 'specific_round' && <Check size={14} className="text-purple-600" />}
+                      </div>
+                      <p className="text-[10px] text-slate-600 leading-tight">
+                        원하는 회차(1차, 2차, 또는 랜덤 믹스)를 골라 일괄 출제
+                      </p>
+                    </div>
+
+                    {/* 전략 3: 오답률 높은 쌍둥이 우선 */}
+                    <div
+                      onClick={() => setTwinStrategy('lowest_accuracy')}
+                      className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all select-none ${
+                        twinStrategy === 'lowest_accuracy'
+                          ? 'border-purple-600 bg-white shadow-xs ring-1 ring-purple-500'
+                          : 'border-purple-200/70 bg-white/70 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-black text-purple-950 flex items-center gap-1">
+                          <span>📉</span> 고난도 우선
+                        </span>
+                        {twinStrategy === 'lowest_accuracy' && <Check size={14} className="text-purple-600" />}
+                      </div>
+                      <p className="text-[10px] text-slate-600 leading-tight">
+                        전체 학생 제출 이력 기반, 정답률이 가장 낮았던 고난도 쌍둥이 우선 배정
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 특정 회차 지정 시 세부 선택 칩 */}
+                  {twinStrategy === 'specific_round' && (
+                    <div className="bg-white/90 border border-purple-200 rounded-xl p-2.5 flex items-center gap-2 flex-wrap text-xs">
+                      <span className="text-[11px] font-bold text-purple-900 shrink-0">출제 회차 선택:</span>
+                      {['1차', '2차', '3차', 'random'].map(r => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setSelectedSpecificRound(r)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                            selectedSpecificRound === r
+                              ? 'bg-purple-600 text-white shadow-xs'
+                              : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                          }`}
+                        >
+                          {r === 'random' ? '🎲 랜덤 믹스' : `${r} 쌍둥이`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 🌟 1-2. 시험 제한 시간 및 리마인드 팝업 설정 카드 */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                  {/* 제한 시간 설정 */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700 flex items-center gap-1">
+                        <Clock size={14} className="text-slate-500" />
+                        시험 제한 시간
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        권장: {Math.max(10, wrongExamModal.wrongQuestions.length * 3)}분
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (wrongExamDurationMode === 'unlimited') {
+                            setWrongExamDurationMode('custom');
+                          } else {
+                            setWrongExamDurationMode('unlimited');
+                          }
+                        }}
+                        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all border ${
+                          wrongExamDurationMode === 'unlimited'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {wrongExamDurationMode === 'unlimited' ? '✓ 시간제한 없음 (자율)' : '시간제한 없음 (OFF)'}
+                      </button>
+
+                      {wrongExamDurationMode !== 'unlimited' && (
+                        <div className="flex items-center bg-white border border-slate-300 rounded-xl overflow-hidden shadow-2xs">
+                          <button
+                            type="button"
+                            onClick={() => setWrongExamCustomMinutes(prev => Math.max(5, prev - 5))}
+                            className="px-2 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors"
+                          >
+                            -5분
+                          </button>
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            value={wrongExamCustomMinutes}
+                            onChange={e => setWrongExamCustomMinutes(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-12 text-center text-xs font-black text-slate-800 border-x border-slate-200 py-1 focus:outline-none focus:bg-purple-50/50"
+                          />
+                          <span className="text-[10px] font-bold text-slate-400 px-1">분</span>
+                          <button
+                            type="button"
+                            onClick={() => setWrongExamCustomMinutes(prev => prev + 5)}
+                            className="px-2 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors"
+                          >
+                            +5분
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 학생 접속 리마인드 팝업 알림 토글 */}
+                  <div className="space-y-1.5 sm:border-l sm:border-slate-200 sm:pl-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700 flex items-center gap-1">
+                        <Bell size={14} className={wrongExamRemindPopup ? 'text-purple-600' : 'text-slate-400'} />
+                        미완료 알림 팝업
+                      </span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        wrongExamRemindPopup ? 'bg-purple-100 text-purple-700' : 'bg-slate-200 text-slate-500'
+                      }`}>
+                        {wrongExamRemindPopup ? '알림 ON' : '알림 OFF'}
+                      </span>
+                    </div>
+
+                    <label className="flex items-start gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={wrongExamRemindPopup}
+                        onChange={e => setWrongExamRemindPopup(e.target.checked)}
+                        className="mt-0.5 rounded text-purple-600 focus:ring-purple-500 w-4 h-4 cursor-pointer"
+                      />
+                      <span className="text-[11px] text-slate-600 leading-tight">
+                        학생 접속 시 <strong>"미완료 오답 시험 리마인드 팝업"</strong> 자동 노출
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
               {/* 2. C안 안내 배너: 쌍둥이 없는 문항 Fallback 알림 */}
               {wrongExamMode === 'twin' && (() => {
                 const total = wrongExamModal.wrongQuestions.length;
-                const twinCount = wrongExamModal.wrongQuestions.filter(q => !!getNextAvailableTwinForStudent(q, wrongExamModal.student.id)).length;
+                const twinCount = wrongExamModal.wrongQuestions.filter(q => 
+                  !!getAssignedTwinForQuestion(q, wrongExamModal.student.id, twinStrategy, selectedSpecificRound, twinQuestionOverrides)
+                ).length;
                 const noTwinCount = total - twinCount;
 
                 if (noTwinCount > 0) {
@@ -4128,48 +4721,139 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 <div className="flex items-center justify-between text-xs font-bold text-slate-600 px-0.5">
                   <span>출제될 문항 목록 (총 {wrongExamModal.wrongQuestions.length}문항)</span>
                   <span className="text-[11px] text-slate-400">
-                    시험 시간: {Math.max(10, wrongExamModal.wrongQuestions.length * 3)}분 자동 설정
+                    시간: {wrongExamDurationMode === 'unlimited' ? '무제한 (자율)' : `${wrongExamCustomMinutes}분`}
                   </span>
                 </div>
 
-                <div className="bg-slate-50 border border-slate-200 rounded-2xl divide-y divide-slate-100 max-h-[220px] overflow-y-auto">
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl divide-y divide-slate-100 max-h-[240px] overflow-y-auto">
                   {wrongExamModal.wrongQuestions.map((q, idx) => {
-                    const assignedTwin = wrongExamMode === 'twin' ? getNextAvailableTwinForStudent(q, wrongExamModal.student.id) : null;
+                    const assignedTwin = wrongExamMode === 'twin'
+                      ? getAssignedTwinForQuestion(q, wrongExamModal.student.id, twinStrategy, selectedSpecificRound, twinQuestionOverrides)
+                      : null;
+                    const availableTwins = wrongExamMode === 'twin' ? getAllAvailableTwinsForQuestion(q) : [];
                     const qNum = q.question_number ?? parseQuestionNumber(q);
+                    const isChanging = changingTwinQuestionId === q.id;
 
                     return (
-                      <div key={q.id || idx} className="p-2.5 flex items-center justify-between text-xs hover:bg-white transition-colors">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="w-5 h-5 rounded-md bg-slate-200 text-slate-700 font-black text-[10px] flex items-center justify-center shrink-0">
-                            {idx + 1}
-                          </span>
-                          {qNum && (
-                            <span className="px-1.5 py-0.2 bg-violet-100 text-violet-700 font-bold rounded text-[10px] shrink-0">
-                              {qNum}번
+                      <div key={q.id || idx} className="p-2.5 space-y-1.5 hover:bg-white transition-colors relative">
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-5 h-5 rounded-md bg-slate-200 text-slate-700 font-black text-[10px] flex items-center justify-center shrink-0">
+                              {idx + 1}
                             </span>
-                          )}
-                          <span className="font-bold text-slate-700 truncate max-w-[200px]">
-                            {q.name}
-                          </span>
+                            {qNum && (
+                              <span className="px-1.5 py-0.2 bg-violet-100 text-violet-700 font-bold rounded text-[10px] shrink-0">
+                                {qNum}번
+                              </span>
+                            )}
+                            <span className="font-bold text-slate-700 truncate max-w-[200px]" title={q.name}>
+                              {q.name}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {wrongExamMode === 'twin' ? (
+                              <>
+                                {assignedTwin ? (
+                                  <span className="px-2 py-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-md text-[10px] font-black shadow-2xs flex items-center gap-1">
+                                    <span>👯 [{assignedTwin.roundName} 쌍둥이]</span>
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold">
+                                    원본 문제로 대체
+                                  </span>
+                                )}
+
+                                {/* 개별 문항 쌍둥이 회차 수동 변경 버튼 */}
+                                <button
+                                  type="button"
+                                  onClick={() => setChangingTwinQuestionId(isChanging ? null : q.id)}
+                                  className="px-1.5 py-0.5 text-[10px] font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded transition-colors cursor-pointer"
+                                >
+                                  {isChanging ? '닫기 ▲' : '변경 ▾'}
+                                </button>
+                              </>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-bold">
+                                원본 문제
+                              </span>
+                            )}
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          {wrongExamMode === 'twin' ? (
-                            assignedTwin ? (
-                              <span className="px-2 py-0.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-md text-[10px] font-black shadow-2xs flex items-center gap-1">
-                                <span>👯 [{assignedTwin.roundName} 쌍둥이]</span>
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold">
-                                원본 문제로 대체
-                              </span>
-                            )
-                          ) : (
-                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md text-[10px] font-bold">
-                              원본 문제
-                            </span>
-                          )}
-                        </div>
+                        {/* 개별 문항 쌍둥이 선택 팝오버 메뉴 */}
+                        {isChanging && (
+                          <div className="bg-purple-50/90 border border-purple-200 rounded-xl p-2 mt-1 space-y-1.5 text-xs animate-in fade-in duration-150">
+                            <div className="flex items-center justify-between text-[11px] font-bold text-purple-900">
+                              <span>이 문항의 출제 문제 변경:</span>
+                              <button
+                                type="button"
+                                onClick={() => setChangingTwinQuestionId(null)}
+                                className="text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {availableTwins.map(at => {
+                                const isCurrent = assignedTwin?.roundName === at.roundName;
+                                return (
+                                  <button
+                                    key={at.roundName}
+                                    type="button"
+                                    onClick={() => {
+                                      setTwinQuestionOverrides(prev => ({
+                                        ...prev,
+                                        [q.id]: at,
+                                      }));
+                                      setChangingTwinQuestionId(null);
+                                    }}
+                                    className={`px-2 py-1 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                                      isCurrent
+                                        ? 'bg-purple-600 text-white shadow-2xs'
+                                        : 'bg-white text-purple-800 border border-purple-200 hover:bg-purple-100'
+                                    }`}
+                                  >
+                                    {isCurrent ? `✓ ${at.roundName} 쌍둥이` : `${at.roundName} 쌍둥이`}
+                                  </button>
+                                );
+                              })}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTwinQuestionOverrides(prev => ({
+                                    ...prev,
+                                    [q.id]: 'original',
+                                  }));
+                                  setChangingTwinQuestionId(null);
+                                }}
+                                className={`px-2 py-1 rounded text-[11px] font-bold transition-all cursor-pointer ${
+                                  twinQuestionOverrides[q.id] === 'original'
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                                }`}
+                              >
+                                📄 원본 문제로 출제
+                              </button>
+                              {twinQuestionOverrides[q.id] !== undefined && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTwinQuestionOverrides(prev => {
+                                      const next = { ...prev };
+                                      delete next[q.id];
+                                      return next;
+                                    });
+                                    setChangingTwinQuestionId(null);
+                                  }}
+                                  className="px-2 py-1 rounded text-[11px] font-bold text-slate-500 hover:text-slate-700 bg-white border border-slate-200 cursor-pointer"
+                                >
+                                  🔄 기본 전략대로 자동 선택
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

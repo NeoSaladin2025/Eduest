@@ -52,6 +52,7 @@ export interface ExamPaper {
   is_special?: boolean;
   require_proof_image?: boolean;
   enable_lockdown?: boolean;
+  remind_popup?: boolean;
   student_overrides?: Record<string, StudentOverrideConfig>;
   parent_exam_id?: string;
   created_at: string;
@@ -201,6 +202,7 @@ export async function POST(req: NextRequest) {
       is_special, 
       require_proof_image, 
       enable_lockdown,
+      remind_popup,
       student_overrides,
       parent_exam_id 
     } = body;
@@ -242,6 +244,7 @@ export async function POST(req: NextRequest) {
       is_special: !!is_special,
       require_proof_image: !!require_proof_image,
       enable_lockdown: !!enable_lockdown,
+      remind_popup: !!remind_popup,
       student_overrides: typeof student_overrides === 'object' && student_overrides !== null ? student_overrides : {},
       parent_exam_id: parent_exam_id || undefined,
       created_at: new Date().toISOString(),
@@ -273,6 +276,7 @@ export async function PUT(req: NextRequest) {
       assigned_student_ids,
       require_proof_image,
       enable_lockdown,
+      remind_popup,
       student_overrides
     } = body;
 
@@ -307,6 +311,7 @@ export async function PUT(req: NextRequest) {
         assigned_student_ids !== undefined ? assigned_student_ids : current.assigned_student_ids,
       require_proof_image: require_proof_image !== undefined ? !!require_proof_image : current.require_proof_image,
       enable_lockdown: enable_lockdown !== undefined ? !!enable_lockdown : current.enable_lockdown,
+      remind_popup: remind_popup !== undefined ? !!remind_popup : current.remind_popup,
       student_overrides: student_overrides !== undefined ? student_overrides : current.student_overrides,
       updated_at: new Date().toISOString(),
     };

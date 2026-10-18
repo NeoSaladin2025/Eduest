@@ -888,7 +888,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                         <div className="text-xl font-black text-slate-600 group-hover:text-white uppercase">GO BACK</div>
                       </div>
                     )}
-                    {displayLibrary.map(folder => {
+                    {displayLibrary.filter(f => !f.name?.includes('쌍둥이')).map(folder => {
                       const isUnlocked = isFolderAccessible(folder, student?.unlocked_folders);
                       const isLocked = !isUnlocked;
 
