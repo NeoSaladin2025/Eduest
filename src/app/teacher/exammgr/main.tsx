@@ -113,7 +113,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [qNumEnd, setQNumEnd] = useState<string>('');
   const [qNumPreset, setQNumPreset] = useState<'all' | '1-5' | '6-10' | 'odd' | 'even'>('all');
   const [isFilterActive, setIsFilterActive] = useState<boolean>(false);
-  const [expandedSubFolders, setExpandedSubFolders] = useState<Set<string>>(new Set());
+  const [subFolderExpandState, setSubFolderExpandState] = useState<Record<string, boolean>>({});
 
   // ── 시험지 생성 폼 상태 ──
   const [examTitle, setExamTitle] = useState('');
@@ -568,13 +568,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   };
 
   // 🌟 소단원 폴더 접기/펼치기 토글
-  const toggleSubFolderExpand = (folderKey: string) => {
-    setExpandedSubFolders(prev => {
-      const next = new Set(prev);
-      if (next.has(folderKey)) next.delete(folderKey);
-      else next.add(folderKey);
-      return next;
-    });
+  const toggleSubFolderExpand = (folderKey: string, currentExpanded: boolean) => {
+    setSubFolderExpandState(prev => ({
+      ...prev,
+      [folderKey]: !currentExpanded,
+    }));
   };
 
   // 문제 바구니 순서 이동 (위로)
@@ -2722,7 +2720,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
                             // 모든 서브 폴더가 펼쳐져 있는지 확인
                             const allSubKeys = sortedFolderKeys.map(k => `${cat.id}__${k}`);
-                            const areAllSubExpanded = allSubKeys.length > 0 && allSubKeys.every(k => expandedSubFolders.has(k));
+                            const areAllSubExpanded = allSubKeys.length > 0 && allSubKeys.every(k => {
+                              return subFolderExpandState[k] !== undefined
+                                ? subFolderExpandState[k]
+                                : (sortedFolderKeys.length === 1);
+                            });
 
                             return (
                               <div className="p-2 border-t border-slate-100 bg-slate-50/50 space-y-2">
@@ -2733,13 +2735,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                     <button
                                       type="button"
                                       onClick={() => {
-                                        setExpandedSubFolders(prev => {
-                                          const next = new Set(prev);
-                                          if (areAllSubExpanded) {
-                                            allSubKeys.forEach(k => next.delete(k));
-                                          } else {
-                                            allSubKeys.forEach(k => next.add(k));
-                                          }
+                                        setSubFolderExpandState(prev => {
+                                          const next = { ...prev };
+                                          allSubKeys.forEach(k => {
+                                            next[k] = !areAllSubExpanded;
+                                          });
                                           return next;
                                         });
                                       }}
@@ -2769,8 +2769,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   const isFolderAllInBasket = sortedFolderItems.length > 0 && folderInBasketCount === sortedFolderItems.length;
 
                                   const folderKey = `${cat.id}__${folderName}`;
-                                  // 폴더가 1개뿐이거나 사용자가 펼친 경우 열림
-                                  const isSubExpanded = expandedSubFolders.has(folderKey) || sortedFolderKeys.length === 1;
+                                  // 폴더가 1개뿐이거나 사용자가 펼친 경우 열림 (사용자가 직접 토글한 경우 그 상태 우선 반영)
+                                  const isSubExpanded = subFolderExpandState[folderKey] !== undefined
+                                    ? subFolderExpandState[folderKey]
+                                    : (sortedFolderKeys.length === 1);
 
                                   return (
                                     <div
@@ -2779,7 +2781,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                     >
                                       {/* 소단원 헤더 */}
                                       <div
-                                        onClick={() => toggleSubFolderExpand(folderKey)}
+                                        onClick={() => toggleSubFolderExpand(folderKey, isSubExpanded)}
                                         className="flex items-center justify-between p-2 hover:bg-slate-50 cursor-pointer select-none transition-colors"
                                       >
                                         <div className="flex items-center gap-1.5 min-w-0">
