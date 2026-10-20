@@ -21,7 +21,8 @@ import {
   Sliders,
   AlertTriangle,
   Type,
-  ArrowUpDown
+  ArrowUpDown,
+  BookOpen
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 
@@ -32,6 +33,7 @@ interface ExamPrintModalProps {
 }
 
 export type QuestionsPerPageType = 1 | 2 | 4 | 6;
+export type DuplexBindingType = 'long' | 'short';
 export type AnswerFontFamilyType = 'math' | 'sans' | 'serif';
 export type AnswerFontSizeType = 'small' | 'medium' | 'large';
 export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
@@ -51,6 +53,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [columnFlowDirection, setColumnFlowDirection] = useState<'vertical' | 'horizontal'>('vertical'); // 디폴트: 세로 우선 (N자형 한국 표준)
   const [showCenterDivider, setShowCenterDivider] = useState(true); // 디폴트: ON (가운데 기준선)
   const [showFolderInfo, setShowFolderInfo] = useState(true); // 디폴트: ON (문제 폴더 정보 [5.1] 표기)
+
+  // 📖 양면 인쇄 넘김 방향 (긴 가장자리 책넘김 vs 짧은 가장자리 위로넘김)
+  const [duplexBinding, setDuplexBinding] = useState<DuplexBindingType>('long'); // 디폴트: 긴 가장자리 (책 넘김★)
+  const [previewRotateEven, setPreviewRotateEven] = useState(false); // 화면 미리보기에서도 뒷면 180도 회전 여부 (디폴트: OFF)
 
   // 📝 빠른 정답표 전용 레이아웃 & 옵션 상태
   const [answerKeyColumns, setAnswerKeyColumns] = useState<1 | 2>(2); // 디폴트: 2단 (컴팩트 용지절약)
@@ -204,12 +210,25 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       if (savedFolderInfo !== null) {
         setShowFolderInfo(savedFolderInfo === 'true');
       }
+
+      // 7. 양면 인쇄 넘김 방향 복원 (디폴트: 긴 가장자리 long)
+      const savedDuplex = localStorage.getItem('eduest_print_duplex_binding');
+      if (savedDuplex === 'long' || savedDuplex === 'short') {
+        setDuplexBinding(savedDuplex);
+      } else {
+        setDuplexBinding('long'); // 디폴트: 긴 가장자리 (책 넘김★)
+      }
     } catch (e) {
       console.warn('Failed to load saved print config:', e);
     }
   }, []);
 
   // 🔄 설정 변경 헬퍼 및 localStorage 동기화
+  const handleDuplexBindingChange = (binding: DuplexBindingType) => {
+    setDuplexBinding(binding);
+    localStorage.setItem('eduest_print_duplex_binding', binding);
+  };
+
   const handleToggleFlowDirection = (dir: 'vertical' | 'horizontal') => {
     setColumnFlowDirection(dir);
     localStorage.setItem('eduest_print_flow_direction', dir);
@@ -770,6 +789,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                 background: #ffffff !important;
                 overflow: hidden !important;
               }
+              .a4-print-sheet.even-page-rotate {
+                transform: rotate(180deg) !important;
+                transform-origin: 50% 50% !important;
+              }
               .a4-print-sheet:last-child {
                 page-break-after: auto !important;
                 break-after: auto !important;
@@ -902,6 +925,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             border-radius: 0 !important;
             background: white !important;
             overflow: hidden !important;
+          }
+          .a4-print-sheet.even-page-rotate {
+            transform: rotate(180deg) !important;
+            transform-origin: 50% 50% !important;
           }
           .a4-print-sheet:last-child {
             page-break-after: auto !important;
@@ -1135,6 +1162,72 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
               </p>
             </div>
           )}
+
+          {/* 2-2. 📖 양면 인쇄 넘김 방향 (긴 가장자리 책넘김 vs 짧은 가장자리 위로넘김) */}
+          <div className="space-y-2 p-3 bg-slate-800/60 rounded-xl border border-slate-700/80 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-black text-slate-300 flex items-center gap-1.5">
+                <BookOpen size={13} className="text-violet-400" />
+                <span>양면 인쇄 넘김 방향</span>
+              </label>
+              <span className="text-[10px] text-violet-300 font-extrabold px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30">
+                {duplexBinding === 'long' ? '책 넘김 (표준★)' : '위로 넘김'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 bg-slate-900/90 p-1 rounded-lg border border-slate-700">
+              <button
+                type="button"
+                onClick={() => handleDuplexBindingChange('long')}
+                className={`py-2 rounded-md text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  duplexBinding === 'long'
+                    ? 'bg-violet-600 text-white shadow-xs font-black'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="책 넘기듯이 옆으로 넘겨 읽는 시험지 표준 방식 (뒷면 180° 자동 보정)"
+              >
+                <BookOpen size={12} />
+                <span>긴 가장자리★</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDuplexBindingChange('short')}
+                className={`py-2 rounded-md text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  duplexBinding === 'short'
+                    ? 'bg-violet-600 text-white shadow-xs font-black'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="달력이나 메모패드처럼 아래를 잡고 위로 넘기는 방식 (회전 없음)"
+              >
+                <FileText size={12} />
+                <span>짧은 가장자리</span>
+              </button>
+            </div>
+
+            <p className="text-[10px] text-slate-400 leading-tight">
+              {duplexBinding === 'long'
+                ? '✓ 책처럼 옆으로 넘겨 읽도록 뒷면(짝수 쪽)을 180° 자동 회전하여 인쇄합니다.'
+                : '✓ 달력처럼 아래를 잡고 위로 넘겨 읽도록 회전 없이 그대로 인쇄합니다.'}
+            </p>
+
+            {/* 긴 가장자리 모드일 때 화면 미리보기 회전 확인 토글 */}
+            {duplexBinding === 'long' && (
+              <div className="pt-1.5 border-t border-slate-700/60 flex items-center justify-between">
+                <label className="text-[10px] text-slate-300 flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={previewRotateEven}
+                    onChange={e => setPreviewRotateEven(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded text-violet-600 accent-violet-600 bg-slate-900 border-slate-700 cursor-pointer"
+                  />
+                  <span>미리보기 화면에서도 뒷면 회전 보기</span>
+                </label>
+                <span className="text-[9px] text-slate-500 font-medium">
+                  {previewRotateEven ? '회전 표시 중' : '정방향 표시 중'}
+                </span>
+              </div>
+            )}
+          </div>
 
           {/* 3. 🏫 학원 / 기관명 표기 (디폴트 OFF, 토글 ON 시 활성화 + localStorage 자동 기억) */}
           <div className="space-y-2 pt-2 border-t border-slate-800">
@@ -1656,13 +1749,16 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
           </div>
 
           {/* 안내 배너 */}
-          <div className="p-3 bg-violet-950/40 border border-violet-800/40 rounded-xl space-y-1">
+          <div className="p-3 bg-violet-950/40 border border-violet-800/40 rounded-xl space-y-1.5">
             <div className="flex items-center gap-1.5 text-violet-300 text-xs font-bold">
               <Sparkles size={13} />
               <span>인쇄 & PDF 저장 안내</span>
             </div>
             <p className="text-[11px] text-violet-300/80 leading-normal">
-              인쇄 창에서 <strong>[대상: PDF로 저장]</strong>을 선택하시면 깨짐 없는 고화질 벡터 PDF로 바로 저장됩니다.
+              • 인쇄 창에서 <strong>[대상: PDF로 저장]</strong>을 선택하시면 깨짐 없는 고화질 벡터 PDF로 바로 저장됩니다.
+            </p>
+            <p className="text-[11px] text-violet-300/80 leading-normal">
+              • <strong>양면 인쇄(책넘김)</strong> 시 프린터가 상하 반전으로 인쇄하더라도, 뒷면이 자동 180° 보정되어 책처럼 편하게 넘겨 읽을 수 있습니다.
             </p>
           </div>
         </aside>
@@ -1682,12 +1778,16 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             {questionPages.map((pageQuestions, pageIdx) => {
               const pageNumber = pageIdx + 1;
               const isFirstPage = pageIdx === 0;
+              const isEvenPage = pageNumber % 2 === 0;
+              const shouldRotate = duplexBinding === 'long' && isEvenPage;
 
               return (
                 <div
                   key={pageIdx}
-                  className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between ${
+                  className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
                     marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
+                  } ${shouldRotate ? 'even-page-rotate' : ''} ${
+                    shouldRotate && previewRotateEven ? 'rotate-180' : ''
                   }`}
                   style={{
                     width: '210mm',
@@ -1695,6 +1795,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                     boxSizing: 'border-box'
                   }}
                 >
+                  {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
+                  {shouldRotate && (
+                    <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
+                      <BookOpen size={11} />
+                      <span>뒷면 (책넘김 180° 보정 인쇄)</span>
+                    </div>
+                  )}
+
                   {/* 상단 헤더 영역 */}
                   <div className="shrink-0 mb-4">
                     {isFirstPage ? (
@@ -1932,12 +2040,16 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             {includeAnswerKey &&
               answerPages.map((ansPage, ansPageIdx) => {
                 const currentGlobalPage = questionPages.length + ansPageIdx + 1;
+                const isEvenPage = currentGlobalPage % 2 === 0;
+                const shouldRotate = duplexBinding === 'long' && isEvenPage;
 
                 return (
                   <div
                     key={`ans-page-${ansPageIdx}`}
-                    className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between ${
+                    className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
                       marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
+                    } ${shouldRotate ? 'even-page-rotate' : ''} ${
+                      shouldRotate && previewRotateEven ? 'rotate-180' : ''
                     }`}
                     style={{
                       width: '210mm',
@@ -1945,6 +2057,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                       boxSizing: 'border-box'
                     }}
                   >
+                    {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
+                    {shouldRotate && (
+                      <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
+                        <BookOpen size={11} />
+                        <span>뒷면 (책넘김 180° 보정 인쇄)</span>
+                      </div>
+                    )}
+
                     <div>
                       {/* 정답표 상단 헤더 영역 */}
                       {ansPage.isFirstPage ? (
