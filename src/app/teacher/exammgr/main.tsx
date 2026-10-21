@@ -201,6 +201,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [assignModalGradeFilter, setAssignModalGradeFilter] = useState<string>('ALL');
   const [assignModalSearch, setAssignModalSearch] = useState<string>('');
 
+  // ⏱️ 시험시간 수정 모달 상태
+  const [durationModalExam, setDurationModalExam] = useState<ExamPaper | null>(null);
+  const [editDurationValue, setEditDurationValue] = useState<number>(50);
+  const [editIsNoLimit, setEditIsNoLimit] = useState<boolean>(false);
+  const [isSavingDuration, setIsSavingDuration] = useState<boolean>(false);
+
   // 응시 결과 현황 모달
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
   const [examSubmissions, setExamSubmissions] = useState<any[]>([]);
@@ -1670,6 +1676,53 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
+  // ⏱️ 시험시간 수정 모달 열기
+  const handleOpenDurationModal = (exam: ExamPaper) => {
+    setDurationModalExam(exam);
+    const d = exam.duration_min;
+    if (typeof d === 'number' && d <= 0) {
+      setEditIsNoLimit(true);
+      setEditDurationValue(50);
+    } else {
+      setEditIsNoLimit(false);
+      setEditDurationValue(typeof d === 'number' && d > 0 ? d : 50);
+    }
+  };
+
+  // ⏱️ 시험시간 저장 핸들러
+  const handleSaveDuration = async () => {
+    if (!durationModalExam) return;
+    const finalDuration = editIsNoLimit ? 0 : Math.max(1, editDurationValue);
+    try {
+      setIsSavingDuration(true);
+      const res = await fetch('/api/test2/exam', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: durationModalExam.id,
+          duration_min: finalDuration,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExams(prev =>
+          prev.map(e => (e.id === durationModalExam.id ? { ...e, duration_min: finalDuration } : e))
+        );
+        if (assignModalExam && assignModalExam.id === durationModalExam.id) {
+          setAssignModalExam(prev => (prev ? { ...prev, duration_min: finalDuration } : null));
+        }
+        setDurationModalExam(null);
+      } else {
+        alert(`시험시간 수정 실패: ${data.error || '알 수 없는 오류'}`);
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert(`시험시간 수정 중 오류가 발생했습니다: ${e.message}`);
+    } finally {
+      setIsSavingDuration(false);
+    }
+  };
+
   // 돋보기 버튼 클릭 또는 Enter 검색 실행
   const handleExecuteSearch = () => {
     setAppliedExamSearch(examSearchInput);
@@ -2134,10 +2187,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <span>{exam.remind_popup ? '알림 ON' : '알림 OFF'}</span>
                           </button>
                         </div>
-                        <div className="flex items-center gap-1.5 text-xs text-slate-400 font-bold shrink-0">
-                          <Clock size={14} />
-                          <span>{exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}</span>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenDurationModal(exam);
+                          }}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold shrink-0 border border-slate-200 bg-slate-50 hover:bg-violet-50 hover:border-violet-300 text-slate-600 hover:text-violet-700 transition-all cursor-pointer shadow-2xs group/duration"
+                          title="시험시간 변경 (클릭)"
+                        >
+                          <Clock size={13} className="text-slate-400 group-hover/duration:text-violet-600 transition-colors" />
+                          <span className="font-black">{exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}</span>
+                          <Edit2 size={11} className="text-slate-300 group-hover/duration:text-violet-500 transition-colors ml-0.5" />
+                        </button>
                       </div>
 
                       {/* 시험지 타이틀 */}
@@ -3764,6 +3826,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 }`}>
                   📷 인증샷: {assignModalExam.require_proof_image ? 'ON' : 'OFF'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenDurationModal(assignModalExam)}
+                  className="px-2 py-0.5 rounded text-[10px] font-black bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+                  title="시험시간 변경 (클릭)"
+                >
+                  <Clock size={10} />
+                  <span>시간: {assignModalExam.duration_min > 0 ? `${assignModalExam.duration_min}분` : '무제한'}</span>
+                  <Edit2 size={9} />
+                </button>
                 <span className="text-[10px] text-slate-400 font-medium">
                   (배정 후 학생 옆 아이콘으로 개별 조절 가능)
                 </span>
@@ -4920,6 +4992,153 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         onClose={() => setPrintModalExam(null)}
         exam={printModalExam}
       />
+
+      {/* ⏱️ 시험시간 수정 모달 */}
+      {durationModalExam && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95 border border-slate-100">
+            {/* 헤더 */}
+            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0 shadow-2xs">
+                  <Clock size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-base font-black text-slate-800 tracking-tight">
+                    시험시간 변경
+                  </h3>
+                  <p className="text-xs text-slate-500 font-bold truncate mt-0.5" title={durationModalExam.title}>
+                    {durationModalExam.title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDurationModalExam(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors shrink-0 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 본문 */}
+            <div className="space-y-4">
+              {/* 현재 설정 안내 */}
+              <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs font-bold">
+                <span className="text-slate-500">현재 시험시간</span>
+                <span className="text-slate-800 font-black">
+                  {durationModalExam.duration_min > 0 ? `${durationModalExam.duration_min}분` : '무제한 (제한 없음)'}
+                </span>
+              </div>
+
+              {/* 제한시간 없음 (무제한) 토글 */}
+              <label className={`flex items-center justify-between p-3.5 rounded-2xl border cursor-pointer select-none transition-all ${
+                editIsNoLimit ? 'bg-violet-50/80 border-violet-400 text-violet-900' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}>
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="checkbox"
+                    checked={editIsNoLimit}
+                    onChange={(e) => setEditIsNoLimit(e.target.checked)}
+                    className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs font-black block">제한시간 없음 (무제한 자율 학습)</span>
+                    <span className="text-[10px] text-slate-400 font-normal">시간 압박 없이 자유롭게 풀이할 수 있습니다.</span>
+                  </div>
+                </div>
+                <span className={`text-[11px] font-black px-2 py-0.5 rounded-lg ${editIsNoLimit ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                  {editIsNoLimit ? '무제한 ON' : 'OFF'}
+                </span>
+              </label>
+
+              {/* 시간 직접 입력 */}
+              {!editIsNoLimit && (
+                <div className="space-y-2 animate-in fade-in duration-150">
+                  <label className="text-xs font-black text-slate-700 block">
+                    제한시간 설정 (분 단위)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={1}
+                      max={999}
+                      value={editDurationValue === 0 ? '' : editDurationValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditDurationValue(v === '' ? 0 : Math.max(1, parseInt(v, 10) || 0));
+                      }}
+                      placeholder="예: 50"
+                      className="w-full pl-4 pr-12 py-3 rounded-2xl border-2 border-slate-200 focus:border-violet-600 focus:outline-none text-base font-black text-slate-900 bg-slate-50/50 focus:bg-white transition-all"
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">
+                      분
+                    </span>
+                  </div>
+
+                  {/* 빠른 프리셋 버튼들 */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] font-bold text-slate-400">빠른 선택:</span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {[30, 40, 50, 60, 70, 80, 90, 100, 120].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => {
+                            setEditDurationValue(mins);
+                            setEditIsNoLimit(false);
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                            !editIsNoLimit && editDurationValue === mins
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                          }`}
+                        >
+                          {mins}분
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] leading-relaxed bg-amber-50/70 border border-amber-200/80 p-2.5 rounded-xl text-amber-800">
+                💡 <strong>안내:</strong> 시간을 변경하면 저장 즉시 시험지 정보가 갱신되며, 이후 학생들이 시험에 진입할 때 변경된 제한시간이 적용됩니다.
+              </p>
+            </div>
+
+            {/* 푸터 버튼 */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setDurationModalExam(null)}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                disabled={isSavingDuration}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveDuration}
+                disabled={isSavingDuration || (!editIsNoLimit && (!editDurationValue || editDurationValue <= 0))}
+                className="px-5 py-2.5 rounded-xl text-xs font-black bg-violet-600 hover:bg-violet-700 text-white shadow-md shadow-violet-200 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isSavingDuration ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    <span>저장 중...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={13} strokeWidth={3} />
+                    <span>시험시간 변경 저장</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
