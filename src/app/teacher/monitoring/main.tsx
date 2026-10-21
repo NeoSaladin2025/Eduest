@@ -53,7 +53,7 @@ export default function MonitoringCenterMain() {
   return (
     <div className="w-full min-h-screen bg-slate-50 flex flex-col">
       {/* 서브 탭 네비게이션 헤더 */}
-      <div className="bg-white border-b border-slate-200/80 px-6 md:px-8 py-3.5 flex items-center justify-between gap-4 sticky top-0 z-40 shadow-xs">
+      <div className="bg-white border-b border-slate-200/80 px-6 md:px-8 py-3.5 flex items-center justify-between gap-4 sticky top-0 z-10 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-100">
             <Radio size={20} className="animate-pulse" />
