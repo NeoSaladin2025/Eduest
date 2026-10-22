@@ -20,7 +20,8 @@ import {
   SlidersHorizontal,
   Loader2,
   Sparkles,
-  Info
+  Info,
+  HelpCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import FilterChipBadge, { FilterChip } from '@/app/teacher/exammgr/FilterChipBadge';
@@ -53,12 +54,99 @@ interface StudentSubmissionLite {
   wrong_count: number;
   submitted_at: string;
   duration_seconds?: number;
-  answers?: {
-    question_id: string;
-    user_answer: string;
-    is_correct: boolean;
-    points: number;
-  }[];
+  answers?: Record<string, any> | any[];
+}
+
+interface QuestionResultItem {
+  id: string;
+  number: number;
+  userAnswer: string;
+  isCorrect: boolean;
+  isUnknown: boolean;
+  correctAnswer: string;
+  points?: number;
+  timeSpentSec?: number;
+  imageUrl?: string;
+  name?: string;
+}
+
+// 🛡️ 제출 답안이 객체(Record)든 배열(Array)이든 안전하게 파싱하여 문항별 정오표 생성
+function extractQuestionResults(item: EnrichedSubmission): QuestionResultItem[] {
+  const sub = item.submission;
+  const exam = item.exam;
+  const rawAnswers = sub?.answers;
+
+  // 1. exam.questions가 있을 경우 시험 문항 순서대로 매핑
+  if (exam && Array.isArray(exam.questions) && exam.questions.length > 0) {
+    return exam.questions.map((q: any, idx: number) => {
+      let ansInfo: any = null;
+      if (rawAnswers) {
+        if (typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)) {
+          ansInfo = rawAnswers[q.id];
+        } else if (Array.isArray(rawAnswers)) {
+          ansInfo = rawAnswers.find((a: any) => a.question_id === q.id || a.id === q.id);
+        }
+      }
+
+      const userAns = ansInfo?.user_answer ? String(ansInfo.user_answer).trim() : '(미입력)';
+      const isCorrect = ansInfo?.is_correct ?? false;
+      const isUnknown = userAns === '모름' || userAns === 'unknown';
+      const correctAns = ansInfo?.correct_answer || q.answer || '';
+
+      return {
+        id: q.id || `q_${idx + 1}`,
+        number: idx + 1,
+        userAnswer: userAns,
+        isCorrect,
+        isUnknown,
+        correctAnswer: correctAns,
+        points: typeof q.points === 'number' ? q.points : ansInfo?.points,
+        timeSpentSec: ansInfo?.time_spent_sec,
+        imageUrl: q.image_url,
+        name: q.name || q.display_name,
+      };
+    });
+  }
+
+  // 2. exam.questions는 없지만 rawAnswers가 객체(Record)인 경우
+  if (rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)) {
+    return Object.entries(rawAnswers).map(([qid, val]: [string, any], idx) => {
+      const userAns = val?.user_answer ? String(val.user_answer).trim() : '(미입력)';
+      const isCorrect = val?.is_correct ?? false;
+      const isUnknown = userAns === '모름' || userAns === 'unknown';
+      return {
+        id: qid,
+        number: idx + 1,
+        userAnswer: userAns,
+        isCorrect,
+        isUnknown,
+        correctAnswer: val?.correct_answer || '',
+        points: val?.points,
+        timeSpentSec: val?.time_spent_sec,
+      };
+    });
+  }
+
+  // 3. rawAnswers가 배열인 경우
+  if (rawAnswers && Array.isArray(rawAnswers)) {
+    return rawAnswers.map((a: any, idx: number) => {
+      const userAns = a?.user_answer ? String(a.user_answer).trim() : '(미입력)';
+      const isCorrect = a?.is_correct ?? false;
+      const isUnknown = userAns === '모름' || userAns === 'unknown';
+      return {
+        id: a.question_id || a.id || `q_${idx + 1}`,
+        number: idx + 1,
+        userAnswer: userAns,
+        isCorrect,
+        isUnknown,
+        correctAnswer: a?.correct_answer || '',
+        points: a?.points,
+        timeSpentSec: a?.time_spent_sec,
+      };
+    });
+  }
+
+  return [];
 }
 
 interface EnrichedSubmission {
@@ -96,6 +184,16 @@ export default function StudentPerformanceModal({
   // 상세 모달 또는 상세 아코디언 상태
   const [expandedSubmissionId, setExpandedSubmissionId] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState(false);
+
+  // 문항 이미지 미리보기 모달 상태
+  const [previewQuestion, setPreviewQuestion] = useState<{
+    imageUrl?: string;
+    number: number;
+    title: string;
+    userAnswer: string;
+    correctAnswer: string;
+    isCorrect: boolean;
+  } | null>(null);
 
   // 데이터 로드
   useEffect(() => {
@@ -882,36 +980,122 @@ ${recentExamsText}
                                   </td>
                                 </tr>
 
-                                {/* 문항별 상세 아코디언 (부모 콜백 없을 때 인라인 표시) */}
-                                {isExpanded && item.submission.answers && (
-                                  <tr className="bg-slate-50/90">
+                                {/* 문항별 상세 아코디언 */}
+                                {isExpanded && (
+                                  <tr className="bg-slate-50/90 animate-in fade-in duration-150">
                                     <td colSpan={6} className="p-4 border-t border-slate-200">
-                                      <div className="space-y-2">
-                                        <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                                          <span>문항별 정오표 ({item.submission.answers.length}문항)</span>
-                                          <span className="text-[11px] text-slate-400 font-normal">
-                                            초록색: 정답 / 빨간색: 오답
-                                          </span>
-                                        </div>
-                                        <div className="grid grid-cols-5 sm:grid-cols-10 gap-1.5">
-                                          {item.submission.answers.map((ans, qIdx) => (
-                                            <div
-                                              key={ans.question_id || qIdx}
-                                              className={`p-2 rounded-xl text-center border ${
-                                                ans.is_correct
-                                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                                                  : 'bg-rose-50 border-rose-200 text-rose-700'
-                                              }`}
-                                            >
-                                              <p className="text-[10px] font-bold text-slate-400">{qIdx + 1}번</p>
-                                              <p className="text-xs font-black">{ans.user_answer || '-'}</p>
-                                              <div className="flex justify-center mt-0.5">
-                                                {ans.is_correct ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
-                                              </div>
+                                      {(() => {
+                                        const questionResults = extractQuestionResults(item);
+                                        if (questionResults.length === 0) {
+                                          return (
+                                            <div className="py-4 text-center text-xs text-slate-400 font-bold">
+                                              문항별 답안 데이터가 없습니다.
                                             </div>
-                                          ))}
-                                        </div>
-                                      </div>
+                                          );
+                                        }
+
+                                        const correctNum = questionResults.filter(q => q.isCorrect).length;
+                                        const wrongNum = questionResults.filter(q => !q.isCorrect && !q.isUnknown).length;
+                                        const unknownNum = questionResults.filter(q => q.isUnknown).length;
+
+                                        return (
+                                          <div className="space-y-3">
+                                            <div className="flex items-center justify-between text-xs font-bold text-slate-700 bg-white p-2.5 rounded-xl border border-slate-200/80">
+                                              <div className="flex items-center gap-2">
+                                                <span>📋 문항별 정오표 ({questionResults.length}문항)</span>
+                                                <span className="text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
+                                                  정답 {correctNum}
+                                                </span>
+                                                <span className="text-[11px] text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100">
+                                                  오답 {wrongNum}
+                                                </span>
+                                                {unknownNum > 0 && (
+                                                  <span className="text-[11px] text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100">
+                                                    모름 {unknownNum}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <span className="text-[11px] text-slate-400 font-normal">
+                                                문항 클릭 시 문제 이미지 확인 가능
+                                              </span>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
+                                              {questionResults.map((q) => (
+                                                <div
+                                                  key={q.id}
+                                                  onClick={() => {
+                                                    if (q.imageUrl) {
+                                                      setPreviewQuestion({
+                                                        imageUrl: q.imageUrl,
+                                                        number: q.number,
+                                                        title: item.exam.title,
+                                                        userAnswer: q.userAnswer,
+                                                        correctAnswer: q.correctAnswer,
+                                                        isCorrect: q.isCorrect,
+                                                      });
+                                                    }
+                                                  }}
+                                                  className={`p-2.5 rounded-xl border transition-all text-left ${
+                                                    q.imageUrl ? 'cursor-pointer hover:shadow-md hover:scale-[1.02]' : ''
+                                                  } ${
+                                                    q.isCorrect
+                                                      ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+                                                      : q.isUnknown
+                                                      ? 'bg-amber-50/70 border-amber-200 text-amber-950'
+                                                      : 'bg-rose-50/70 border-rose-200 text-rose-950'
+                                                  }`}
+                                                >
+                                                  <div className="flex items-center justify-between mb-1">
+                                                    <span className="text-xs font-black">
+                                                      {q.number}번
+                                                    </span>
+                                                    <div className="flex items-center gap-1">
+                                                      {typeof q.points === 'number' && (
+                                                        <span className="text-[10px] text-slate-400 font-bold">
+                                                          {q.points}점
+                                                        </span>
+                                                      )}
+                                                      {q.isCorrect ? (
+                                                        <CheckCircle2 size={13} className="text-emerald-600" />
+                                                      ) : q.isUnknown ? (
+                                                        <HelpCircle size={13} className="text-amber-500" />
+                                                      ) : (
+                                                        <XCircle size={13} className="text-rose-500" />
+                                                      )}
+                                                    </div>
+                                                  </div>
+
+                                                  <div className="text-[11px] space-y-0.5">
+                                                    <p className="flex items-center justify-between">
+                                                      <span className="text-slate-400 font-medium">제출:</span>
+                                                      <strong className={`font-black ${q.isCorrect ? 'text-emerald-700' : 'text-rose-600'}`}>
+                                                        {q.userAnswer}
+                                                      </strong>
+                                                    </p>
+                                                    {!q.isCorrect && q.correctAnswer && (
+                                                      <p className="flex items-center justify-between text-indigo-600">
+                                                        <span className="text-slate-400 font-medium">정답:</span>
+                                                        <strong className="font-black">{q.correctAnswer}</strong>
+                                                      </p>
+                                                    )}
+                                                    {typeof q.timeSpentSec === 'number' && q.timeSpentSec > 0 && (
+                                                      <p className="text-[10px] text-slate-400 text-right mt-1">
+                                                        ⏱️ {q.timeSpentSec}초
+                                                      </p>
+                                                    )}
+                                                    {q.imageUrl && (
+                                                      <p className="text-[9px] text-indigo-500 font-bold text-center mt-1 pt-1 border-t border-slate-200/50">
+                                                        🔍 문제 보기
+                                                      </p>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
                                     </td>
                                   </tr>
                                 )}
@@ -942,6 +1126,69 @@ ${recentExamsText}
           </button>
         </div>
       </div>
+
+      {/* 🖼️ 문항 이미지 및 정답 상세 팝업 */}
+      {previewQuestion && (
+        <div 
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setPreviewQuestion(null)}
+        >
+          <div 
+            className="bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-indigo-600 text-white font-black text-xs flex items-center justify-center">
+                  {previewQuestion.number}
+                </span>
+                <h4 className="font-black text-slate-800 text-sm">
+                  {previewQuestion.title} - {previewQuestion.number}번 문항 상세
+                </h4>
+              </div>
+              <button 
+                onClick={() => setPreviewQuestion(null)} 
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {previewQuestion.imageUrl && (
+              <div className="max-h-[55vh] overflow-y-auto rounded-2xl border border-slate-200 p-3 bg-slate-50/50 flex justify-center">
+                <img 
+                  src={previewQuestion.imageUrl} 
+                  alt={`${previewQuestion.number}번 문항`} 
+                  className="max-w-full rounded-xl object-contain shadow-xs" 
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-between bg-slate-50 p-3 rounded-2xl border border-slate-200/80 text-xs">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400 font-bold">학생 제출:</span>
+                  <strong className={`font-black text-sm ${previewQuestion.isCorrect ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {previewQuestion.userAnswer}
+                  </strong>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-400 font-bold">실제 정답:</span>
+                  <strong className="font-black text-sm text-indigo-600">
+                    {previewQuestion.correctAnswer || '(미지정)'}
+                  </strong>
+                </div>
+              </div>
+              <button
+                onClick={() => setPreviewQuestion(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
