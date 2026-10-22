@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ExamFilterChip, 
   FilterChipColor, 
@@ -48,6 +48,24 @@ export default function FilterChipStudioModal({
   const [saving, setSaving] = useState(false);
   const [reordering, setReordering] = useState(false);
 
+  // 모달이 열릴 때 서버에서 최신 필터칩 목록 실시간 동기화
+  useEffect(() => {
+    if (!isOpen) return;
+    let isMounted = true;
+    fetch('/api/test2/filter-chips', { cache: 'no-store' })
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success && Array.isArray(data.chips)) {
+          onChipsUpdated(data.chips);
+        }
+      })
+      .catch((err) => console.error('Failed to sync chips on open:', err));
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   // 폼 초기화 (새로 만들기 모드로)
@@ -94,6 +112,7 @@ export default function FilterChipStudioModal({
         const res = await fetch('/api/test2/filter-chips', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
           body: JSON.stringify({
             chip: {
               id: editingChipId,
@@ -116,6 +135,7 @@ export default function FilterChipStudioModal({
         const res = await fetch('/api/test2/filter-chips', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
           body: JSON.stringify({
             name: name.trim(),
             icon: selectedIcon,
@@ -145,8 +165,9 @@ export default function FilterChipStudioModal({
 
     try {
       setSaving(true);
-      const res = await fetch(`/api/test2/filter-chips?id=${chip.id}`, {
+      const res = await fetch(`/api/test2/filter-chips?id=${encodeURIComponent(chip.id)}`, {
         method: 'DELETE',
+        cache: 'no-store',
       });
       const data = await res.json();
       if (data.success && data.chips) {
@@ -182,6 +203,7 @@ export default function FilterChipStudioModal({
       await fetch('/api/test2/filter-chips', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
         body: JSON.stringify({ chips: reorderedChips }),
       });
     } catch (err) {

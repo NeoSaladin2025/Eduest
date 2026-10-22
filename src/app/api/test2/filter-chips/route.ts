@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -8,6 +11,12 @@ const supabase = createClient(
 
 const RECORD_DRIVE_ID = "test2_filter_chips_data";
 const EXAMS_RECORD_DRIVE_ID = "test2_exam_papers_data";
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0',
+};
 
 export type FilterChipColor = 
   | 'violet' 
@@ -77,6 +86,31 @@ const DEFAULT_FILTER_CHIPS: ExamFilterChip[] = [
   },
 ];
 
+// 헬퍼: DB에 필터칩 목록 저장하기 (필수 컬럼 name, type, grade 반드시 포함)
+async function saveFilterChips(chips: ExamFilterChip[]): Promise<void> {
+  const payload = JSON.stringify({
+    chips,
+    updated_at: new Date().toISOString(),
+  });
+
+  const { error } = await supabase.from("exam_library").upsert(
+    {
+      drive_id: RECORD_DRIVE_ID,
+      name: "test2_filter_chips.json",
+      type: "file",
+      grade: "공통",
+      file_data: payload,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "drive_id" }
+  );
+
+  if (error) {
+    console.error("Failed to save filter chips:", error);
+    throw new Error(`필터칩 데이터베이스 저장 실패: ${error.message}`);
+  }
+}
+
 // 헬퍼: DB에서 필터칩 목록 가져오기
 async function getFilterChips(): Promise<ExamFilterChip[]> {
   try {
@@ -86,13 +120,23 @@ async function getFilterChips(): Promise<ExamFilterChip[]> {
       .eq("drive_id", RECORD_DRIVE_ID)
       .maybeSingle();
 
-    if (error || !data || !data.file_data) {
-      // 최초 실행 시 기본 프리셋 저장 후 반환
-      await saveFilterChips(DEFAULT_FILTER_CHIPS);
+    if (error) {
+      console.error("DB query error for filter chips:", error);
+      return DEFAULT_FILTER_CHIPS;
+    }
+
+    // DB에 레코드가 아직 없거나 file_data가 없는 경우에만 초기 프리셋 저장
+    if (!data || !data.file_data) {
+      try {
+        await saveFilterChips(DEFAULT_FILTER_CHIPS);
+      } catch (saveErr) {
+        console.error("Initial save error:", saveErr);
+      }
       return DEFAULT_FILTER_CHIPS;
     }
 
     const parsed = JSON.parse(data.file_data);
+    // 빈 배열([])이어도 사용자가 모든 칩을 삭제한 상태이므로 빈 배열을 정상 유지!
     const chips: ExamFilterChip[] = Array.isArray(parsed.chips) ? parsed.chips : DEFAULT_FILTER_CHIPS;
     return chips.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   } catch (e) {
@@ -101,40 +145,19 @@ async function getFilterChips(): Promise<ExamFilterChip[]> {
   }
 }
 
-// 헬퍼: DB에 필터칩 목록 저장하기
-async function saveFilterChips(chips: ExamFilterChip[]): Promise<boolean> {
-  try {
-    const payload = JSON.stringify({
-      chips,
-      updated_at: new Date().toISOString(),
-    });
-
-    const { error } = await supabase.from("exam_library").upsert(
-      {
-        drive_id: RECORD_DRIVE_ID,
-        file_data: payload,
-      },
-      { onConflict: "drive_id" }
-    );
-
-    if (error) {
-      console.error("Failed to save filter chips:", error);
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error("Error saving filter chips:", e);
-    return false;
-  }
-}
-
 // GET: 필터칩 목록 조회
 export async function GET() {
   try {
     const chips = await getFilterChips();
-    return NextResponse.json({ success: true, chips });
+    return NextResponse.json(
+      { success: true, chips },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
   }
 }
 
@@ -145,7 +168,10 @@ export async function POST(req: NextRequest) {
     const { name, icon, color, effect } = body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
-      return NextResponse.json({ success: false, error: "필터칩 이름을 입력해주세요." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "필터칩 이름을 입력해주세요." },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
     }
 
     const currentChips = await getFilterChips();
@@ -153,7 +179,10 @@ export async function POST(req: NextRequest) {
 
     // 중복 이름 체크
     if (currentChips.some(c => c.name.toLowerCase() === trimmedName.toLowerCase())) {
-      return NextResponse.json({ success: false, error: "이미 동일한 이름의 필터칩이 존재합니다." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "이미 동일한 이름의 필터칩이 존재합니다." },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
     }
 
     const maxOrder = currentChips.reduce((max, c) => Math.max(max, c.order ?? 0), 0);
@@ -171,9 +200,16 @@ export async function POST(req: NextRequest) {
     const updatedChips = [...currentChips, newChip];
     await saveFilterChips(updatedChips);
 
-    return NextResponse.json({ success: true, chip: newChip, chips: updatedChips });
+    return NextResponse.json(
+      { success: true, chip: newChip, chips: updatedChips },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    console.error("POST filter-chips error:", error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
   }
 }
 
@@ -190,19 +226,28 @@ export async function PUT(req: NextRequest) {
         updated_at: new Date().toISOString(),
       }));
       await saveFilterChips(sanitizedChips);
-      return NextResponse.json({ success: true, chips: sanitizedChips });
+      return NextResponse.json(
+        { success: true, chips: sanitizedChips },
+        { headers: NO_CACHE_HEADERS }
+      );
     }
 
     // 2) 단일 칩 수정인 경우 ({ chip: Partial<ExamFilterChip> & { id: string } })
     const { chip } = body;
     if (!chip || !chip.id) {
-      return NextResponse.json({ success: false, error: "수정할 칩 ID가 필요합니다." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "수정할 칩 ID가 필요합니다." },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
     }
 
     const currentChips = await getFilterChips();
     const idx = currentChips.findIndex(c => c.id === chip.id);
     if (idx === -1) {
-      return NextResponse.json({ success: false, error: "수정할 필터칩을 찾을 수 없습니다." }, { status: 404 });
+      return NextResponse.json(
+        { success: false, error: "수정할 필터칩을 찾을 수 없습니다." },
+        { status: 404, headers: NO_CACHE_HEADERS }
+      );
     }
 
     const current = currentChips[idx];
@@ -219,9 +264,16 @@ export async function PUT(req: NextRequest) {
     currentChips[idx] = updatedChip;
     await saveFilterChips(currentChips);
 
-    return NextResponse.json({ success: true, chip: updatedChip, chips: currentChips });
+    return NextResponse.json(
+      { success: true, chip: updatedChip, chips: currentChips },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    console.error("PUT filter-chips error:", error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
   }
 }
 
@@ -232,17 +284,26 @@ export async function DELETE(req: NextRequest) {
     const chipId = searchParams.get("id");
 
     if (!chipId) {
-      return NextResponse.json({ success: false, error: "삭제할 칩 ID가 필요합니다." }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: "삭제할 칩 ID가 필요합니다." },
+        { status: 400, headers: NO_CACHE_HEADERS }
+      );
     }
 
+    const decodedChipId = decodeURIComponent(chipId);
     const currentChips = await getFilterChips();
-    const targetChip = currentChips.find(c => c.id === chipId);
+    const targetChip = currentChips.find(c => c.id === chipId || c.id === decodedChipId);
     if (!targetChip) {
-      return NextResponse.json({ success: false, error: "삭제할 필터칩을 찾을 수 없습니다." }, { status: 404 });
+      return NextResponse.json(
+        { success: false, error: "삭제할 필터칩을 찾을 수 없습니다." },
+        { status: 404, headers: NO_CACHE_HEADERS }
+      );
     }
 
-    // 1. 필터칩 목록에서 해당 칩 제거
-    const updatedChips = currentChips.filter(c => c.id !== chipId);
+    const effectiveId = targetChip.id;
+
+    // 1. 필터칩 목록에서 해당 칩 제거 및 DB 저장
+    const updatedChips = currentChips.filter(c => c.id !== effectiveId);
     await saveFilterChips(updatedChips);
 
     // 2. 🛡️ [핵심 안전 보장]: 기존 시험지 목록에서 이 필터칩 ID만 안전하게 제거 (시험지 자체는 절대 삭제 안 됨!)
@@ -258,11 +319,11 @@ export async function DELETE(req: NextRequest) {
         if (Array.isArray(parsedExams.exams)) {
           let hasChanges = false;
           const cleanedExams = parsedExams.exams.map((exam: any) => {
-            if (Array.isArray(exam.filter_chip_ids) && exam.filter_chip_ids.includes(chipId)) {
+            if (Array.isArray(exam.filter_chip_ids) && (exam.filter_chip_ids.includes(effectiveId) || exam.filter_chip_ids.includes(chipId))) {
               hasChanges = true;
               return {
                 ...exam,
-                filter_chip_ids: exam.filter_chip_ids.filter((id: string) => id !== chipId),
+                filter_chip_ids: exam.filter_chip_ids.filter((id: string) => id !== effectiveId && id !== chipId),
               };
             }
             return exam;
@@ -272,7 +333,11 @@ export async function DELETE(req: NextRequest) {
             await supabase.from("exam_library").upsert(
               {
                 drive_id: EXAMS_RECORD_DRIVE_ID,
+                name: "test2_exam_papers.json",
+                type: "file",
+                grade: "공통",
                 file_data: JSON.stringify({ ...parsedExams, exams: cleanedExams }),
+                updated_at: new Date().toISOString(),
               },
               { onConflict: "drive_id" }
             );
@@ -284,8 +349,15 @@ export async function DELETE(req: NextRequest) {
       // 필터칩 삭제 자체는 이미 성공했으므로 계속 진행
     }
 
-    return NextResponse.json({ success: true, chips: updatedChips });
+    return NextResponse.json(
+      { success: true, chips: updatedChips },
+      { headers: NO_CACHE_HEADERS }
+    );
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    console.error("DELETE filter-chips error:", error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500, headers: NO_CACHE_HEADERS }
+    );
   }
 }

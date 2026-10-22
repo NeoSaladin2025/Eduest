@@ -310,7 +310,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
       // 5) 필터칩 목록 조회
       try {
-        const chipRes = await fetch('/api/test2/filter-chips');
+        const chipRes = await fetch('/api/test2/filter-chips', { cache: 'no-store' });
         const chipData = await chipRes.json();
         if (chipData.success && Array.isArray(chipData.chips)) {
           setFilterChips(chipData.chips);
