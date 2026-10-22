@@ -55,6 +55,7 @@ export interface ExamPaper {
   remind_popup?: boolean;
   student_overrides?: Record<string, StudentOverrideConfig>;
   parent_exam_id?: string;
+  filter_chip_ids?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -204,7 +205,8 @@ export async function POST(req: NextRequest) {
       enable_lockdown,
       remind_popup,
       student_overrides,
-      parent_exam_id 
+      parent_exam_id,
+      filter_chip_ids
     } = body;
 
     if (!title || !questions || !Array.isArray(questions) || questions.length === 0) {
@@ -247,6 +249,7 @@ export async function POST(req: NextRequest) {
       remind_popup: !!remind_popup,
       student_overrides: typeof student_overrides === 'object' && student_overrides !== null ? student_overrides : {},
       parent_exam_id: parent_exam_id || undefined,
+      filter_chip_ids: Array.isArray(filter_chip_ids) ? filter_chip_ids : [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -277,7 +280,8 @@ export async function PUT(req: NextRequest) {
       require_proof_image,
       enable_lockdown,
       remind_popup,
-      student_overrides
+      student_overrides,
+      filter_chip_ids
     } = body;
 
     if (!examId) {
@@ -313,6 +317,7 @@ export async function PUT(req: NextRequest) {
       enable_lockdown: enable_lockdown !== undefined ? !!enable_lockdown : current.enable_lockdown,
       remind_popup: remind_popup !== undefined ? !!remind_popup : current.remind_popup,
       student_overrides: student_overrides !== undefined ? student_overrides : current.student_overrides,
+      filter_chip_ids: filter_chip_ids !== undefined ? (Array.isArray(filter_chip_ids) ? filter_chip_ids : []) : current.filter_chip_ids,
       updated_at: new Date().toISOString(),
     };
 

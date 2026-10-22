@@ -50,6 +50,9 @@ import DescriptiveGradingModal from './DescriptiveGradingModal';
 import QuestionDiffModal from './QuestionDiffModal';
 import ExamPrintModal from './ExamPrintModal';
 import TeacherBatchGradingModal from './TeacherBatchGradingModal';
+import FilterChipBadge from './FilterChipBadge';
+import FilterChipStudioModal from './FilterChipStudioModal';
+import { ExamFilterChip } from '@/app/api/test2/filter-chips/route';
 
 interface Student {
   id: string;
@@ -201,10 +204,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [assignModalGradeFilter, setAssignModalGradeFilter] = useState<string>('ALL');
   const [assignModalSearch, setAssignModalSearch] = useState<string>('');
 
-  // ⏱️ 시험시간 수정 모달 상태
+  // 🏷️ 필터칩 시스템 상태
+  const [filterChips, setFilterChips] = useState<ExamFilterChip[]>([]);
+  const [selectedFilterChipId, setSelectedFilterChipId] = useState<string>('ALL');
+  const [isFilterStudioOpen, setIsFilterStudioOpen] = useState(false);
+  const [newExamFilterChipIds, setNewExamFilterChipIds] = useState<string[]>([]);
+
+  // ⏱️ 시험지 통합 수정 모달 상태 (제목 + 시간 + 필터칩)
   const [durationModalExam, setDurationModalExam] = useState<ExamPaper | null>(null);
+  const [editTitleValue, setEditTitleValue] = useState<string>('');
   const [editDurationValue, setEditDurationValue] = useState<number>(50);
   const [editIsNoLimit, setEditIsNoLimit] = useState<boolean>(false);
+  const [editFilterChipIds, setEditFilterChipIds] = useState<string[]>([]);
   const [isSavingDuration, setIsSavingDuration] = useState<boolean>(false);
 
   // 응시 결과 현황 모달
@@ -296,6 +307,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
       // 4) 쌍둥이 메타데이터 로드
       await loadTwins();
+
+      // 5) 필터칩 목록 조회
+      try {
+        const chipRes = await fetch('/api/test2/filter-chips');
+        const chipData = await chipRes.json();
+        if (chipData.success && Array.isArray(chipData.chips)) {
+          setFilterChips(chipData.chips);
+        }
+      } catch (chipErr) {
+        console.error('Failed to load filter chips:', chipErr);
+      }
     } catch (e) {
       console.error('Failed to load initial data:', e);
     } finally {
@@ -1044,6 +1066,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           assigned_student_ids: assignedStudentIds,
           enable_lockdown: examEnableLockdown,
           require_proof_image: examRequireProof,
+          filter_chip_ids: newExamFilterChipIds,
         }),
       });
 
@@ -1056,6 +1079,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setExtractionDone(false);
         setAssignedStudentIds([]);
         setExamDuration(50);
+        setNewExamFilterChipIds([]);
         setIsNoTimeLimit(false);
         setActiveTab('list');
         loadInitialData();
@@ -1588,10 +1612,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         }
       }
 
-      // 4. 시험지 종류 필터 (전체 / 일반 / 오답)
+      // 4. 필터칩 (분류) 필터
       const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
-      if (examListTypeFilter === 'NORMAL' && isWrong) return false;
-      if (examListTypeFilter === 'WRONG' && !isWrong) return false;
+      if (selectedFilterChipId !== 'ALL') {
+        if (selectedFilterChipId === 'chip_default_normal') {
+          if (isWrong) return false;
+        } else if (selectedFilterChipId === 'chip_default_wrong') {
+          if (!isWrong) return false;
+        } else {
+          if (!Array.isArray(exam.filter_chip_ids) || !exam.filter_chip_ids.includes(selectedFilterChipId)) {
+            return false;
+          }
+        }
+      }
 
       // 5. '푼 것만 보기' (solved_only) 필터
       if (examSortOption === 'solved_only') {
@@ -1651,7 +1684,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
 
     return list;
-  }, [exams, appliedExamSearch, examListGradeFilter, selectedStudentFilterId, examListTypeFilter, examSortOption, allSubmissions]);
+  }, [exams, appliedExamSearch, examListGradeFilter, selectedStudentFilterId, selectedFilterChipId, examSortOption, allSubmissions]);
 
   // 🌟 시험지 카드에서 미완료 리마인드 팝업 토글
   const handleToggleRemindPopup = async (exam: ExamPaper) => {
@@ -1676,9 +1709,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
-  // ⏱️ 시험시간 수정 모달 열기
+  // ⏱️ 시험지 통합 수정 모달 열기 (제목 + 시간 + 필터칩)
   const handleOpenDurationModal = (exam: ExamPaper) => {
     setDurationModalExam(exam);
+    setEditTitleValue(exam.title || '');
     const d = exam.duration_min;
     if (typeof d === 'number' && d <= 0) {
       setEditIsNoLimit(true);
@@ -1687,12 +1721,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       setEditIsNoLimit(false);
       setEditDurationValue(typeof d === 'number' && d > 0 ? d : 50);
     }
+    setEditFilterChipIds(Array.isArray(exam.filter_chip_ids) ? [...exam.filter_chip_ids] : []);
   };
 
-  // ⏱️ 시험시간 저장 핸들러
+  // ⏱️ 시험지 정보 통합 저장 핸들러 (제목 + 시간 + 필터칩)
   const handleSaveDuration = async () => {
     if (!durationModalExam) return;
+    if (!editTitleValue.trim()) {
+      alert('시험지 제목을 입력해주세요.');
+      return;
+    }
     const finalDuration = editIsNoLimit ? 0 : Math.max(1, editDurationValue);
+    const finalTitle = editTitleValue.trim();
+
     try {
       setIsSavingDuration(true);
       const res = await fetch('/api/test2/exam', {
@@ -1700,24 +1741,34 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           examId: durationModalExam.id,
+          title: finalTitle,
           duration_min: finalDuration,
+          filter_chip_ids: editFilterChipIds,
         }),
       });
       const data = await res.json();
       if (data.success) {
         setExams(prev =>
-          prev.map(e => (e.id === durationModalExam.id ? { ...e, duration_min: finalDuration } : e))
+          prev.map(e =>
+            e.id === durationModalExam.id
+              ? { ...e, title: finalTitle, duration_min: finalDuration, filter_chip_ids: editFilterChipIds }
+              : e
+          )
         );
         if (assignModalExam && assignModalExam.id === durationModalExam.id) {
-          setAssignModalExam(prev => (prev ? { ...prev, duration_min: finalDuration } : null));
+          setAssignModalExam(prev =>
+            prev
+              ? { ...prev, title: finalTitle, duration_min: finalDuration, filter_chip_ids: editFilterChipIds }
+              : null
+          );
         }
         setDurationModalExam(null);
       } else {
-        alert(`시험시간 수정 실패: ${data.error || '알 수 없는 오류'}`);
+        alert(`수정 실패: ${data.error || '알 수 없는 오류'}`);
       }
     } catch (e: any) {
       console.error(e);
-      alert(`시험시간 수정 중 오류가 발생했습니다: ${e.message}`);
+      alert(`수정 중 오류가 발생했습니다: ${e.message}`);
     } finally {
       setIsSavingDuration(false);
     }
@@ -1736,6 +1787,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setSelectedStudentFilterId('ALL');
     setExamSortOption('latest');
     setExamListTypeFilter('ALL');
+    setSelectedFilterChipId('ALL');
   };
 
   return (
@@ -1967,40 +2019,60 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               {/* 하단 서브 필터: 시험지 유형 (전체 / 일반 시험지 / 오답 시험지) 및 필터 초기화 */}
               <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2 text-xs">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-bold text-slate-400 mr-1">분류:</span>
+                  <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
+                    <span>분류:</span>
+                  </span>
+
+                  {/* 전체 칩 */}
                   <button
-                    onClick={() => setExamListTypeFilter('ALL')}
+                    type="button"
+                    onClick={() => setSelectedFilterChipId('ALL')}
                     className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
-                      examListTypeFilter === 'ALL'
+                      selectedFilterChipId === 'ALL'
                         ? 'bg-slate-800 text-white shadow-2xs font-black'
                         : 'text-slate-500 hover:bg-slate-100'
                     }`}
                   >
                     전체 ({exams.length})
                   </button>
+
+                  {/* 등록된 커스텀 필터칩들 목록 렌더링 */}
+                  {filterChips.map((chip) => {
+                    const isSelected = selectedFilterChipId === chip.id;
+                    let matchCount = 0;
+                    if (chip.id === 'chip_default_normal') {
+                      matchCount = exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length;
+                    } else if (chip.id === 'chip_default_wrong') {
+                      matchCount = exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length;
+                    } else {
+                      matchCount = exams.filter(e => Array.isArray(e.filter_chip_ids) && e.filter_chip_ids.includes(chip.id)).length;
+                    }
+
+                    return (
+                      <FilterChipBadge
+                        key={chip.id}
+                        chip={chip}
+                        size="sm"
+                        isActive={isSelected}
+                        count={matchCount}
+                        onClick={() => setSelectedFilterChipId(isSelected ? 'ALL' : chip.id)}
+                      />
+                    );
+                  })}
+
+                  {/* ⚙️ 필터칩 관리 버튼 */}
                   <button
-                    onClick={() => setExamListTypeFilter('NORMAL')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
-                      examListTypeFilter === 'NORMAL'
-                        ? 'bg-violet-600 text-white shadow-2xs font-black'
-                        : 'text-slate-500 hover:bg-slate-100'
-                    }`}
+                    type="button"
+                    onClick={() => setIsFilterStudioOpen(true)}
+                    className="px-2 py-1 rounded-lg font-bold text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 transition-all flex items-center gap-1 cursor-pointer border border-slate-200/60 ml-0.5"
+                    title="필터칩 추가, 수정, 삭제, 순서 변경"
                   >
-                    단일 시험지 ({exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length})
-                  </button>
-                  <button
-                    onClick={() => setExamListTypeFilter('WRONG')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
-                      examListTypeFilter === 'WRONG'
-                        ? 'bg-rose-600 text-white shadow-2xs font-black'
-                        : 'text-slate-500 hover:bg-slate-100'
-                    }`}
-                  >
-                    오답 시험지 ({exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length})
+                    <span>⚙️</span>
+                    <span>필터칩 관리</span>
                   </button>
                 </div>
 
-                {(appliedExamSearch || examListGradeFilter !== 'ALL' || selectedStudentFilterId !== 'ALL' || examSortOption !== 'latest' || examListTypeFilter !== 'ALL') && (
+                {(appliedExamSearch || examListGradeFilter !== 'ALL' || selectedStudentFilterId !== 'ALL' || examSortOption !== 'latest' || selectedFilterChipId !== 'ALL') && (
                   <div className="flex items-center gap-2">
                     <span className="text-slate-500 font-bold">
                       검색 결과: <strong className="text-violet-600">{filteredExams.length}</strong>개
@@ -2186,6 +2258,24 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <Bell size={10} className={exam.remind_popup ? 'fill-white' : ''} />
                             <span>{exam.remind_popup ? '알림 ON' : '알림 OFF'}</span>
                           </button>
+
+                          {/* 🏷️ 시험지에 부여된 커스텀 필터칩 뱃지들 */}
+                          {Array.isArray(exam.filter_chip_ids) && exam.filter_chip_ids.map(chipId => {
+                            const foundChip = filterChips.find(c => c.id === chipId);
+                            if (!foundChip) return null;
+                            return (
+                              <FilterChipBadge
+                                key={foundChip.id}
+                                chip={foundChip}
+                                size="xs"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedFilterChipId(selectedFilterChipId === foundChip.id ? 'ALL' : foundChip.id);
+                                }}
+                                className="cursor-pointer"
+                              />
+                            );
+                          })}
                         </div>
                         <button
                           type="button"
@@ -2194,7 +2284,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             handleOpenDurationModal(exam);
                           }}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold shrink-0 border border-slate-200 bg-slate-50 hover:bg-violet-50 hover:border-violet-300 text-slate-600 hover:text-violet-700 transition-all cursor-pointer shadow-2xs group/duration"
-                          title="시험시간 변경 (클릭)"
+                          title="시험지 제목·시간·분류 수정 (클릭)"
                         >
                           <Clock size={13} className="text-slate-400 group-hover/duration:text-violet-600 transition-colors" />
                           <span className="font-black">{exam.duration_min > 0 ? `${exam.duration_min}분` : '무제한'}</span>
@@ -2484,6 +2574,49 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 />
                 <span>📌 이 설정을 다음 시험지 생성 기본값으로 계속 유지</span>
               </label>
+            </div>
+
+            {/* 🌟 분류 필터칩 사전 지정 (선택사항) */}
+            <div className="pt-3 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                  <span>🏷️ 분류 필터칩 사전 지정 (선택사항)</span>
+                  <span className="text-[10px] text-slate-400 font-normal">생성 즉시 해당 필터로 자동 분류됩니다</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setIsFilterStudioOpen(true)}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <span>⚙️ 새 필터칩 만들기/관리</span>
+                </button>
+              </div>
+
+              {filterChips.length === 0 ? (
+                <div className="p-3 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-dashed">
+                  등록된 필터칩이 없습니다. 우측 [새 필터칩 만들기]를 눌러 필터칩을 등록해보세요!
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 flex-wrap p-2.5 bg-slate-50/70 rounded-2xl border border-slate-200/80">
+                  {filterChips.map(chip => {
+                    const isSelected = newExamFilterChipIds.includes(chip.id);
+                    return (
+                      <FilterChipBadge
+                        key={chip.id}
+                        chip={chip}
+                        size="sm"
+                        isActive={isSelected}
+                        onClick={() => {
+                          setNewExamFilterChipIds(prev =>
+                            prev.includes(chip.id) ? prev.filter(id => id !== chip.id) : [...prev, chip.id]
+                          );
+                        }}
+                        className="cursor-pointer"
+                      />
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -4993,22 +5126,22 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         exam={printModalExam}
       />
 
-      {/* ⏱️ 시험시간 수정 모달 */}
+      {/* ⏱️ 시험지 설정 및 정보 통합 수정 모달 (제목 + 시험시간 + 필터칩) */}
       {durationModalExam && (
         <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95 border border-slate-100">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95 border border-slate-100 max-h-[90vh] flex flex-col">
             {/* 헤더 */}
-            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-4 shrink-0">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-2xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0 shadow-2xs">
-                  <Clock size={20} />
+                  <Edit2 size={20} />
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-base font-black text-slate-800 tracking-tight">
-                    시험시간 변경
+                    시험지 설정 및 정보 수정
                   </h3>
-                  <p className="text-xs text-slate-500 font-bold truncate mt-0.5" title={durationModalExam.title}>
-                    {durationModalExam.title}
+                  <p className="text-xs text-slate-500 font-bold truncate mt-0.5">
+                    총 {durationModalExam.questions.length}문항 • {durationModalExam.grade}
                   </p>
                 </div>
               </div>
@@ -5021,94 +5154,153 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </button>
             </div>
 
-            {/* 본문 */}
-            <div className="space-y-4">
-              {/* 현재 설정 안내 */}
-              <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-50 rounded-2xl border border-slate-200/80 text-xs font-bold">
-                <span className="text-slate-500">현재 시험시간</span>
-                <span className="text-slate-800 font-black">
-                  {durationModalExam.duration_min > 0 ? `${durationModalExam.duration_min}분` : '무제한 (제한 없음)'}
-                </span>
+            {/* 본문 스크롤 */}
+            <div className="space-y-5 overflow-y-auto pr-1 flex-1">
+              {/* 1. 시험지 제목 수정 */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-black text-slate-700 flex items-center justify-between">
+                  <span>🏷️ 시험지 제목</span>
+                  <span className="text-[10px] text-slate-400 font-normal">카드 및 학생 화면에 표시됩니다</span>
+                </label>
+                <input
+                  type="text"
+                  value={editTitleValue}
+                  onChange={(e) => setEditTitleValue(e.target.value)}
+                  placeholder="시험지 제목을 입력하세요"
+                  className="w-full px-4 py-2.5 rounded-2xl border-2 border-slate-200 focus:border-violet-600 focus:outline-none text-sm font-black text-slate-900 bg-slate-50/50 focus:bg-white transition-all"
+                />
               </div>
 
-              {/* 제한시간 없음 (무제한) 토글 */}
-              <label className={`flex items-center justify-between p-3.5 rounded-2xl border cursor-pointer select-none transition-all ${
-                editIsNoLimit ? 'bg-violet-50/80 border-violet-400 text-violet-900' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-              }`}>
-                <div className="flex items-center gap-2.5">
-                  <input
-                    type="checkbox"
-                    checked={editIsNoLimit}
-                    onChange={(e) => setEditIsNoLimit(e.target.checked)}
-                    className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
-                  />
-                  <div>
-                    <span className="text-xs font-black block">제한시간 없음 (무제한 자율 학습)</span>
-                    <span className="text-[10px] text-slate-400 font-normal">시간 압박 없이 자유롭게 풀이할 수 있습니다.</span>
-                  </div>
+              {/* 2. 시험시간 설정 */}
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-700">🕒 시험시간 설정</span>
+                  <span className="text-xs text-slate-500 font-bold">
+                    현재: <strong className="text-violet-700">{durationModalExam.duration_min > 0 ? `${durationModalExam.duration_min}분` : '무제한'}</strong>
+                  </span>
                 </div>
-                <span className={`text-[11px] font-black px-2 py-0.5 rounded-lg ${editIsNoLimit ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                  {editIsNoLimit ? '무제한 ON' : 'OFF'}
-                </span>
-              </label>
 
-              {/* 시간 직접 입력 */}
-              {!editIsNoLimit && (
-                <div className="space-y-2 animate-in fade-in duration-150">
-                  <label className="text-xs font-black text-slate-700 block">
-                    제한시간 설정 (분 단위)
-                  </label>
-                  <div className="relative">
+                {/* 제한시간 없음 (무제한) 토글 */}
+                <label className={`flex items-center justify-between p-3 rounded-2xl border cursor-pointer select-none transition-all ${
+                  editIsNoLimit ? 'bg-violet-50/80 border-violet-400 text-violet-900' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}>
+                  <div className="flex items-center gap-2.5">
                     <input
-                      type="number"
-                      min={1}
-                      max={999}
-                      value={editDurationValue === 0 ? '' : editDurationValue}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setEditDurationValue(v === '' ? 0 : Math.max(1, parseInt(v, 10) || 0));
-                      }}
-                      placeholder="예: 50"
-                      className="w-full pl-4 pr-12 py-3 rounded-2xl border-2 border-slate-200 focus:border-violet-600 focus:outline-none text-base font-black text-slate-900 bg-slate-50/50 focus:bg-white transition-all"
+                      type="checkbox"
+                      checked={editIsNoLimit}
+                      onChange={(e) => setEditIsNoLimit(e.target.checked)}
+                      className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500 cursor-pointer"
                     />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-black text-slate-400">
-                      분
-                    </span>
-                  </div>
-
-                  {/* 빠른 프리셋 버튼들 */}
-                  <div className="space-y-1.5 pt-1">
-                    <span className="text-[10px] font-bold text-slate-400">빠른 선택:</span>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {[30, 40, 50, 60, 70, 80, 90, 100, 120].map((mins) => (
-                        <button
-                          key={mins}
-                          type="button"
-                          onClick={() => {
-                            setEditDurationValue(mins);
-                            setEditIsNoLimit(false);
-                          }}
-                          className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                            !editIsNoLimit && editDurationValue === mins
-                              ? 'bg-violet-600 text-white shadow-xs'
-                              : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                          }`}
-                        >
-                          {mins}분
-                        </button>
-                      ))}
+                    <div>
+                      <span className="text-xs font-black block">제한시간 없음 (무제한 자율 학습)</span>
+                      <span className="text-[10px] text-slate-400 font-normal">시간 압박 없이 자유롭게 풀이할 수 있습니다.</span>
                     </div>
                   </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-lg ${editIsNoLimit ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    {editIsNoLimit ? '무제한 ON' : 'OFF'}
+                  </span>
+                </label>
+
+                {/* 시간 직접 입력 */}
+                {!editIsNoLimit && (
+                  <div className="space-y-2 animate-in fade-in duration-150">
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={1}
+                        max={999}
+                        value={editDurationValue === 0 ? '' : editDurationValue}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditDurationValue(v === '' ? 0 : Math.max(1, parseInt(v, 10) || 0));
+                        }}
+                        placeholder="예: 45"
+                        className="w-full pl-4 pr-12 py-2.5 rounded-2xl border-2 border-slate-200 focus:border-violet-600 focus:outline-none text-sm font-black text-slate-900 bg-slate-50/50 focus:bg-white transition-all"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400">
+                        분
+                      </span>
+                    </div>
+
+                    {/* 빠른 프리셋 버튼들 */}
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold text-slate-400">빠른 선택:</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {[30, 40, 45, 50, 60, 70, 80, 90, 100, 120].map((mins) => (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() => {
+                              setEditDurationValue(mins);
+                              setEditIsNoLimit(false);
+                            }}
+                            className={`px-2 py-1 rounded-xl text-[11px] font-black transition-all cursor-pointer ${
+                              !editIsNoLimit && editDurationValue === mins
+                                ? 'bg-violet-600 text-white shadow-xs'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {mins}분
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 3. 분류 필터칩 지정 */}
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-700 flex items-center gap-1">
+                    <span>🏷️ 분류 필터칩 지정 (다중 선택 가능)</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsFilterStudioOpen(true)}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>⚙️ 새 필터칩 만들기/관리</span>
+                  </button>
                 </div>
-              )}
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  이 시험지에 달아둘 뱃지를 콕 눌러 선택하세요. 선택된 뱃지는 시험지 카드 상단에 고유 시각 효과와 함께 노출됩니다.
+                </p>
+
+                {filterChips.length === 0 ? (
+                  <div className="p-3 bg-slate-50 rounded-xl text-center text-xs text-slate-400 border border-dashed">
+                    등록된 필터칩이 없습니다. [새 필터칩 만들기]를 눌러 첫 필터칩을 생성해보세요!
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 flex-wrap p-2.5 bg-slate-50/70 rounded-2xl border border-slate-200/80">
+                    {filterChips.map((chip) => {
+                      const isSelected = editFilterChipIds.includes(chip.id);
+                      return (
+                        <FilterChipBadge
+                          key={chip.id}
+                          chip={chip}
+                          size="sm"
+                          isActive={isSelected}
+                          onClick={() => {
+                            setEditFilterChipIds((prev) =>
+                              prev.includes(chip.id) ? prev.filter((id) => id !== chip.id) : [...prev, chip.id]
+                            );
+                          }}
+                          className="cursor-pointer"
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               <p className="text-[11px] leading-relaxed bg-amber-50/70 border border-amber-200/80 p-2.5 rounded-xl text-amber-800">
-                💡 <strong>안내:</strong> 시간을 변경하면 저장 즉시 시험지 정보가 갱신되며, 이후 학생들이 시험에 진입할 때 변경된 제한시간이 적용됩니다.
+                💡 <strong>안내:</strong> 저장 시 시험지 제목, 시험시간, 필터칩 정보가 일괄 반영되어 목록과 학생 시험 화면에 즉시 적용됩니다.
               </p>
             </div>
 
             {/* 푸터 버튼 */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 shrink-0">
               <button
                 type="button"
                 onClick={() => setDurationModalExam(null)}
@@ -5120,7 +5312,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               <button
                 type="button"
                 onClick={handleSaveDuration}
-                disabled={isSavingDuration || (!editIsNoLimit && (!editDurationValue || editDurationValue <= 0))}
+                disabled={isSavingDuration || !editTitleValue.trim() || (!editIsNoLimit && (!editDurationValue || editDurationValue <= 0))}
                 className="px-5 py-2.5 rounded-xl text-xs font-black bg-violet-600 hover:bg-violet-700 text-white shadow-md shadow-violet-200 transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
               >
                 {isSavingDuration ? (
@@ -5131,7 +5323,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 ) : (
                   <>
                     <Check size={13} strokeWidth={3} />
-                    <span>시험시간 변경 저장</span>
+                    <span>변경사항 저장</span>
                   </>
                 )}
               </button>
@@ -5139,6 +5331,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           </div>
         </div>
       )}
+
+      {/* 🎨 필터칩 커스텀 스튜디오 모달 (추가 / 수정 / 삭제 / 순서변경) */}
+      <FilterChipStudioModal
+        isOpen={isFilterStudioOpen}
+        onClose={() => setIsFilterStudioOpen(false)}
+        chips={filterChips}
+        onChipsUpdated={(newChips) => setFilterChips(newChips)}
+        onExamListRefresh={() => loadInitialData()}
+      />
 
     </div>
   );
