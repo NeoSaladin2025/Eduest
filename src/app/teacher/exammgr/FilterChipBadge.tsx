@@ -4,11 +4,16 @@ import React from 'react';
 import { ExamFilterChip, FilterChipColor, FilterChipEffect } from '@/app/api/test2/filter-chips/route';
 import { Sparkles } from 'lucide-react';
 
+export type FilterChip = ExamFilterChip;
+export type { ExamFilterChip };
+
 interface FilterChipBadgeProps {
   chip: ExamFilterChip;
   size?: 'xs' | 'sm' | 'md';
   isActive?: boolean;
+  isSelected?: boolean;
   count?: number;
+  badgeCount?: number;
   onClick?: (e: React.MouseEvent) => void;
   onEdit?: (e: React.MouseEvent) => void;
   onDelete?: (e: React.MouseEvent) => void;
@@ -215,13 +220,18 @@ export default function FilterChipBadge({
   chip,
   size = 'sm',
   isActive = false,
+  isSelected,
   count,
+  badgeCount,
   onClick,
   onEdit,
   onDelete,
   showActions = false,
   className = '',
 }: FilterChipBadgeProps) {
+  const active = isSelected !== undefined ? isSelected : isActive;
+  const displayCount = badgeCount !== undefined ? badgeCount : count;
+
   const color = chip.color || 'violet';
   const effect = chip.effect || 'clean';
   const theme = CHIP_COLOR_MAP[color] || CHIP_COLOR_MAP.violet;
@@ -239,7 +249,7 @@ export default function FilterChipBadge({
     effectClass = theme.glowShadow;
   } else if (effect === 'ring') {
     effectClass = theme.ringColor;
-  } else if (effect === 'gradient' && !isActive) {
+  } else if (effect === 'gradient' && !active) {
     effectClass = `bg-gradient-to-r ${theme.gradientFrom} ${theme.gradientTo} text-white border-transparent shadow-xs`;
   } else if (effect === 'sparkle') {
     effectClass = 'backdrop-blur-xs border-dashed';
@@ -247,7 +257,7 @@ export default function FilterChipBadge({
 
   // 활성화 여부에 따른 배경/텍스트 클래스
   let activeStateClass = '';
-  if (isActive) {
+  if (active) {
     activeStateClass = `${theme.bgActive} border-transparent font-black scale-105 shadow-sm`;
   } else if (effect !== 'gradient') {
     activeStateClass = `${theme.bgLight} border ${theme.border} hover:opacity-90`;
@@ -272,7 +282,7 @@ export default function FilterChipBadge({
 
       {/* ⭐ 반짝임 효과일 경우 스파클 아이콘 */}
       {effect === 'sparkle' && (
-        <Sparkles size={size === 'xs' ? 9 : 11} className={isActive ? 'text-white' : theme.textLight} />
+        <Sparkles size={size === 'xs' ? 9 : 11} className={active ? 'text-white' : theme.textLight} />
       )}
 
       {/* 아이콘/이모지 (설정된 경우) */}
@@ -284,13 +294,13 @@ export default function FilterChipBadge({
       <span className="truncate">{chip.name}</span>
 
       {/* 카운트 (개수) */}
-      {typeof count === 'number' && (
+      {typeof displayCount === 'number' && (
         <span
           className={`text-[9px] px-1 py-0.2 rounded-full font-black ${
-            isActive ? 'bg-white/25 text-white' : 'bg-black/10 text-current'
+            active ? 'bg-white/25 text-white' : 'bg-black/10 text-current'
           }`}
         >
-          {count}
+          {displayCount}
         </span>
       )}
 

@@ -5,8 +5,9 @@ import {
   Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
   Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound,
   ChevronRight, ChevronDown, Folder, FolderOpen, MinusSquare, Sparkles, ArrowRight,
-  Edit2, CheckCircle2, AlertCircle, RefreshCw
+  Edit2, CheckCircle2, AlertCircle, RefreshCw, BarChart3
 } from 'lucide-react';
+import StudentPerformanceModal from './StudentPerformanceModal';
 
 interface Student {
   id: string;
@@ -146,6 +147,9 @@ export default function StudentManagerMain() {
   const [pwdStudent, setPwdStudent] = useState<Student | null>(null);
   const [newPwd, setNewPwd] = useState('');
   const [pwdSaving, setPwdSaving] = useState(false);
+
+  // 🌟 누적 성적 및 추이 리포트 모달 상태
+  const [performanceStudent, setPerformanceStudent] = useState<Student | null>(null);
 
   // ----------------------------------------------------
   // 🌟 [신규 기능] 1. 선택 모드 & 선택 학생 학년 변경 상태
@@ -1444,21 +1448,35 @@ export default function StudentManagerMain() {
 
                       <h3 className="text-xl font-black text-slate-800 tracking-tighter leading-tight mb-3">{student.name}</h3>
 
-                      {/* 비번 배지 */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPwdStudent(student);
-                          setNewPwd(student.password && !student.password.startsWith('$2') ? student.password : '');
-                        }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
-                        title="비번 변경"
-                      >
-                        <KeyRound size={13} />
-                        {student.password 
-                          ? (student.password.startsWith('$2') ? '🔒 암호화' : student.password) 
-                          : '배정 중...'}
-                      </button>
+                      {/* 비번 배지 & 성적 리포트 버튼 */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPwdStudent(student);
+                            setNewPwd(student.password && !student.password.startsWith('$2') ? student.password : '');
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-xl text-amber-700 font-black text-xs transition-all"
+                          title="비번 변경"
+                        >
+                          <KeyRound size={13} />
+                          {student.password 
+                            ? (student.password.startsWith('$2') ? '🔒 암호화' : student.password) 
+                            : '배정 중...'}
+                        </button>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPerformanceStudent(student);
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 rounded-xl text-indigo-700 font-black text-xs transition-all shadow-xs hover:shadow-indigo-100 cursor-pointer"
+                          title="학생 누적 시험 성적 리포트 및 추이 확인"
+                        >
+                          <BarChart3 size={13} />
+                          <span>성적 리포트</span>
+                        </button>
+                      </div>
                     </div>
                     
                     <button 
@@ -1482,6 +1500,13 @@ export default function StudentManagerMain() {
           )}
         </div>
       </div>
+
+      {/* 🌟 [신규] 학생별 누적 성적 및 추이 리포트 모달 */}
+      <StudentPerformanceModal
+        isOpen={!!performanceStudent}
+        onClose={() => setPerformanceStudent(null)}
+        student={performanceStudent}
+      />
     </div>
   );
 }

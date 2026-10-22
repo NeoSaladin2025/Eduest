@@ -39,7 +39,9 @@ import {
   Camera,
   Printer,
   Bell,
-  Star
+  Star,
+  BarChart3,
+  SlidersHorizontal
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -54,6 +56,9 @@ import TeacherBatchGradingModal from './TeacherBatchGradingModal';
 import FilterChipBadge from './FilterChipBadge';
 import FilterChipStudioModal from './FilterChipStudioModal';
 import FilterPresetModal from './FilterPresetModal';
+import BatchAssignModal from './BatchAssignModal';
+import BatchFilterChipModal from './BatchFilterChipModal';
+import StudentPerformanceModal from '../studentmanager/StudentPerformanceModal';
 import { ExamFilterChip, FilterPreset } from '@/app/api/test2/filter-chips/route';
 
 interface Student {
@@ -225,6 +230,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [editIsNoLimit, setEditIsNoLimit] = useState<boolean>(false);
   const [editFilterChipIds, setEditFilterChipIds] = useState<string[]>([]);
   const [isSavingDuration, setIsSavingDuration] = useState<boolean>(false);
+
+  // 🌟 [신규 기능 1] 시험지 다중 선택 일괄 작업 상태
+  const [selectedExamIds, setSelectedExamIds] = useState<Set<string>>(new Set());
+  const [isBatchAssignModalOpen, setIsBatchAssignModalOpen] = useState(false);
+  const [isBatchChipModalOpen, setIsBatchChipModalOpen] = useState(false);
+  const [isBatchOperating, setIsBatchOperating] = useState(false);
+
+  // 🌟 [신규 기능 2] 학생 누적 성적 및 추이 리포트 모달 상태
+  const [perfModalStudent, setPerfModalStudent] = useState<Student | null>(null);
 
   // 응시 결과 현황 모달
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
@@ -1122,6 +1136,203 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       }
     } catch (e) {
       alert('시험지 삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  // ── [신규 기능 1: 시험지 다중 선택 및 일괄 작업 핸들러] ──
+  const handleToggleSelectExam = (examId: string) => {
+    setSelectedExamIds(prev => {
+      const next = new Set(prev);
+      if (next.has(examId)) next.delete(examId);
+      else next.add(examId);
+      return next;
+    });
+  };
+
+  const handleSelectAllFilteredExams = () => {
+    const filteredIds = filteredExams.map(e => e.id);
+    const isAllSelected = filteredIds.length > 0 && filteredIds.every(id => selectedExamIds.has(id));
+    setSelectedExamIds(prev => {
+      const next = new Set(prev);
+      if (isAllSelected) {
+        filteredIds.forEach(id => next.delete(id));
+      } else {
+        filteredIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  // 일괄 학생 배정 적용
+  const handleBatchAssignApply = async (mode: 'add' | 'replace' | 'clear', targetStudentIds: string[]) => {
+    const targetIds = Array.from(selectedExamIds);
+    if (targetIds.length === 0) return;
+
+    try {
+      setIsBatchOperating(true);
+
+      const { data: dbData } = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', 'test2_exam_papers_data')
+        .maybeSingle();
+
+      let allCurrentExams: ExamPaper[] = [];
+      if (dbData?.file_data) {
+        try {
+          const parsed = JSON.parse(dbData.file_data);
+          allCurrentExams = Array.isArray(parsed.exams) ? parsed.exams : [];
+        } catch (e) {
+          allCurrentExams = [...exams];
+        }
+      } else {
+        allCurrentExams = [...exams];
+      }
+
+      const updatedExams = allCurrentExams.map(ex => {
+        if (!selectedExamIds.has(ex.id)) return ex;
+
+        let nextStudentIds: string[] = [];
+        if (mode === 'add') {
+          nextStudentIds = Array.from(new Set([...(ex.assigned_student_ids || []), ...targetStudentIds]));
+        } else if (mode === 'replace') {
+          nextStudentIds = [...targetStudentIds];
+        } else {
+          nextStudentIds = [];
+        }
+
+        return {
+          ...ex,
+          assigned_student_ids: nextStudentIds,
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      const { error } = await supabase.from('exam_library').upsert(
+        {
+          drive_id: 'test2_exam_papers_data',
+          name: 'test2_exam_papers.json',
+          type: 'file',
+          grade: '공통',
+          file_data: JSON.stringify({ exams: updatedExams, updated_at: new Date().toISOString() }),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'drive_id' }
+      );
+
+      if (error) throw new Error(error.message);
+
+      setExams(updatedExams);
+      setSelectedExamIds(new Set());
+      alert(`${targetIds.length}개 시험지에 학생 배정이 성공적으로 반영되었습니다.`);
+    } catch (err: any) {
+      console.error('Batch assign error:', err);
+      alert(`일괄 배정 실패: ${err?.message || err}`);
+    } finally {
+      setIsBatchOperating(false);
+    }
+  };
+
+  // 일괄 필터칩 변경 적용
+  const handleBatchChipApply = async (mode: 'add' | 'remove' | 'replace', chipIds: string[]) => {
+    const targetIds = Array.from(selectedExamIds);
+    if (targetIds.length === 0) return;
+
+    try {
+      setIsBatchOperating(true);
+
+      const { data: dbData } = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', 'test2_exam_papers_data')
+        .maybeSingle();
+
+      let allCurrentExams: ExamPaper[] = [];
+      if (dbData?.file_data) {
+        try {
+          const parsed = JSON.parse(dbData.file_data);
+          allCurrentExams = Array.isArray(parsed.exams) ? parsed.exams : [];
+        } catch (e) {
+          allCurrentExams = [...exams];
+        }
+      } else {
+        allCurrentExams = [...exams];
+      }
+
+      const updatedExams = allCurrentExams.map(ex => {
+        if (!selectedExamIds.has(ex.id)) return ex;
+
+        const currentChips = Array.isArray(ex.filter_chip_ids) ? ex.filter_chip_ids : [];
+        let nextChips: string[] = [];
+
+        if (mode === 'add') {
+          nextChips = Array.from(new Set([...currentChips, ...chipIds]));
+        } else if (mode === 'remove') {
+          const toRemove = new Set(chipIds);
+          nextChips = currentChips.filter(id => !toRemove.has(id));
+        } else {
+          nextChips = [...chipIds];
+        }
+
+        return {
+          ...ex,
+          filter_chip_ids: nextChips,
+          updated_at: new Date().toISOString(),
+        };
+      });
+
+      const { error } = await supabase.from('exam_library').upsert(
+        {
+          drive_id: 'test2_exam_papers_data',
+          name: 'test2_exam_papers.json',
+          type: 'file',
+          grade: '공통',
+          file_data: JSON.stringify({ exams: updatedExams, updated_at: new Date().toISOString() }),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'drive_id' }
+      );
+
+      if (error) throw new Error(error.message);
+
+      setExams(updatedExams);
+      setSelectedExamIds(new Set());
+      alert(`${targetIds.length}개 시험지의 필터칩이 성공적으로 업데이트되었습니다.`);
+    } catch (err: any) {
+      console.error('Batch chip error:', err);
+      alert(`필터칩 일괄 업데이트 실패: ${err?.message || err}`);
+    } finally {
+      setIsBatchOperating(false);
+    }
+  };
+
+  // 일괄 시험지 삭제
+  const handleBatchDeleteExams = async () => {
+    const targetIds = Array.from(selectedExamIds);
+    if (targetIds.length === 0) return;
+
+    const targetExams = exams.filter(e => selectedExamIds.has(e.id));
+    const sampleTitles = targetExams.slice(0, 3).map(e => `'${e.title}'`).join(', ');
+    const extraCount = targetExams.length > 3 ? ` 외 ${targetExams.length - 3}개` : '';
+
+    if (!confirm(`선택한 ${targetIds.length}개의 시험지를 정말 삭제하시겠습니까?\n\n• 대상: ${sampleTitles}${extraCount}\n• 주의: 배정 및 학생 제출 기록도 함께 삭제됩니다.`)) {
+      return;
+    }
+
+    try {
+      setIsBatchOperating(true);
+      await Promise.all(
+        targetIds.map(id => fetch(`/api/test2/exam?examId=${id}`, { method: 'DELETE' }))
+      );
+
+      setExams(prev => prev.filter(e => !selectedExamIds.has(e.id)));
+      setSelectedExamIds(new Set());
+      alert(`선택한 ${targetIds.length}개의 시험지가 모두 삭제되었습니다.`);
+    } catch (err: any) {
+      console.error('Batch delete error:', err);
+      alert(`일괄 삭제 중 오류가 발생했습니다: ${err?.message || err}`);
+    } finally {
+      setIsBatchOperating(false);
     }
   };
 
@@ -2401,36 +2612,99 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredExams.map(exam => {
-                const assignedCount = exam.assigned_student_ids ? exam.assigned_student_ids.length : 0;
-                const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
-                const relatedSubs = allSubmissions.filter(s => s.exam_id === exam.id);
-                const isSingleStudentMode = selectedStudentFilterId !== 'ALL';
-                const studentSub = isSingleStudentMode 
-                  ? relatedSubs.find(s => s.student_id === selectedStudentFilterId)
-                  : null;
-
-                return (
-                  <div
-                    key={exam.id}
-                    className={`bg-white rounded-3xl border p-6 shadow-xs hover:shadow-xl transition-all flex flex-col justify-between group relative overflow-hidden ${
-                      isWrong
-                        ? 'border-rose-200 hover:border-rose-400'
-                        : 'border-slate-200 hover:border-violet-400'
-                    }`}
+            <div className="space-y-3">
+              {/* 🌟 다중 선택 일괄 작업 헤더 바 */}
+              <div className="flex items-center justify-between pb-1 px-1">
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleSelectAllFilteredExams}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-2xs"
                   >
-                    <div className="space-y-4">
-                      {/* 카드 상단 배지 */}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`px-2.5 py-1 border text-[11px] font-black rounded-lg ${
-                            isWrong
-                              ? 'bg-rose-50 text-rose-700 border-rose-200'
-                              : 'bg-violet-50 text-violet-700 border border-violet-200'
-                          }`}>
-                            {exam.grade}
-                          </span>
+                    <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-colors ${
+                      filteredExams.length > 0 && filteredExams.every(e => selectedExamIds.has(e.id))
+                        ? 'bg-indigo-600 border-indigo-600 text-white'
+                        : 'border-slate-300 bg-white'
+                    }`}>
+                      {filteredExams.length > 0 && filteredExams.every(e => selectedExamIds.has(e.id)) && (
+                        <Check size={11} className="stroke-[3]" />
+                      )}
+                    </div>
+                    <span>
+                      {filteredExams.length > 0 && filteredExams.every(e => selectedExamIds.has(e.id))
+                        ? '전체 선택 해제'
+                        : '현재 결과 전체 선택'}
+                    </span>
+                  </button>
+
+                  {selectedExamIds.size > 0 && (
+                    <span className="text-xs font-black text-indigo-600 bg-indigo-50 border border-indigo-200/80 px-2.5 py-1 rounded-lg">
+                      {selectedExamIds.size}개 시험지 선택됨
+                    </span>
+                  )}
+                </div>
+
+                {selectedExamIds.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedExamIds(new Set())}
+                    className="text-xs text-slate-400 hover:text-slate-600 font-bold underline cursor-pointer"
+                  >
+                    선택 모두 취소
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {filteredExams.map(exam => {
+                  const assignedCount = exam.assigned_student_ids ? exam.assigned_student_ids.length : 0;
+                  const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
+                  const relatedSubs = allSubmissions.filter(s => s.exam_id === exam.id);
+                  const isSingleStudentMode = selectedStudentFilterId !== 'ALL';
+                  const studentSub = isSingleStudentMode 
+                    ? relatedSubs.find(s => s.student_id === selectedStudentFilterId)
+                    : null;
+                  const isSelected = selectedExamIds.has(exam.id);
+
+                  return (
+                    <div
+                      key={exam.id}
+                      className={`bg-white rounded-3xl border p-6 shadow-xs hover:shadow-xl transition-all flex flex-col justify-between group relative overflow-hidden ${
+                        isSelected
+                          ? 'border-indigo-500 ring-2 ring-indigo-500/20 bg-indigo-50/10'
+                          : isWrong
+                          ? 'border-rose-200 hover:border-rose-400'
+                          : 'border-slate-200 hover:border-violet-400'
+                      }`}
+                    >
+                      <div className="space-y-4">
+                        {/* 카드 상단 배지 */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* 🌟 다중 선택 체크박스 */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSelectExam(exam.id);
+                              }}
+                              className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+                                isSelected
+                                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
+                                  : 'border-slate-300 bg-white hover:border-indigo-400 text-transparent'
+                              }`}
+                              title={isSelected ? '선택 해제' : '시험지 선택'}
+                            >
+                              <Check size={12} className={isSelected ? 'stroke-[3]' : ''} />
+                            </button>
+
+                            <span className={`px-2.5 py-1 border text-[11px] font-black rounded-lg ${
+                              isWrong
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-violet-50 text-violet-700 border border-violet-200'
+                            }`}>
+                              {exam.grade}
+                            </span>
                           {isWrong && (
                             <span className="px-2 py-0.5 bg-rose-500 text-white text-[10px] font-black rounded-md flex items-center gap-1">
                               <RotateCcw size={10} />
@@ -2636,9 +2910,65 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 );
               })}
             </div>
-          )}
-        </div>
-      )}
+
+            {/* 🌟 하단 플로팅 다중 선택 액션바 */}
+            {selectedExamIds.size > 0 && (
+              <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 text-white backdrop-blur-md px-5 py-3 rounded-2xl shadow-2xl border border-slate-700/80 flex items-center gap-4 animate-in slide-in-from-bottom-5">
+                <div className="flex items-center gap-2 pr-3 border-r border-slate-700/80">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="text-xs font-black">{selectedExamIds.size}개 선택됨</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedExamIds(new Set())}
+                    className="text-[11px] text-slate-400 hover:text-white underline ml-1 cursor-pointer"
+                  >
+                    해제
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {/* 1. 일괄 학생 배정 */}
+                  <button
+                    type="button"
+                    onClick={() => setIsBatchAssignModalOpen(true)}
+                    disabled={isBatchOperating}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shadow-md shadow-indigo-900/40 cursor-pointer disabled:opacity-50"
+                    title="선택한 시험지들에 동일한 학생 그룹을 일괄 배정합니다"
+                  >
+                    <Users size={14} />
+                    <span>일괄 학생 배정</span>
+                  </button>
+
+                  {/* 2. 필터칩 일괄 관리 */}
+                  <button
+                    type="button"
+                    onClick={() => setIsBatchChipModalOpen(true)}
+                    disabled={isBatchOperating}
+                    className="px-3.5 py-2 bg-violet-600 hover:bg-violet-500 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shadow-md shadow-violet-900/40 cursor-pointer disabled:opacity-50"
+                    title="선택한 시험지들에 필터칩을 일괄 부착하거나 제거합니다"
+                  >
+                    <SlidersHorizontal size={14} />
+                    <span>필터칩 일괄 관리</span>
+                  </button>
+
+                  {/* 3. 일괄 삭제 */}
+                  <button
+                    type="button"
+                    onClick={handleBatchDeleteExams}
+                    disabled={isBatchOperating}
+                    className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shadow-md shadow-rose-900/40 cursor-pointer disabled:opacity-50"
+                    title="선택한 시험지들을 일괄 삭제합니다"
+                  >
+                    <Trash2 size={14} />
+                    <span>일괄 삭제</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )}
 
       {/* 🌟 탭 2: 시험지 묶음 [카트리지] */}
       {activeTab === 'bundle' && (
@@ -4467,7 +4797,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         <tr key={studentId} className="hover:bg-slate-50/80">
                           <td className="p-3">
                             <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-800">{st?.name || '미등록 학생'}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (st) setPerfModalStudent(st);
+                                }}
+                                className="font-bold text-slate-800 hover:text-indigo-600 hover:underline cursor-pointer flex items-center gap-1 group/name"
+                                title="학생 누적 시험 성적 리포트 및 추이 열기"
+                              >
+                                <span>{st?.name || '미등록 학생'}</span>
+                                <BarChart3 size={11} className="text-slate-400 group-hover/name:text-indigo-600 transition-colors" />
+                              </button>
                               <div className="flex items-center gap-1.5 ml-1">
                                 <button
                                   type="button"
@@ -5578,6 +5918,33 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         presets={filterPresets}
         onPresetsUpdated={(newPresets) => setFilterPresets(newPresets)}
         onApplyPreset={(preset) => handleApplyPreset(preset)}
+      />
+
+      {/* 🌟 [신규 기능 1] 선택 시험지 일괄 학생 배정 모달 */}
+      <BatchAssignModal
+        isOpen={isBatchAssignModalOpen}
+        onClose={() => setIsBatchAssignModalOpen(false)}
+        selectedExamIds={Array.from(selectedExamIds)}
+        exams={exams}
+        students={students}
+        onApply={handleBatchAssignApply}
+      />
+
+      {/* 🌟 [신규 기능 1] 선택 시험지 일괄 필터칩 관리 모달 */}
+      <BatchFilterChipModal
+        isOpen={isBatchChipModalOpen}
+        onClose={() => setIsBatchChipModalOpen(false)}
+        selectedExamIds={Array.from(selectedExamIds)}
+        exams={exams}
+        filterChips={filterChips}
+        onApply={handleBatchChipApply}
+      />
+
+      {/* 🌟 [신규 기능 2] 학생 누적 시험 성적 리포트 및 추이 모달 */}
+      <StudentPerformanceModal
+        isOpen={!!perfModalStudent}
+        onClose={() => setPerfModalStudent(null)}
+        student={perfModalStudent}
       />
 
     </div>
