@@ -38,7 +38,8 @@ import {
   Unlock,
   Camera,
   Printer,
-  Bell
+  Bell,
+  Star
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -52,7 +53,8 @@ import ExamPrintModal from './ExamPrintModal';
 import TeacherBatchGradingModal from './TeacherBatchGradingModal';
 import FilterChipBadge from './FilterChipBadge';
 import FilterChipStudioModal from './FilterChipStudioModal';
-import { ExamFilterChip } from '@/app/api/test2/filter-chips/route';
+import FilterPresetModal from './FilterPresetModal';
+import { ExamFilterChip, FilterPreset } from '@/app/api/test2/filter-chips/route';
 
 interface Student {
   id: string;
@@ -204,10 +206,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [assignModalGradeFilter, setAssignModalGradeFilter] = useState<string>('ALL');
   const [assignModalSearch, setAssignModalSearch] = useState<string>('');
 
-  // 🏷️ 필터칩 시스템 상태
+  // 🏷️ 필터칩 시스템 및 즐겨찾기 프리셋 상태
   const [filterChips, setFilterChips] = useState<ExamFilterChip[]>([]);
-  const [selectedFilterChipId, setSelectedFilterChipId] = useState<string>('ALL');
+  const [selectedFilterChipIds, setSelectedFilterChipIds] = useState<string[]>([]); // 다중 선택 칩 IDs
+  const [filterMatchMode, setFilterMatchMode] = useState<'AND' | 'OR'>('AND'); // 🎯 AND vs 📚 OR
+  const [isUncategorizedFilter, setIsUncategorizedFilter] = useState<boolean>(false); // 🏷️ 미분류 필터 활성화 여부
+  const [filterPresets, setFilterPresets] = useState<FilterPreset[]>([]); // ⭐ 즐겨찾기 프리셋 목록
+  const [activePresetId, setActivePresetId] = useState<string | null>(null); // 현재 적용 중인 즐겨찾기 ID
   const [isFilterStudioOpen, setIsFilterStudioOpen] = useState(false);
+  const [isPresetModalOpen, setIsPresetModalOpen] = useState(false);
+  const [presetModalMode, setPresetModalMode] = useState<'save' | 'manage'>('save');
   const [newExamFilterChipIds, setNewExamFilterChipIds] = useState<string[]>([]);
 
   // ⏱️ 시험지 통합 수정 모달 상태 (제목 + 시간 + 필터칩)
@@ -308,15 +316,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       // 4) 쌍둥이 메타데이터 로드
       await loadTwins();
 
-      // 5) 필터칩 목록 조회
+      // 5) 필터칩 및 즐겨찾기 프리셋 목록 조회
       try {
         const chipRes = await fetch('/api/test2/filter-chips', { cache: 'no-store' });
         const chipData = await chipRes.json();
-        if (chipData.success && Array.isArray(chipData.chips)) {
-          setFilterChips(chipData.chips);
+        if (chipData.success) {
+          if (Array.isArray(chipData.chips)) {
+            setFilterChips(chipData.chips);
+          }
+          if (Array.isArray(chipData.presets)) {
+            setFilterPresets(chipData.presets);
+          }
         }
       } catch (chipErr) {
-        console.error('Failed to load filter chips:', chipErr);
+        console.error('Failed to load filter chips and presets:', chipErr);
       }
     } catch (e) {
       console.error('Failed to load initial data:', e);
@@ -1612,17 +1625,29 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         }
       }
 
-      // 4. 필터칩 (분류) 필터
+      // 4. 필터칩 (분류) 다중 선택 & 미분류 필터
       const isWrong = !!exam.is_wrong_review || exam.title.startsWith('[오답]');
-      if (selectedFilterChipId !== 'ALL') {
-        if (selectedFilterChipId === 'chip_default_normal') {
-          if (isWrong) return false;
-        } else if (selectedFilterChipId === 'chip_default_wrong') {
-          if (!isWrong) return false;
-        } else {
-          if (!Array.isArray(exam.filter_chip_ids) || !exam.filter_chip_ids.includes(selectedFilterChipId)) {
-            return false;
+      if (isUncategorizedFilter) {
+        // 미분류: 커스텀 필터칩이 하나도 지정되지 않은 시험지만 통과
+        const hasCustomChips = Array.isArray(exam.filter_chip_ids) && exam.filter_chip_ids.length > 0;
+        if (hasCustomChips) return false;
+      } else if (selectedFilterChipIds.length > 0) {
+        const matchChip = (chipId: string) => {
+          if (chipId === 'chip_default_normal') {
+            return !isWrong;
+          } else if (chipId === 'chip_default_wrong') {
+            return isWrong;
+          } else {
+            return Array.isArray(exam.filter_chip_ids) && exam.filter_chip_ids.includes(chipId);
           }
+        };
+
+        if (filterMatchMode === 'AND') {
+          // 🎯 AND: 선택된 모든 필터 조건을 만족해야 함
+          if (!selectedFilterChipIds.every(matchChip)) return false;
+        } else {
+          // 📚 OR: 선택된 필터 조건 중 하나라도 만족하면 통과
+          if (!selectedFilterChipIds.some(matchChip)) return false;
         }
       }
 
@@ -1684,7 +1709,48 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
 
     return list;
-  }, [exams, appliedExamSearch, examListGradeFilter, selectedStudentFilterId, selectedFilterChipId, examSortOption, allSubmissions]);
+  }, [
+    exams,
+    appliedExamSearch,
+    examListGradeFilter,
+    selectedStudentFilterId,
+    selectedFilterChipIds,
+    filterMatchMode,
+    isUncategorizedFilter,
+    examSortOption,
+    allSubmissions,
+  ]);
+
+  // 🏷️ 필터칩 토글 (다중 선택 ↔ 해제)
+  const handleToggleFilterChip = (chipId: string) => {
+    setIsUncategorizedFilter(false);
+    setActivePresetId(null);
+    setSelectedFilterChipIds(prev => 
+      prev.includes(chipId) ? prev.filter(id => id !== chipId) : [...prev, chipId]
+    );
+  };
+
+  // 🏷️ '전체' 선택 (모든 필터칩 해제)
+  const handleSelectAllFilter = () => {
+    setSelectedFilterChipIds([]);
+    setIsUncategorizedFilter(false);
+    setActivePresetId(null);
+  };
+
+  // 🏷️ '미분류' 토글
+  const handleToggleUncategorized = () => {
+    setSelectedFilterChipIds([]);
+    setActivePresetId(null);
+    setIsUncategorizedFilter(prev => !prev);
+  };
+
+  // ⭐ 즐겨찾기 프리셋 적용
+  const handleApplyPreset = (preset: FilterPreset) => {
+    setIsUncategorizedFilter(false);
+    setSelectedFilterChipIds(preset.chip_ids);
+    setFilterMatchMode(preset.match_mode || 'AND');
+    setActivePresetId(preset.id);
+  };
 
   // 🌟 시험지 카드에서 미완료 리마인드 팝업 토글
   const handleToggleRemindPopup = async (exam: ExamPaper) => {
@@ -1787,7 +1853,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setSelectedStudentFilterId('ALL');
     setExamSortOption('latest');
     setExamListTypeFilter('ALL');
-    setSelectedFilterChipId('ALL');
+    setSelectedFilterChipIds([]);
+    setIsUncategorizedFilter(false);
+    setActivePresetId(null);
+    setFilterMatchMode('AND');
   };
 
   return (
@@ -2016,77 +2085,232 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
               )}
 
-              {/* 하단 서브 필터: 시험지 유형 (전체 / 일반 시험지 / 오답 시험지) 및 필터 초기화 */}
-              <div className="flex items-center justify-between pt-3 border-t border-slate-100 flex-wrap gap-2 text-xs">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
-                    <span>분류:</span>
-                  </span>
+              {/* 하단 서브 필터: 필터칩 (다중 선택 지원) & 미분류 & 즐겨찾기 프리셋 툴바 */}
+              {(() => {
+                const uncategorizedCount = exams.filter(
+                  e => !Array.isArray(e.filter_chip_ids) || e.filter_chip_ids.length === 0
+                ).length;
+                const isAllSelected = selectedFilterChipIds.length === 0 && !isUncategorizedFilter;
+                const isAnyFilterActive = !!(
+                  appliedExamSearch ||
+                  examListGradeFilter !== 'ALL' ||
+                  selectedStudentFilterId !== 'ALL' ||
+                  examSortOption !== 'latest' ||
+                  selectedFilterChipIds.length > 0 ||
+                  isUncategorizedFilter
+                );
 
-                  {/* 전체 칩 */}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedFilterChipId('ALL')}
-                    className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
-                      selectedFilterChipId === 'ALL'
-                        ? 'bg-slate-800 text-white shadow-2xs font-black'
-                        : 'text-slate-500 hover:bg-slate-100'
-                    }`}
-                  >
-                    전체 ({exams.length})
-                  </button>
+                return (
+                  <div className="pt-3 border-t border-slate-100 space-y-2 text-xs">
+                    {/* 1행: 분류 필터 바 */}
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
+                          <span>분류:</span>
+                        </span>
 
-                  {/* 등록된 커스텀 필터칩들 목록 렌더링 */}
-                  {filterChips.map((chip) => {
-                    const isSelected = selectedFilterChipId === chip.id;
-                    let matchCount = 0;
-                    if (chip.id === 'chip_default_normal') {
-                      matchCount = exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length;
-                    } else if (chip.id === 'chip_default_wrong') {
-                      matchCount = exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length;
-                    } else {
-                      matchCount = exams.filter(e => Array.isArray(e.filter_chip_ids) && e.filter_chip_ids.includes(chip.id)).length;
-                    }
+                        {/* 전체 칩 (모든 필터 해제) */}
+                        <button
+                          type="button"
+                          onClick={handleSelectAllFilter}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
+                            isAllSelected
+                              ? 'bg-slate-800 text-white shadow-2xs font-black'
+                              : 'text-slate-500 hover:bg-slate-100'
+                          }`}
+                        >
+                          전체 ({exams.length})
+                        </button>
 
-                    return (
-                      <FilterChipBadge
-                        key={chip.id}
-                        chip={chip}
-                        size="sm"
-                        isActive={isSelected}
-                        count={matchCount}
-                        onClick={() => setSelectedFilterChipId(isSelected ? 'ALL' : chip.id)}
-                      />
-                    );
-                  })}
+                        {/* 등록된 커스텀 필터칩들 목록 렌더링 (다중 선택 토글) */}
+                        {filterChips.map((chip) => {
+                          const isSelected = selectedFilterChipIds.includes(chip.id);
+                          let matchCount = 0;
+                          if (chip.id === 'chip_default_normal') {
+                            matchCount = exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length;
+                          } else if (chip.id === 'chip_default_wrong') {
+                            matchCount = exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length;
+                          } else {
+                            matchCount = exams.filter(e => Array.isArray(e.filter_chip_ids) && e.filter_chip_ids.includes(chip.id)).length;
+                          }
 
-                  {/* ⚙️ 필터칩 관리 버튼 */}
-                  <button
-                    type="button"
-                    onClick={() => setIsFilterStudioOpen(true)}
-                    className="px-2 py-1 rounded-lg font-bold text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 transition-all flex items-center gap-1 cursor-pointer border border-slate-200/60 ml-0.5"
-                    title="필터칩 추가, 수정, 삭제, 순서 변경"
-                  >
-                    <span>⚙️</span>
-                    <span>필터칩 관리</span>
-                  </button>
-                </div>
+                          return (
+                            <FilterChipBadge
+                              key={chip.id}
+                              chip={chip}
+                              size="sm"
+                              isActive={isSelected}
+                              count={matchCount}
+                              onClick={() => handleToggleFilterChip(chip.id)}
+                            />
+                          );
+                        })}
 
-                {(appliedExamSearch || examListGradeFilter !== 'ALL' || selectedStudentFilterId !== 'ALL' || examSortOption !== 'latest' || selectedFilterChipId !== 'ALL') && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-500 font-bold">
-                      검색 결과: <strong className="text-violet-600">{filteredExams.length}</strong>개
-                    </span>
-                    <button
-                      onClick={handleResetExamFilters}
-                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
-                    >
-                      <RotateCcw size={11} />
-                      <span>필터 초기화</span>
-                    </button>
+                        {/* 🏷️ 미분류 필터칩 (태그 없는 시험지만 모아보기) */}
+                        <button
+                          type="button"
+                          onClick={handleToggleUncategorized}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer border flex items-center gap-1 ${
+                            isUncategorizedFilter
+                              ? 'bg-slate-700 text-white border-slate-700 shadow-xs font-black'
+                              : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                          }`}
+                          title="분류 필터칩이 지정되지 않은 시험지만 모아보기"
+                        >
+                          <span>🏷️</span>
+                          <span>미분류</span>
+                          <span className="text-[10px] opacity-75">({uncategorizedCount})</span>
+                        </button>
+
+                        {/* ⚙️ 필터칩 스튜디오 관리 버튼 */}
+                        <button
+                          type="button"
+                          onClick={() => setIsFilterStudioOpen(true)}
+                          className="px-2 py-1 rounded-lg font-bold text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-600 transition-all flex items-center gap-1 cursor-pointer border border-slate-200/60 ml-0.5"
+                          title="필터칩 추가, 수정, 삭제, 순서 변경"
+                        >
+                          <span>⚙️</span>
+                          <span>필터칩 관리</span>
+                        </button>
+
+                        {/* ⭐ 즐겨찾기 관리 버튼 */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPresetModalMode('manage');
+                            setIsPresetModalOpen(true);
+                          }}
+                          className={`px-2 py-1 rounded-lg font-bold text-[11px] transition-all flex items-center gap-1 cursor-pointer border ${
+                            filterPresets.length > 0
+                              ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-500 border-slate-200/60'
+                          }`}
+                          title="자주 쓰는 필터 조합 즐겨찾기 관리"
+                        >
+                          <Star size={11} className={filterPresets.length > 0 ? 'fill-amber-400 text-amber-500' : 'text-slate-400'} />
+                          <span>즐겨찾기 ({filterPresets.length})</span>
+                        </button>
+                      </div>
+
+                      {/* 검색 결과 카운트 및 초기화 버튼 */}
+                      {isAnyFilterActive && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500 font-bold">
+                            결과: <strong className="text-violet-600">{filteredExams.length}</strong>개
+                          </span>
+                          <button
+                            onClick={handleResetExamFilters}
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer"
+                          >
+                            <RotateCcw size={11} />
+                            <span>필터 초기화</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 2행: 🌟 다중 선택 제어바 & 즐겨찾기 퀵 툴바 (2개 이상 선택되었거나 즐겨찾기가 있을 때 표시) */}
+                    {(selectedFilterChipIds.length >= 2 || filterPresets.length > 0) && (
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-100/80 flex-wrap gap-2 text-xs bg-slate-50/60 p-2 rounded-xl border border-slate-200/60">
+                        {/* 좌측: 다중 선택 컨트롤 (2개 이상 선택 시) */}
+                        {selectedFilterChipIds.length >= 2 ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[11px] font-black text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 rounded-md flex items-center gap-1">
+                              <Sparkles size={11} className="text-indigo-500" />
+                              <span>선택됨 {selectedFilterChipIds.length}개</span>
+                            </span>
+
+                            {/* 🎯 AND vs 📚 OR 토글 스위치 */}
+                            <div className="flex items-center bg-white p-0.5 rounded-lg border border-slate-200 text-[10px] shadow-2xs">
+                              <button
+                                type="button"
+                                onClick={() => setFilterMatchMode('AND')}
+                                className={`px-2 py-0.5 rounded-md font-black transition-all cursor-pointer ${
+                                  filterMatchMode === 'AND'
+                                    ? 'bg-indigo-600 text-white shadow-2xs'
+                                    : 'text-slate-500 hover:text-slate-800'
+                                }`}
+                                title="선택된 모든 필터가 붙은 시험지만 검색"
+                              >
+                                🎯 모두 포함 (AND)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setFilterMatchMode('OR')}
+                                className={`px-2 py-0.5 rounded-md font-black transition-all cursor-pointer ${
+                                  filterMatchMode === 'OR'
+                                    ? 'bg-indigo-600 text-white shadow-2xs'
+                                    : 'text-slate-500 hover:text-slate-800'
+                                }`}
+                                title="선택된 필터 중 하나라도 붙은 시험지 검색"
+                              >
+                                📚 하나라도 포함 (OR)
+                              </button>
+                            </div>
+
+                            {/* ⭐ 즐겨찾기 저장 버튼 */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPresetModalMode('save');
+                                setIsPresetModalOpen(true);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-200 transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title="현재 선택된 필터칩 조합을 즐겨찾기로 저장"
+                            >
+                              <Star size={11} className="fill-amber-400 text-amber-500" />
+                              <span>⭐ 이 조합 즐겨찾기 저장</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={handleSelectAllFilter}
+                              className="text-[10px] font-bold text-slate-400 hover:text-slate-700 underline cursor-pointer"
+                            >
+                              선택 해제
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-slate-400 font-medium">
+                            💡 필터칩을 2개 이상 선택하면 AND / OR 조건 및 즐겨찾기 저장이 가능합니다.
+                          </div>
+                        )}
+
+                        {/* 우측: 등록된 즐겨찾기 원클릭 퀵 버튼들 */}
+                        {filterPresets.length > 0 && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-black text-amber-700 flex items-center gap-0.5">
+                              <Star size={11} className="fill-amber-400 text-amber-500" />
+                              <span>빠른 즐겨찾기:</span>
+                            </span>
+                            {filterPresets.map(preset => {
+                              const isActive = activePresetId === preset.id;
+                              return (
+                                <button
+                                  key={preset.id}
+                                  type="button"
+                                  onClick={() => handleApplyPreset(preset)}
+                                  className={`px-2 py-0.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-1 cursor-pointer border ${
+                                    isActive
+                                      ? 'bg-amber-400 text-amber-950 border-amber-500 shadow-2xs font-black'
+                                      : 'bg-white hover:bg-amber-50 text-slate-700 border-amber-200/80'
+                                  }`}
+                                  title={`클릭하여 '${preset.name}' 즐겨찾기 적용 (${preset.match_mode === 'AND' ? '모두 포함' : '하나라도 포함'})`}
+                                >
+                                  <span>{preset.name}</span>
+                                  <span className="text-[9px] opacity-75">
+                                    ({preset.match_mode})
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
           )}
 
@@ -2268,9 +2492,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                 key={foundChip.id}
                                 chip={foundChip}
                                 size="xs"
+                                isActive={selectedFilterChipIds.includes(foundChip.id)}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setSelectedFilterChipId(selectedFilterChipId === foundChip.id ? 'ALL' : foundChip.id);
+                                  handleToggleFilterChip(foundChip.id);
                                 }}
                                 className="cursor-pointer"
                               />
@@ -5338,7 +5563,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         onClose={() => setIsFilterStudioOpen(false)}
         chips={filterChips}
         onChipsUpdated={(newChips) => setFilterChips(newChips)}
+        onPresetsUpdated={(newPresets) => setFilterPresets(newPresets)}
         onExamListRefresh={() => loadInitialData()}
+      />
+
+      {/* ⭐ 필터칩 조합 즐겨찾기 저장 및 관리 모달 */}
+      <FilterPresetModal
+        isOpen={isPresetModalOpen}
+        onClose={() => setIsPresetModalOpen(false)}
+        mode={presetModalMode}
+        allChips={filterChips}
+        selectedChipIds={selectedFilterChipIds}
+        matchMode={filterMatchMode}
+        presets={filterPresets}
+        onPresetsUpdated={(newPresets) => setFilterPresets(newPresets)}
+        onApplyPreset={(preset) => handleApplyPreset(preset)}
       />
 
     </div>

@@ -52,6 +52,16 @@ export interface ExamFilterChip {
   updated_at?: string;
 }
 
+// 🌟 즐겨찾기 조합 (필터 프리셋) 인터페이스
+export interface FilterPreset {
+  id: string;
+  name: string;
+  chip_ids: string[];
+  match_mode: 'AND' | 'OR';
+  created_at: string;
+  updated_at?: string;
+}
+
 // 🌟 기본 권장 프리셋 필터칩
 const DEFAULT_FILTER_CHIPS: ExamFilterChip[] = [
   {
@@ -86,10 +96,14 @@ const DEFAULT_FILTER_CHIPS: ExamFilterChip[] = [
   },
 ];
 
-// 헬퍼: DB에 필터칩 목록 저장하기 (필수 컬럼 name, type, grade 반드시 포함)
-async function saveFilterChips(chips: ExamFilterChip[]): Promise<void> {
+// 헬퍼: DB에 필터칩 + 즐겨찾기 프리셋 목록 저장하기 (필수 컬럼 name, type, grade 반드시 포함)
+async function saveFilterChipsData(
+  chips: ExamFilterChip[],
+  presets: FilterPreset[] = []
+): Promise<void> {
   const payload = JSON.stringify({
     chips,
+    presets,
     updated_at: new Date().toISOString(),
   });
 
@@ -106,13 +120,16 @@ async function saveFilterChips(chips: ExamFilterChip[]): Promise<void> {
   );
 
   if (error) {
-    console.error("Failed to save filter chips:", error);
+    console.error("Failed to save filter chips data:", error);
     throw new Error(`필터칩 데이터베이스 저장 실패: ${error.message}`);
   }
 }
 
-// 헬퍼: DB에서 필터칩 목록 가져오기
-async function getFilterChips(): Promise<ExamFilterChip[]> {
+// 헬퍼: DB에서 필터칩 + 즐겨찾기 프리셋 목록 가져오기
+async function getFilterChipsData(): Promise<{
+  chips: ExamFilterChip[];
+  presets: FilterPreset[];
+}> {
   try {
     const { data, error } = await supabase
       .from("exam_library")
@@ -122,35 +139,52 @@ async function getFilterChips(): Promise<ExamFilterChip[]> {
 
     if (error) {
       console.error("DB query error for filter chips:", error);
-      return DEFAULT_FILTER_CHIPS;
+      return { chips: DEFAULT_FILTER_CHIPS, presets: [] };
     }
 
     // DB에 레코드가 아직 없거나 file_data가 없는 경우에만 초기 프리셋 저장
     if (!data || !data.file_data) {
       try {
-        await saveFilterChips(DEFAULT_FILTER_CHIPS);
+        await saveFilterChipsData(DEFAULT_FILTER_CHIPS, []);
       } catch (saveErr) {
         console.error("Initial save error:", saveErr);
       }
-      return DEFAULT_FILTER_CHIPS;
+      return { chips: DEFAULT_FILTER_CHIPS, presets: [] };
     }
 
     const parsed = JSON.parse(data.file_data);
-    // 빈 배열([])이어도 사용자가 모든 칩을 삭제한 상태이므로 빈 배열을 정상 유지!
     const chips: ExamFilterChip[] = Array.isArray(parsed.chips) ? parsed.chips : DEFAULT_FILTER_CHIPS;
-    return chips.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const presets: FilterPreset[] = Array.isArray(parsed.presets) ? parsed.presets : [];
+
+    return {
+      chips: chips.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+      presets: presets.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      ),
+    };
   } catch (e) {
-    console.error("Failed to load filter chips:", e);
-    return DEFAULT_FILTER_CHIPS;
+    console.error("Failed to load filter chips data:", e);
+    return { chips: DEFAULT_FILTER_CHIPS, presets: [] };
   }
 }
 
-// GET: 필터칩 목록 조회
+// 하위 호환 헬퍼
+async function saveFilterChips(chips: ExamFilterChip[]): Promise<void> {
+  const { presets } = await getFilterChipsData();
+  await saveFilterChipsData(chips, presets);
+}
+
+async function getFilterChips(): Promise<ExamFilterChip[]> {
+  const { chips } = await getFilterChipsData();
+  return chips;
+}
+
+// GET: 필터칩 목록 및 즐겨찾기 프리셋 조회
 export async function GET() {
   try {
-    const chips = await getFilterChips();
+    const { chips, presets } = await getFilterChipsData();
     return NextResponse.json(
-      { success: true, chips },
+      { success: true, chips, presets },
       { headers: NO_CACHE_HEADERS }
     );
   } catch (error: any) {
@@ -161,10 +195,46 @@ export async function GET() {
   }
 }
 
-// POST: 새 필터칩 생성
+// POST: 새 필터칩 생성 또는 즐겨찾기 조합(프리셋) 생성
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
+
+    // 🌟 1) 즐겨찾기 조합(프리셋) 저장인 경우
+    if (body.type === 'preset') {
+      const { name, chip_ids, match_mode } = body;
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        return NextResponse.json(
+          { success: false, error: "즐겨찾기 이름을 입력해주세요." },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+      if (!Array.isArray(chip_ids) || chip_ids.length === 0) {
+        return NextResponse.json(
+          { success: false, error: "즐겨찾기에 포함할 필터칩을 1개 이상 선택해주세요." },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      const { chips, presets } = await getFilterChipsData();
+      const newPreset: FilterPreset = {
+        id: `preset_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        name: name.trim(),
+        chip_ids,
+        match_mode: match_mode === 'OR' ? 'OR' : 'AND',
+        created_at: new Date().toISOString(),
+      };
+
+      const updatedPresets = [newPreset, ...presets];
+      await saveFilterChipsData(chips, updatedPresets);
+
+      return NextResponse.json(
+        { success: true, preset: newPreset, presets: updatedPresets },
+        { headers: NO_CACHE_HEADERS }
+      );
+    }
+
+    // 🌟 2) 일반 필터칩 생성인 경우
     const { name, icon, color, effect } = body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -174,7 +244,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const currentChips = await getFilterChips();
+    const { chips: currentChips, presets } = await getFilterChipsData();
     const trimmedName = name.trim();
 
     // 중복 이름 체크
@@ -198,10 +268,10 @@ export async function POST(req: NextRequest) {
     };
 
     const updatedChips = [...currentChips, newChip];
-    await saveFilterChips(updatedChips);
+    await saveFilterChipsData(updatedChips, presets);
 
     return NextResponse.json(
-      { success: true, chip: newChip, chips: updatedChips },
+      { success: true, chip: newChip, chips: updatedChips, presets },
       { headers: NO_CACHE_HEADERS }
     );
   } catch (error: any) {
@@ -213,26 +283,74 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PUT: 필터칩 수정 또는 순서 일괄 갱신
+// PUT: 필터칩/프리셋 수정 또는 순서 일괄 갱신
 export async function PUT(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // 1) 전체 칩 목록 순서/데이터 일괄 갱신인 경우 ({ chips: ExamFilterChip[] })
+    // 🌟 1) 즐겨찾기 프리셋 수정인 경우
+    if (body.type === 'preset') {
+      const { chips, presets } = await getFilterChipsData();
+
+      // 프리셋 일괄 갱신
+      if (Array.isArray(body.presets)) {
+        await saveFilterChipsData(chips, body.presets);
+        return NextResponse.json(
+          { success: true, presets: body.presets },
+          { headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      // 단일 프리셋 수정
+      const { preset } = body;
+      if (!preset || !preset.id) {
+        return NextResponse.json(
+          { success: false, error: "수정할 즐겨찾기 ID가 필요합니다." },
+          { status: 400, headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      const idx = presets.findIndex(p => p.id === preset.id);
+      if (idx === -1) {
+        return NextResponse.json(
+          { success: false, error: "수정할 즐겨찾기를 찾을 수 없습니다." },
+          { status: 404, headers: NO_CACHE_HEADERS }
+        );
+      }
+
+      const updatedPreset: FilterPreset = {
+        ...presets[idx],
+        name: preset.name !== undefined ? preset.name.trim() : presets[idx].name,
+        chip_ids: Array.isArray(preset.chip_ids) ? preset.chip_ids : presets[idx].chip_ids,
+        match_mode: preset.match_mode || presets[idx].match_mode,
+        updated_at: new Date().toISOString(),
+      };
+
+      presets[idx] = updatedPreset;
+      await saveFilterChipsData(chips, presets);
+
+      return NextResponse.json(
+        { success: true, preset: updatedPreset, presets },
+        { headers: NO_CACHE_HEADERS }
+      );
+    }
+
+    // 🌟 2) 필터칩 전체 순서 갱신인 경우 ({ chips: ExamFilterChip[] })
+    const { presets } = await getFilterChipsData();
     if (Array.isArray(body.chips)) {
       const sanitizedChips: ExamFilterChip[] = body.chips.map((c: any, idx: number) => ({
         ...c,
         order: idx + 1,
         updated_at: new Date().toISOString(),
       }));
-      await saveFilterChips(sanitizedChips);
+      await saveFilterChipsData(sanitizedChips, presets);
       return NextResponse.json(
         { success: true, chips: sanitizedChips },
         { headers: NO_CACHE_HEADERS }
       );
     }
 
-    // 2) 단일 칩 수정인 경우 ({ chip: Partial<ExamFilterChip> & { id: string } })
+    // 🌟 3) 단일 필터칩 수정인 경우 ({ chip: Partial<ExamFilterChip> & { id: string } })
     const { chip } = body;
     if (!chip || !chip.id) {
       return NextResponse.json(
@@ -262,7 +380,7 @@ export async function PUT(req: NextRequest) {
     };
 
     currentChips[idx] = updatedChip;
-    await saveFilterChips(currentChips);
+    await saveFilterChipsData(currentChips, presets);
 
     return NextResponse.json(
       { success: true, chip: updatedChip, chips: currentChips },
@@ -277,12 +395,25 @@ export async function PUT(req: NextRequest) {
   }
 }
 
-// DELETE: 필터칩 삭제 (⚠️ 중요: 시험지는 절대 삭제되지 않음! 오직 시험지의 filter_chip_ids에서만 칩 ID 제거)
+// DELETE: 필터칩 삭제 또는 즐겨찾기 프리셋 삭제
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const chipId = searchParams.get("id");
+    const presetId = searchParams.get("preset_id");
 
+    // 🌟 1) 즐겨찾기 프리셋 삭제인 경우
+    if (presetId) {
+      const { chips, presets } = await getFilterChipsData();
+      const updatedPresets = presets.filter(p => p.id !== presetId);
+      await saveFilterChipsData(chips, updatedPresets);
+      return NextResponse.json(
+        { success: true, presets: updatedPresets },
+        { headers: NO_CACHE_HEADERS }
+      );
+    }
+
+    // 🌟 2) 필터칩 삭제인 경우
+    const chipId = searchParams.get("id");
     if (!chipId) {
       return NextResponse.json(
         { success: false, error: "삭제할 칩 ID가 필요합니다." },
@@ -291,7 +422,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     const decodedChipId = decodeURIComponent(chipId);
-    const currentChips = await getFilterChips();
+    const { chips: currentChips, presets } = await getFilterChipsData();
     const targetChip = currentChips.find(c => c.id === chipId || c.id === decodedChipId);
     if (!targetChip) {
       return NextResponse.json(
@@ -302,11 +433,18 @@ export async function DELETE(req: NextRequest) {
 
     const effectiveId = targetChip.id;
 
-    // 1. 필터칩 목록에서 해당 칩 제거 및 DB 저장
+    // 1. 필터칩 목록에서 해당 칩 제거
     const updatedChips = currentChips.filter(c => c.id !== effectiveId);
-    await saveFilterChips(updatedChips);
 
-    // 2. 🛡️ [핵심 안전 보장]: 기존 시험지 목록에서 이 필터칩 ID만 안전하게 제거 (시험지 자체는 절대 삭제 안 됨!)
+    // 2. 프리셋에서도 해당 필터칩 ID 안전하게 제거
+    const cleanedPresets = presets.map(p => ({
+      ...p,
+      chip_ids: p.chip_ids.filter(id => id !== effectiveId && id !== chipId),
+    }));
+
+    await saveFilterChipsData(updatedChips, cleanedPresets);
+
+    // 3. 🛡️ [핵심 안전 보장]: 기존 시험지 목록에서 이 필터칩 ID만 안전하게 제거 (시험지 자체는 절대 삭제 안 됨!)
     try {
       const { data: examData } = await supabase
         .from("exam_library")
@@ -350,7 +488,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { success: true, chips: updatedChips },
+      { success: true, chips: updatedChips, presets: cleanedPresets },
       { headers: NO_CACHE_HEADERS }
     );
   } catch (error: any) {

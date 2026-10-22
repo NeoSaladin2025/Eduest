@@ -4,7 +4,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   ExamFilterChip, 
   FilterChipColor, 
-  FilterChipEffect 
+  FilterChipEffect,
+  FilterPreset
 } from '@/app/api/test2/filter-chips/route';
 import FilterChipBadge, { 
   CHIP_COLOR_MAP, 
@@ -28,6 +29,7 @@ interface FilterChipStudioModalProps {
   onClose: () => void;
   chips: ExamFilterChip[];
   onChipsUpdated: (newChips: ExamFilterChip[]) => void;
+  onPresetsUpdated?: (newPresets: FilterPreset[]) => void;
   onExamListRefresh?: () => void;
 }
 
@@ -38,6 +40,7 @@ export default function FilterChipStudioModal({
   onClose,
   chips,
   onChipsUpdated,
+  onPresetsUpdated,
   onExamListRefresh,
 }: FilterChipStudioModalProps) {
   const [editingChipId, setEditingChipId] = useState<string | null>(null);
@@ -55,8 +58,13 @@ export default function FilterChipStudioModal({
     fetch('/api/test2/filter-chips', { cache: 'no-store' })
       .then((res) => res.json())
       .then((data) => {
-        if (isMounted && data.success && Array.isArray(data.chips)) {
-          onChipsUpdated(data.chips);
+        if (isMounted && data.success) {
+          if (Array.isArray(data.chips)) {
+            onChipsUpdated(data.chips);
+          }
+          if (Array.isArray(data.presets) && onPresetsUpdated) {
+            onPresetsUpdated(data.presets);
+          }
         }
       })
       .catch((err) => console.error('Failed to sync chips on open:', err));
@@ -172,6 +180,7 @@ export default function FilterChipStudioModal({
       const data = await res.json();
       if (data.success && data.chips) {
         onChipsUpdated(data.chips);
+        if (data.presets && onPresetsUpdated) onPresetsUpdated(data.presets);
         if (editingChipId === chip.id) resetForm();
         if (onExamListRefresh) onExamListRefresh();
       } else {
