@@ -40,6 +40,7 @@ import { supabase } from '@/lib/supabase';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
 import ZoomableImageViewer from './ZoomableImageViewer';
+import { calculateRoundDuration, shuffleArray } from '@/app/teacher/exammgr/treasureTypes';
 
 interface StudentTest2ViewProps {
   studentId: string;
@@ -172,7 +173,7 @@ export default function StudentTest2View({
 }: StudentTest2ViewProps) {
   // 모드: 목록('list') | 응시 중('taking') | 결과/채점 보기('result')
   const [viewMode, setViewMode] = useState<'list' | 'taking' | 'result'>('list');
-  const [listTab, setListTab] = useState<'single' | 'bundle' | 'special' | 'wrong'>('single');
+  const [listTab, setListTab] = useState<'single' | 'bundle' | 'special' | 'wrong' | 'treasure'>('single');
   const [loading, setLoading] = useState(true);
 
   // 배정된 단일 시험지 및 묶음 시험지 목록
@@ -254,17 +255,40 @@ export default function StudentTest2View({
 
   const currentReviewData = reviewData || localReviewData;
 
-  // 스페셜, 단일, 오답 시험지 분류
+  // 스페셜, 보물회수, 단일, 오답 시험지 분류
   const specialExams = useMemo(() => {
     return examList.filter(e => e.is_special || (e.title && e.title.includes('[스페셜]')));
   }, [examList]);
 
+  // 💎 [보물회수] 전용 시험지 목록
+  const treasureExams = useMemo(() => {
+    return examList.filter(e =>
+      !e.is_special &&
+      (e.is_treasure_hunt ||
+        (e.title && (e.title.includes('보물회수') || e.title.includes('[보물]'))))
+    );
+  }, [examList]);
+
   const wrongExams = useMemo(() => {
-    return examList.filter(e => !e.is_special && !e.title?.includes('[스페셜]') && (e.is_wrong_review || e.title.startsWith('[오답]')));
+    return examList.filter(e =>
+      !e.is_special &&
+      !e.is_treasure_hunt &&
+      !e.title?.includes('[스페셜]') &&
+      !e.title?.includes('보물회수') &&
+      !e.title?.includes('[보물]') &&
+      (e.is_wrong_review || e.title?.startsWith('[오답]'))
+    );
   }, [examList]);
 
   const singleExams = useMemo(() => {
-    return examList.filter(e => !e.is_special && !e.title?.includes('[스페셜]') && !(e.is_wrong_review || e.title.startsWith('[오답]')));
+    return examList.filter(e =>
+      !e.is_special &&
+      !e.is_treasure_hunt &&
+      !e.title?.includes('[스페셜]') &&
+      !e.title?.includes('보물회수') &&
+      !e.title?.includes('[보물]') &&
+      !(e.is_wrong_review || e.title?.startsWith('[오답]'))
+    );
   }, [examList]);
 
   // 🔔 [신규] 선생님이 설정한 미완료 리마인드 팝업 대상 시험지 목록
@@ -628,50 +652,81 @@ export default function StudentTest2View({
   };
 
   // 2. 시험 시작하기
-  const handleStartExam = async (examId: string, bundle?: ExamBundle, roundNum = 1) => {
+  const handleStartExam = async (examId: string, bundle?: ExamBundle | null, roundNum = 1, forceNewRound = false) => {
     try {
       setLoading(true);
       const res = await fetch(`/api/test2/student-exams?studentId=${studentId}&examId=${examId}`);
       const data = await res.json();
 
       if (data.success && data.exam) {
+        const isTreasureExam = Boolean(data.exam.is_treasure_hunt || data.exam.treasure_config?.enabled || data.exam.title?.includes('보물'));
+        
+        // 🔀 문항 무작위 믹싱 (셔플)
+        if (data.exam.treasure_config?.enable_shuffle || (isTreasureExam && forceNewRound)) {
+          if (Array.isArray(data.exam.questions)) {
+            data.exam.questions = shuffleArray(data.exam.questions);
+          }
+        }
+
+        // ⏱️ 타임어택 회차별 제한시간 계산
+        if (data.exam.treasure_config?.enabled) {
+          const cfg = data.exam.treasure_config;
+          const calculatedMin = calculateRoundDuration(
+            cfg.base_duration_min || data.exam.duration_min || 30,
+            roundNum,
+            cfg.time_attack_mode,
+            cfg.percent_reduction,
+            cfg.manual_durations,
+            cfg.variable_reductions
+          );
+          data.exam.duration_min = calculatedMin;
+        }
+
         setCurrentExam(data.exam);
         setCurrentBundle(bundle || null);
         setCurrentRound(roundNum);
         setCurrentQuestionIndex(0);
         questionEnteredAtRef.current = Date.now();
 
-        // 이미 제출된 시험지라면 결과 보기 화면으로
-        if (data.is_submitted && data.submission) {
+        // 이미 제출된 시험지라도 새로운 회차 도전(forceNewRound)이면 시험 화면으로 바로 시작
+        if (!forceNewRound && data.is_submitted && data.submission) {
           setSubmissionResult(data.submission);
           setViewMode('result');
         } else {
-          // 로컬 임시 저장 답안 복원
-          const savedAnswers = localStorage.getItem(`test2_answers_${studentId}_${examId}`);
-          if (savedAnswers) {
-            try {
-              setUserAnswers(JSON.parse(savedAnswers));
-            } catch {
+          if (forceNewRound) {
+            localStorage.removeItem(`test2_answers_${studentId}_${examId}`);
+            localStorage.removeItem(`test2_time_${studentId}_${examId}`);
+            localStorage.removeItem(`test2_qtimes_${studentId}_${examId}`);
+            setUserAnswers({});
+            setQuestionSpentTimes({});
+          } else {
+            // 로컬 임시 저장 답안 복원
+            const savedAnswers = localStorage.getItem(`test2_answers_${studentId}_${examId}`);
+            if (savedAnswers) {
+              try {
+                setUserAnswers(JSON.parse(savedAnswers));
+              } catch {
+                setUserAnswers({});
+              }
+            } else {
               setUserAnswers({});
             }
-          } else {
-            setUserAnswers({});
-          }
 
-          // 문항별 소요시간 복원
-          const savedQTimes = localStorage.getItem(`test2_qtimes_${studentId}_${examId}`);
-          if (savedQTimes) {
-            try {
-              setQuestionSpentTimes(JSON.parse(savedQTimes));
-            } catch {
+            // 문항별 소요시간 복원
+            const savedQTimes = localStorage.getItem(`test2_qtimes_${studentId}_${examId}`);
+            if (savedQTimes) {
+              try {
+                setQuestionSpentTimes(JSON.parse(savedQTimes));
+              } catch {
+                setQuestionSpentTimes({});
+              }
+            } else {
               setQuestionSpentTimes({});
             }
-          } else {
-            setQuestionSpentTimes({});
           }
 
           // 남은 시간 복원 또는 기본 설정 (분 -> 초)
-          const savedTime = localStorage.getItem(`test2_time_${studentId}_${examId}`);
+          const savedTime = forceNewRound ? null : localStorage.getItem(`test2_time_${studentId}_${examId}`);
           const isUnlimited = typeof data.exam.duration_min === 'number' && data.exam.duration_min <= 0;
           const initialDurationSec = isUnlimited ? 0 : (data.exam.duration_min || 60) * 60;
           const initialTime = savedTime ? parseInt(savedTime, 10) : initialDurationSec;
@@ -681,14 +736,20 @@ export default function StudentTest2View({
           setIsPaused(false);
           setViewMode('taking');
 
-          // 시작 상태 알림
+          // 시작 상태 알림 (감시 시스템 연동)
           setTimeout(() => {
+            const displayTitle = isTreasureExam 
+              ? (data.exam.title.startsWith('[보물') ? data.exam.title : `[보물회수] ${data.exam.title}`)
+              : (bundle ? `[${bundle.title}] ${data.exam.title}` : data.exam.title);
+
             supabase
               .from('students')
               .update({
                 test_status: 'TESTING',
                 test_remaining_sec: initialTime,
                 test_duration_min: data.exam.duration_min ?? 0,
+                current_exam_title: displayTitle,
+                current_round: roundNum,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', studentId)
@@ -1289,6 +1350,17 @@ export default function StudentTest2View({
                   <RotateCcw size={16} />
                   오답 시험지 ({wrongExams.length})
                 </button>
+                <button
+                  onClick={() => setListTab('treasure')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+                    listTab === 'treasure'
+                      ? 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-slate-950 shadow-xl shadow-amber-500/40 font-extrabold ring-2 ring-yellow-300 scale-[1.03]'
+                      : 'text-amber-300 hover:text-amber-200 hover:bg-amber-400/10 border border-amber-400/20'
+                  }`}
+                >
+                  <Sparkles size={16} className={listTab === 'treasure' ? 'text-slate-950 fill-slate-950 animate-bounce' : 'text-amber-400 animate-pulse'} />
+                  <span className="tracking-tight">💎 보물회수 ({treasureExams.length})</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1698,6 +1770,128 @@ export default function StudentTest2View({
               </div>
             )
           )}
+
+          {/* 💎 탭 4: [신규] 보물회수 시험지 목록 */}
+          {listTab === 'treasure' && (
+            treasureExams.length === 0 ? (
+              <div className="bg-gradient-to-b from-amber-500/10 via-white/5 to-transparent border border-dashed border-amber-500/30 rounded-[40px] p-16 text-center space-y-4 max-w-xl mx-auto shadow-2xl backdrop-blur-3xl">
+                <div className="w-20 h-20 bg-gradient-to-tr from-amber-500/30 via-yellow-400/20 to-amber-300/30 text-amber-300 rounded-3xl flex items-center justify-center mx-auto shadow-xl shadow-amber-500/20 border border-amber-400/30 animate-pulse">
+                  <Sparkles size={40} className="fill-amber-300" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-black text-amber-200 tracking-tight">
+                    배정된 💎 보물회수 시험지가 없습니다
+                  </h3>
+                  <p className="text-xs text-slate-400 font-bold leading-relaxed">
+                    오답은 성장의 가장 값진 보물입니다! <br />
+                    선생님이 나만을 위한 보물회수 반복 코스를 배정하면 이곳에 반짝이는 시험지가 나타납니다.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {treasureExams.map((exam: any) => {
+                  const isSubmitted = exam.is_submitted;
+                  return (
+                    <div
+                      key={exam.id}
+                      className="bg-gradient-to-b from-amber-500/10 via-slate-900/60 to-slate-950/80 border border-amber-500/40 hover:border-amber-400/80 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden ring-1 ring-amber-400/20 hover:ring-amber-400/50 hover:shadow-amber-500/10"
+                    >
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-3 py-1 bg-gradient-to-r from-amber-500/30 to-yellow-500/30 text-amber-200 border border-amber-400/40 text-[11px] font-black rounded-full flex items-center gap-1.5 shadow-sm">
+                              <Sparkles size={12} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
+                              보물회수 코스
+                            </span>
+                            {getExamLockdownActive(exam) ? (
+                              <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Lock size={11} /> 이탈잠금
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Unlock size={11} /> 자율응시
+                              </span>
+                            )}
+                            {getExamRequireProof(exam) && (
+                              <span className="px-2.5 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-black rounded-full flex items-center gap-1">
+                                <Camera size={11} /> 사진인증
+                              </span>
+                            )}
+                          </div>
+                          {isSubmitted ? (
+                            <span className="flex items-center gap-1 text-xs font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-400/30">
+                              <CheckCircle2 size={13} />
+                              회수 성공 ({exam.submission?.score}점)
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-black text-amber-400/80 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20">
+                              도전 대기
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2">
+                            {exam.title}
+                          </h3>
+                          <p className="text-xs text-amber-300/70 font-bold mt-2 flex items-center gap-2 flex-wrap">
+                            <span>💎 보물 문항 총 {exam.question_count}문제</span>
+                            <span>•</span>
+                            <span>{exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한'}</span>
+                            {Boolean(exam.treasure_config?.total_rounds || exam.treasure_config?.repeat_rounds) && (
+                              <>
+                                <span>•</span>
+                                <span className="text-amber-200">🔁 총 {exam.treasure_config.total_rounds || exam.treasure_config.repeat_rounds}회차 코스</span>
+                              </>
+                            )}
+                            {Boolean(exam.treasure_config?.enable_shuffle || exam.treasure_config?.enable_mixing) && (
+                              <>
+                                <span>•</span>
+                                <span className="text-amber-300">🔀 문항 믹싱</span>
+                              </>
+                            )}
+                          </p>
+                        </div>
+
+                        {isSubmitted && exam.submission && (
+                          <div className="bg-amber-500/10 rounded-2xl p-3 flex items-center justify-between border border-amber-400/20 text-xs">
+                            <span className="text-amber-200 font-bold">🏆 보물 회수율</span>
+                            <span className="text-amber-300 font-black text-sm">
+                              {exam.submission.correct_count} / {exam.submission.total_questions} 회수 ({exam.submission.score}점)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pt-6 mt-4 border-t border-white/10">
+                        <button
+                          onClick={() => handleStartExam(exam.id)}
+                          className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                            isSubmitted
+                              ? 'bg-white/10 hover:bg-white/20 text-white'
+                              : 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]'
+                          }`}
+                        >
+                          {isSubmitted ? (
+                            <>
+                              <Eye size={16} />
+                              <span>회수 결과 & 해설 보기</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles size={16} className="fill-slate-950" />
+                              <span>💎 보물 회수 도전하기</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
         </div>
       )}
 
@@ -1723,10 +1917,21 @@ export default function StudentTest2View({
                 <ArrowLeft size={20} />
               </button>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   {currentBundle && (
                     <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 font-bold text-[10px] border border-indigo-500/30">
                       {currentBundle.title} • {currentRound}회차
+                    </span>
+                  )}
+                  {Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled) && (
+                    <span className="px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/30 to-yellow-500/30 text-amber-200 font-black text-[10px] border border-amber-400/50 flex items-center gap-1 shadow-sm">
+                      <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
+                      💎 보물회수 {currentRound}회차 {(currentExam as any).treasure_config ? `/ ${(currentExam as any).treasure_config.total_rounds || (currentExam as any).treasure_config.repeat_rounds || 1}회` : ''}
+                    </span>
+                  )}
+                  {Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled) && Boolean((currentExam as any).treasure_config?.enable_shuffle || (currentExam as any).treasure_config?.enable_mixing) && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 font-bold text-[10px] border border-amber-500/30 flex items-center gap-1">
+                      🔀 문항 믹싱 가동
                     </span>
                   )}
                   <h3 className="text-lg md:text-xl font-black text-white line-clamp-1">
@@ -1769,11 +1974,21 @@ export default function StudentTest2View({
               <div className={`px-5 py-2.5 rounded-2xl flex items-center gap-2.5 border font-mono font-black text-sm md:text-base shadow-lg transition-all ${
                 timeLeft < 300 
                   ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' 
+                  : Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled)
+                  ? 'bg-gradient-to-r from-amber-500/20 to-yellow-500/20 text-amber-200 border-amber-400/40 shadow-amber-500/10'
                   : 'bg-white/10 text-white border-white/10'
               }`}>
-                <Clock size={19} className={timeLeft < 300 ? 'text-rose-400' : 'text-violet-400'} />
+                <Clock size={19} className={
+                  timeLeft < 300 
+                    ? 'text-rose-400' 
+                    : Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled)
+                    ? 'text-amber-300'
+                    : 'text-violet-400'
+                } />
                 <div className="flex flex-col text-left">
-                  <span className="text-[9px] uppercase tracking-wider text-slate-400 font-sans">남은 제한시간</span>
+                  <span className="text-[9px] uppercase tracking-wider font-sans opacity-80">
+                    {Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled) ? '💎 보물회수 남은 시간' : '남은 제한시간'}
+                  </span>
                   <span className="tracking-widest">{formatRemainingTime(timeLeft)}</span>
                 </div>
               </div>
@@ -2569,6 +2784,82 @@ export default function StudentTest2View({
               </div>
             </div>
           </div>
+
+          {/* 💎 보물회수 다음 회차 도전 / 완주 배너 */}
+          {(() => {
+            const isTreasure = Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled);
+            if (!isTreasure) return null;
+            const tConfig = (currentExam as any).treasure_config;
+            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+            const hasNextRound = currentRound < repeatRounds;
+            const nextRound = currentRound + 1;
+            const nextDuration = calculateRoundDuration(
+              tConfig?.base_duration_min || currentExam.duration_min || 30,
+              nextRound,
+              tConfig?.time_attack_mode || 'fixed',
+              tConfig?.percent_reduction || 0,
+              tConfig?.manual_durations,
+              tConfig?.variable_reductions
+            );
+
+            if (hasNextRound) {
+              return (
+                <div className="bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-600/20 border-2 border-amber-400/50 rounded-[32px] p-6 md:p-8 shadow-2xl backdrop-blur-3xl flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden group">
+                  <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-amber-400/10 rounded-full blur-2xl pointer-events-none group-hover:scale-125 transition-transform" />
+                  <div className="flex items-center gap-4 relative z-10">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 text-slate-950 flex items-center justify-center font-black text-2xl shadow-xl shadow-amber-500/30 shrink-0">
+                      💎
+                    </div>
+                    <div className="text-left space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-0.5 rounded-full bg-amber-400/25 text-amber-200 font-black text-[11px] border border-amber-400/40 flex items-center gap-1 shadow-sm">
+                          <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
+                          보물회수 코스 진행 중
+                        </span>
+                        <span className="text-xs font-bold text-slate-300">
+                          현재 <strong className="text-amber-300">{currentRound}회차</strong> 완료 / 총 <strong>{repeatRounds}회차</strong>
+                        </span>
+                      </div>
+                      <h4 className="text-xl md:text-2xl font-black text-amber-200">
+                        제 {nextRound}회차 타임어택 도전 준비 완료!
+                      </h4>
+                      <p className="text-xs text-amber-200/80 font-medium leading-relaxed">
+                        {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) ? '🔀 문항 순서가 새롭게 믹싱(셔플)되며, ' : ''}
+                        {tConfig?.time_attack_mode && tConfig.time_attack_mode !== 'fixed'
+                          ? `⏱️ 다음 회차 제한시간은 ${nextDuration > 0 ? `${nextDuration}분` : '무제한'}으로 타임어택이 적용됩니다.`
+                          : '오답을 완벽히 내 것으로 만들 때까지 반복 회수해 보세요!'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      handleStartExam(currentExam.id, currentBundle, nextRound, true);
+                    }}
+                    className="w-full md:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-base shadow-xl shadow-amber-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer relative z-10"
+                  >
+                    <Sparkles size={18} className="fill-slate-950" />
+                    <span>제 {nextRound}회차 보물회수 시작 ({nextDuration > 0 ? `${nextDuration}분` : '자율'})</span>
+                    <ArrowRight size={18} />
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="bg-gradient-to-r from-emerald-500/20 via-teal-500/15 to-emerald-600/20 border-2 border-emerald-400/50 rounded-[32px] p-8 text-center space-y-3 shadow-2xl backdrop-blur-3xl relative overflow-hidden">
+                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-400 to-teal-300 text-slate-950 text-3xl shadow-xl shadow-emerald-500/20 mb-1">
+                  🏆
+                </div>
+                <h4 className="text-2xl font-black text-emerald-200">
+                  축하합니다! {repeatRounds}회차 보물회수 코스를 전량 완주했습니다!
+                </h4>
+                <p className="text-sm text-emerald-200/80 max-w-lg mx-auto font-medium">
+                  오답은 가장 값진 보물입니다. 반복과 타임어택을 통해 오답을 완벽히 정복했습니다!
+                </p>
+              </div>
+            );
+          })()}
 
           {/* 문항별 상세 채점 내역 & 해설 보기 */}
           <div className="space-y-4">

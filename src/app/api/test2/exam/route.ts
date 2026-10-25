@@ -41,6 +41,17 @@ export interface StudentOverrideConfig {
   require_proof_image?: boolean;
 }
 
+export interface TreasureConfig {
+  enabled: boolean;
+  total_rounds: number;
+  enable_shuffle: boolean;
+  time_attack_mode: 'percent' | 'manual' | 'variable_percent' | 'fixed';
+  base_duration_min: number;
+  percent_reduction: number;
+  manual_durations?: number[];
+  variable_reductions?: number[];
+}
+
 export interface ExamPaper {
   id: string;
   title: string;
@@ -50,6 +61,8 @@ export interface ExamPaper {
   assigned_student_ids: string[];
   is_wrong_review?: boolean;
   is_special?: boolean;
+  is_treasure_hunt?: boolean;
+  treasure_config?: TreasureConfig;
   require_proof_image?: boolean;
   enable_lockdown?: boolean;
   remind_popup?: boolean;
@@ -201,6 +214,8 @@ export async function POST(req: NextRequest) {
       assigned_student_ids, 
       is_wrong_review, 
       is_special, 
+      is_treasure_hunt,
+      treasure_config,
       require_proof_image, 
       enable_lockdown,
       remind_popup,
@@ -244,6 +259,8 @@ export async function POST(req: NextRequest) {
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
       is_wrong_review: !!is_wrong_review,
       is_special: !!is_special,
+      is_treasure_hunt: !!is_treasure_hunt || title.trim().startsWith('[보물') || title.trim().includes('보물회수'),
+      treasure_config: treasure_config || undefined,
       require_proof_image: !!require_proof_image,
       enable_lockdown: !!enable_lockdown,
       remind_popup: !!remind_popup,

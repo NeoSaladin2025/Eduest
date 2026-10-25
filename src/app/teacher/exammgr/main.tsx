@@ -58,6 +58,13 @@ import FilterChipStudioModal from './FilterChipStudioModal';
 import FilterPresetModal from './FilterPresetModal';
 import BatchAssignModal from './BatchAssignModal';
 import BatchFilterChipModal from './BatchFilterChipModal';
+import {
+  TreasureConfig,
+  TreasureTemplate,
+  DEFAULT_TREASURE_TEMPLATES,
+  calculateRoundDuration,
+  TimeAttackMode
+} from './treasureTypes';
 import StudentPerformanceModal from '../studentmanager/StudentPerformanceModal';
 import { ExamFilterChip, FilterPreset } from '@/app/api/test2/filter-chips/route';
 
@@ -130,6 +137,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [examGrade, setExamGrade] = useState('고1');
   const [examDuration, setExamDuration] = useState(50);
   const [isNoTimeLimit, setIsNoTimeLimit] = useState(false);
+  const [isTreasureExam, setIsTreasureExam] = useState(false);
 
   // ── [신규] 화면 이탈 방지(잠금) 및 풀이 인증샷 기본값 & 디폴트 기억 상태 ──
   const [examEnableLockdown, setExamEnableLockdown] = useState<boolean>(() => {
@@ -248,7 +256,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [batchGradingInitialStudentId, setBatchGradingInitialStudentId] = useState<string | undefined>(undefined);
 
   // 🌟 학생별 응시 상세 모달 (문항별 맞음/틀림/모름 및 소요시간)
-  const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any } | null>(null);
+  const [detailStudent, setDetailStudent] = useState<{ student: Student; submission: any; exam: ExamPaper } | null>(null);
   const [overridingQuestionId, setOverridingQuestionId] = useState<string | null>(null);
   const [teacherSolutionModalDriveId, setTeacherSolutionModalDriveId] = useState<string | null>(null);
 
@@ -274,6 +282,77 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [wrongExamCustomMinutes, setWrongExamCustomMinutes] = useState<number>(15);
   const [wrongExamRemindPopup, setWrongExamRemindPopup] = useState<boolean>(false);
   const [changingTwinQuestionId, setChangingTwinQuestionId] = useState<string | null>(null);
+
+  // 💎 [보물회수 전용 옵션 및 템플릿 상태]
+  const [treasureEnabled, setTreasureEnabled] = useState<boolean>(true); // 기본 보물회수 모드 ON
+  const [treasureRounds, setTreasureRounds] = useState<number>(3); // 3회차 반복
+  const [treasureShuffle, setTreasureShuffle] = useState<boolean>(true); // 믹싱 ON
+  const [treasureTimeMode, setTreasureTimeMode] = useState<TimeAttackMode>('percent'); // 타임어택 방식
+  const [treasurePercentReduction, setTreasurePercentReduction] = useState<number>(10); // 10% 감소
+  const [treasureManualDurations, setTreasureManualDurations] = useState<number[]>([]);
+  const [treasureVariableReductions, setTreasureVariableReductions] = useState<number[]>([10, 15, 20]);
+  const [treasureTemplates, setTreasureTemplates] = useState<TreasureTemplate[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('eduest_treasure_templates');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return DEFAULT_TREASURE_TEMPLATES;
+  });
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('tpl_standard');
+  const [newTemplateNameInput, setNewTemplateNameInput] = useState<string>('');
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState<boolean>(false);
+
+  // 템플릿 적용 함수
+  const applyTreasureTemplate = (tpl: TreasureTemplate) => {
+    setSelectedTemplateId(tpl.id);
+    setTreasureRounds(tpl.total_rounds);
+    setTreasureShuffle(tpl.enable_shuffle);
+    setTreasureTimeMode(tpl.time_attack_mode);
+    setTreasurePercentReduction(tpl.percent_reduction);
+    if (tpl.manual_durations) setTreasureManualDurations(tpl.manual_durations);
+    if (tpl.variable_reductions) setTreasureVariableReductions(tpl.variable_reductions);
+  };
+
+  // 새 템플릿 저장 함수
+  const saveCurrentAsTemplate = (name: string) => {
+    if (!name.trim()) return;
+    const newTpl: TreasureTemplate = {
+      id: `tpl_custom_${Date.now()}`,
+      name: name.trim(),
+      total_rounds: treasureRounds,
+      enable_shuffle: treasureShuffle,
+      time_attack_mode: treasureTimeMode,
+      percent_reduction: treasurePercentReduction,
+      manual_durations: treasureTimeMode === 'manual' ? treasureManualDurations : undefined,
+      variable_reductions: treasureTimeMode === 'variable_percent' ? treasureVariableReductions : undefined,
+      is_custom: true,
+    };
+    const updated = [...treasureTemplates, newTpl];
+    setTreasureTemplates(updated);
+    setSelectedTemplateId(newTpl.id);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('eduest_treasure_templates', JSON.stringify(updated));
+    }
+    setNewTemplateNameInput('');
+    setShowSaveTemplateModal(false);
+    alert(`🎉 '${name}' 템플릿이 성공적으로 저장되었습니다!`);
+  };
+
+  // 템플릿 삭제 함수
+  const deleteTreasureTemplate = (id: string) => {
+    if (!confirm('선택한 템플릿을 삭제하시겠습니까?')) return;
+    const updated = treasureTemplates.filter(t => t.id !== id);
+    setTreasureTemplates(updated);
+    if (selectedTemplateId === id) {
+      setSelectedTemplateId('tpl_standard');
+      applyTreasureTemplate(DEFAULT_TREASURE_TEMPLATES[0]);
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('eduest_treasure_templates', JSON.stringify(updated));
+    }
+  };
 
   // 🌟 [사용자 요청] 시험지 목록 필터링 상태 (검색어, 학년 필터, 학생 필터, 정렬 옵션, 시험지 종류 필터)
   const [examSearchInput, setExamSearchInput] = useState('');
@@ -1082,34 +1161,40 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
     try {
       setLoading(true);
-      const res = await fetch('/api/test2/exam', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: examTitle.trim(),
-          grade: examGrade,
-          duration_min: isNoTimeLimit ? 0 : Math.max(0, examDuration),
-          questions: extractedQuestions,
-          assigned_student_ids: assignedStudentIds,
-          enable_lockdown: examEnableLockdown,
-          require_proof_image: examRequireProof,
-          filter_chip_ids: newExamFilterChipIds,
-        }),
-      });
+        const finalTitle = isTreasureExam && !examTitle.trim().startsWith('[보물')
+          ? `[보물회수] ${examTitle.trim()}`
+          : examTitle.trim();
 
-      const data = await res.json();
-      if (data.success) {
-        alert(`🎉 '${examTitle}' 시험지가 성공적으로 생성되었습니다! (${assignedStudentIds.length}명 배정됨)`);
-        setExamTitle('');
-        setSelectedFiles([]);
-        setExtractedQuestions([]);
-        setExtractionDone(false);
-        setAssignedStudentIds([]);
-        setExamDuration(50);
-        setNewExamFilterChipIds([]);
-        setIsNoTimeLimit(false);
-        setActiveTab('list');
-        loadInitialData();
+        const res = await fetch('/api/test2/exam', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: finalTitle,
+            grade: examGrade,
+            duration_min: isNoTimeLimit ? 0 : Math.max(0, examDuration),
+            questions: extractedQuestions,
+            assigned_student_ids: assignedStudentIds,
+            enable_lockdown: examEnableLockdown,
+            require_proof_image: examRequireProof,
+            filter_chip_ids: newExamFilterChipIds,
+            is_treasure_hunt: isTreasureExam,
+          }),
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          alert(`🎉 '${finalTitle}' 시험지가 성공적으로 생성되었습니다! (${assignedStudentIds.length}명 배정됨)`);
+          setExamTitle('');
+          setSelectedFiles([]);
+          setExtractedQuestions([]);
+          setExtractionDone(false);
+          setAssignedStudentIds([]);
+          setExamDuration(50);
+          setNewExamFilterChipIds([]);
+          setIsNoTimeLimit(false);
+          setIsTreasureExam(false);
+          setActiveTab('list');
+          loadInitialData();
       } else {
         alert(`시험지 생성 실패: ${data.error}`);
       }
@@ -1427,7 +1512,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 🌟 채점 결과 수동 수정 (맞음/틀림 토글 및 실시간 재계산)
   const handleOverrideQuestionGrade = async (questionId: string, currentIsCorrect: boolean) => {
-    if (!detailStudent || !resultsModalExam) return;
+    if (!detailStudent) return;
+    const activeExam = detailStudent.exam || resultsModalExam;
+    if (!activeExam) return;
     const nextIsCorrect = !currentIsCorrect;
 
     try {
@@ -1437,7 +1524,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           studentId: detailStudent.student.id,
-          examId: resultsModalExam.id,
+          examId: activeExam.id,
           questionId,
           isCorrect: nextIsCorrect,
         }),
@@ -1451,7 +1538,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         // 2. 부모 결과 모달의 examSubmissions 목록도 동기화
         setExamSubmissions(prev =>
           prev.map(sub =>
-            (sub.student_id === detailStudent.student.id && sub.exam_id === resultsModalExam.id)
+            (sub.student_id === detailStudent.student.id && sub.exam_id === activeExam.id)
+              ? data.submission
+              : sub
+          )
+        );
+
+        // 3. 전체 카드 목록의 점수 뱃지도 실시간 동기화
+        setAllSubmissions(prev =>
+          prev.map(sub =>
+            (sub.student_id === detailStudent.student.id && sub.exam_id === activeExam.id)
               ? data.submission
               : sub
           )
@@ -1527,9 +1623,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   };
 
   // 🌟 학생 응시 상세 결과 보기
-  const handleOpenStudentDetail = (st: Student | undefined, sub: any) => {
+  const handleOpenStudentDetail = (st: Student | undefined, sub: any, targetExam?: ExamPaper) => {
     if (!st || !sub) return;
-    setDetailStudent({ student: st, submission: sub });
+    const examToUse = targetExam || resultsModalExam;
+    if (!examToUse) return;
+    setDetailStudent({ student: st, submission: sub, exam: examToUse });
   };
 
   // 1-1. 쌍둥이 데이터 로드
@@ -1655,11 +1753,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   };
 
   // 🌟 오답 맞춤 시험지 생성 모달 열기
-  const handleCreateWrongExam = (st: Student | undefined, sub: any) => {
-    if (!st || !sub || !resultsModalExam) return;
+  const handleCreateWrongExam = (st: Student | undefined, sub: any, targetExam?: ExamPaper) => {
+    const examToUse = targetExam || detailStudent?.exam || resultsModalExam;
+    if (!st || !sub || !examToUse) return;
 
     // 틀린 문항 필터링 (정답이 아니거나 '모름'인 문항)
-    const wrongQuestions = (resultsModalExam.questions || []).filter(q => {
+    const wrongQuestions = (examToUse.questions || []).filter(q => {
       const ans = sub.answers?.[q.id];
       if (!ans) return true;
       if (!ans.is_correct) return true;
@@ -1678,7 +1777,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setWrongExamModal({
       student: st,
       submission: sub,
-      exam: resultsModalExam,
+      exam: examToUse,
       wrongQuestions,
     });
     setWrongExamMode('twin'); // 기본값: 쌍둥이(변형) 문제 모드
@@ -1702,8 +1801,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       let finalQuestions: ExamQuestion[] = [];
       let examTitle = '';
 
-      if (wrongExamMode === 'twin') {
+      if (treasureEnabled) {
+        if (wrongExamMode === 'twin') {
+          examTitle = `[보물회수·쌍둥이] ${exam.title} (${student.name})`;
+        } else {
+          examTitle = `[보물회수] ${exam.title} (${student.name})`;
+        }
+      } else if (wrongExamMode === 'twin') {
         examTitle = `[오답·쌍둥이] ${exam.title} (${student.name})`;
+      } else {
+        examTitle = `[오답] ${exam.title} (${student.name})`;
+      }
+
+      if (wrongExamMode === 'twin') {
         finalQuestions = wrongQuestions.map(q => {
           const assignedTwin = getAssignedTwinForQuestion(
             q,
@@ -1731,12 +1841,22 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           return q;
         });
       } else {
-        examTitle = `[오답] ${exam.title} (${student.name})`;
         finalQuestions = [...wrongQuestions];
       }
 
       // 시험 제한 시간 계산
       const finalDuration = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+
+      const treasureConfigPayload: TreasureConfig | undefined = treasureEnabled ? {
+        enabled: true,
+        total_rounds: Math.max(1, treasureRounds),
+        enable_shuffle: treasureShuffle,
+        time_attack_mode: treasureTimeMode,
+        base_duration_min: finalDuration,
+        percent_reduction: treasurePercentReduction,
+        manual_durations: treasureTimeMode === 'manual' ? treasureManualDurations : undefined,
+        variable_reductions: treasureTimeMode === 'variable_percent' ? treasureVariableReductions : undefined,
+      } : undefined;
 
       const res = await fetch('/api/test2/exam', {
         method: 'POST',
@@ -1748,6 +1868,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           questions: finalQuestions,
           assigned_student_ids: [student.id],
           is_wrong_review: true,
+          is_treasure_hunt: treasureEnabled,
+          treasure_config: treasureConfigPayload,
           parent_exam_id: exam.id,
           remind_popup: wrongExamRemindPopup,
         }),
@@ -1756,7 +1878,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       const data = await res.json();
       if (data.success) {
         alert(
-          `🎉 '${student.name}' 학생의 ${wrongExamMode === 'twin' ? '쌍둥이 변형 ' : ''}오답 시험지(${finalQuestions.length}문항)가 성공적으로 생성 및 배정되었습니다!\n학생 화면의 [오답 시험지] 탭에서 응시할 수 있습니다.`
+          `🎉 '${student.name}' 학생의 ${treasureEnabled ? '💎 보물회수 ' : ''}${wrongExamMode === 'twin' ? '쌍둥이 변형 ' : ''}시험지(${finalQuestions.length}문항)가 성공적으로 생성 및 배정되었습니다!\n학생 화면의 [${treasureEnabled ? '💎 보물회수' : '오답 시험지'}] 탭에서 응시할 수 있습니다.`
         );
         setWrongExamModal(null);
         setDetailStudent(null);
@@ -2823,16 +2945,31 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                 </span>
                               )}
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const st = students.find(s => s.id === selectedStudentFilterId);
-                                handleOpenStudentDetail(st, studentSub);
-                              }}
-                              className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-emerald-800 font-black text-[11px] hover:bg-emerald-100 shadow-2xs transition-all cursor-pointer"
-                            >
-                              상세 보기
-                            </button>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const st = students.find(s => s.id === selectedStudentFilterId);
+                                  handleOpenStudentDetail(st, studentSub, exam);
+                                }}
+                                className="px-2.5 py-1 bg-white border border-emerald-300 rounded-xl text-emerald-800 font-black text-[11px] hover:bg-emerald-100 shadow-2xs transition-all cursor-pointer"
+                              >
+                                상세 보기
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const st = students.find(s => s.id === selectedStudentFilterId);
+                                  handleCreateWrongExam(st, studentSub, exam);
+                                }}
+                                disabled={creatingWrongExamModal}
+                                className="px-2.5 py-1 bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 hover:from-amber-600 hover:to-rose-700 text-white rounded-xl font-black text-[11px] shadow-xs hover:shadow transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title="이 시험지의 틀린 문제를 모아 즉시 보물회수(오답) 시험지를 생성합니다"
+                              >
+                                <RotateCcw size={11} className={creatingWrongExamModal ? 'animate-spin' : ''} />
+                                <span>💎 보물회수</span>
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl p-3 flex items-center justify-between text-xs">
@@ -3109,6 +3246,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       examRequireProof ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-500'
                     }`}>
                       {examRequireProof ? 'ON (필수 제출)' : 'OFF (자율)'}
+                    </span>
+                  </div>
+                </label>
+                {/* 💎 [신규] 보물회수 전용 시험지 토글 */}
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isTreasureExam}
+                    onChange={e => setIsTreasureExam(e.target.checked)}
+                    className="w-4 h-4 text-amber-500 rounded border-slate-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles size={15} className={isTreasureExam ? 'text-amber-500 fill-amber-500' : 'text-slate-400'} />
+                    <span className={`text-xs font-black ${isTreasureExam ? 'text-amber-900' : 'text-slate-600'}`}>
+                      💎 보물회수 전용 시험지
+                    </span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
+                      isTreasureExam ? 'bg-gradient-to-r from-amber-200 to-yellow-200 text-amber-900 border border-amber-300' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      {isTreasureExam ? '보물회수 모드 ON' : '일반 시험지'}
                     </span>
                   </div>
                 </label>
@@ -4909,7 +5066,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       />
 
       {/* 5-1. 학생별 응시 상세 결과 모달 (맞음/틀림/모름 및 문항별 소요시간) */}
-      {detailStudent && resultsModalExam && (
+      {detailStudent && (
         <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95 overflow-hidden">
             {/* 헤더 */}
@@ -4924,21 +5081,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   </h3>
                 </div>
                 <p className="text-xs text-slate-500">
-                  시험지: <strong className="text-slate-700 font-bold">{resultsModalExam.title}</strong> • 제출 시각: {new Date(detailStudent.submission.submitted_at).toLocaleString()}
+                  시험지: <strong className="text-slate-700 font-bold">{(detailStudent.exam || resultsModalExam)?.title}</strong> • 제출 시각: {new Date(detailStudent.submission.submitted_at).toLocaleString()}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleCreateWrongExam(detailStudent.student, detailStudent.submission)}
+                  onClick={() => handleCreateWrongExam(detailStudent.student, detailStudent.submission, detailStudent.exam || resultsModalExam || undefined)}
                   disabled={creatingWrongExamModal}
-                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/20 transition-all flex items-center gap-1.5 disabled:opacity-50"
+                  className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-600 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/20 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                 >
                   <RotateCcw size={14} className={creatingWrongExamModal ? 'animate-spin' : ''} />
-                  <span>{creatingWrongExamModal ? '생성 중...' : '오답 시험지 생성'}</span>
+                  <span>{creatingWrongExamModal ? '생성 중...' : '💎 보물회수 생성'}</span>
                 </button>
                 <button
                   onClick={() => setDetailStudent(null)}
-                  className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+                  className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold cursor-pointer"
                 >
                   ✕
                 </button>
@@ -4972,7 +5129,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             {/* 문항별 상세 그리드 */}
             <div className="flex-1 p-6 overflow-y-auto space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {(resultsModalExam.questions || []).map((q, idx) => {
+                {((detailStudent.exam || resultsModalExam)?.questions || []).map((q, idx) => {
                   const ansInfo = detailStudent.submission.answers?.[q.id];
                   const isCorrect = ansInfo?.is_correct ?? false;
                   const userAns = ansInfo?.user_answer || '(미입력)';
@@ -5457,6 +5614,263 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
               </div>
 
+              {/* 🌟 1-3. 💎 보물회수 (반복 훈련 & 타임어택 & 믹싱) 특화 설정 */}
+              <div className="bg-gradient-to-br from-amber-50 via-yellow-50/40 to-amber-100/50 border-2 border-amber-300 rounded-2xl p-4 space-y-4 shadow-sm">
+                <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-lg bg-amber-500 text-slate-950 font-black flex items-center justify-center text-sm shadow-xs">
+                      💎
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                        <span>보물회수 반복 & 타임어택 시스템</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 font-extrabold border border-amber-300">
+                          신규
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-amber-800/80 font-medium">
+                        오답을 자신의 것으로 완벽 정복할 때까지 N회차 반복 + 타임어택 단축 훈련
+                      </p>
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={treasureEnabled}
+                      onChange={e => setTreasureEnabled(e.target.checked)}
+                      className="w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <span className={`text-xs font-black ${treasureEnabled ? 'text-amber-950' : 'text-slate-400'}`}>
+                      {treasureEnabled ? '보물회수 모드 ON' : '보물회수 OFF'}
+                    </span>
+                  </label>
+                </div>
+
+                {treasureEnabled && (
+                  <div className="space-y-3.5 animate-in fade-in duration-200">
+                    {/* 1. 템플릿(Preset) 선택 및 저장 바 */}
+                    <div className="bg-white/90 p-3 rounded-xl border border-amber-200 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                      <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                        <span className="text-xs font-bold text-amber-900 shrink-0">📌 템플릿:</span>
+                        <select
+                          value={selectedTemplateId}
+                          onChange={e => {
+                            const found = treasureTemplates.find(t => t.id === e.target.value);
+                            if (found) applyTreasureTemplate(found);
+                          }}
+                          className="flex-1 px-3 py-1.5 rounded-lg border border-amber-200 text-xs font-bold text-slate-800 bg-white focus:outline-none focus:border-amber-500"
+                        >
+                          {treasureTemplates.map(tpl => (
+                            <option key={tpl.id} value={tpl.id}>
+                              {tpl.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowSaveTemplateModal(true)}
+                          className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[11px] font-black transition-all shadow-xs cursor-pointer"
+                        >
+                          + 새 템플릿 저장
+                        </button>
+                        {treasureTemplates.find(t => t.id === selectedTemplateId)?.is_custom && (
+                          <button
+                            type="button"
+                            onClick={() => deleteTreasureTemplate(selectedTemplateId)}
+                            className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-lg text-[11px] font-bold transition-all cursor-pointer"
+                            title="현재 선택된 커스텀 템플릿 삭제"
+                          >
+                            삭제
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 템플릿 이름 입력 모달 (인라인) */}
+                    {showSaveTemplateModal && (
+                      <div className="bg-amber-100/90 border border-amber-300 p-3 rounded-xl flex items-center gap-2 animate-in fade-in">
+                        <input
+                          type="text"
+                          placeholder="새 템플릿 이름 (예: 지필대비 3회차 스파르타)"
+                          value={newTemplateNameInput}
+                          onChange={e => setNewTemplateNameInput(e.target.value)}
+                          className="flex-1 px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-xs font-bold focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => saveCurrentAsTemplate(newTemplateNameInput)}
+                          className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-black hover:bg-amber-700 cursor-pointer"
+                        >
+                          저장
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowSaveTemplateModal(false)}
+                          className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-800 font-bold"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 2. 회차 설정 & 믹싱 옵션 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* 회차 반복 설정 */}
+                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 space-y-1.5">
+                        <label className="text-xs font-black text-amber-950 flex items-center justify-between">
+                          <span>🔁 회차 반복 설정 (무제한)</span>
+                          <span className="text-[10px] text-amber-700 font-bold">상한선 없음</span>
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            value={treasureRounds}
+                            onChange={e => setTreasureRounds(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                            className="w-20 px-3 py-1.5 rounded-lg border border-amber-300 text-xs font-black text-center focus:outline-none focus:border-amber-500 bg-white"
+                          />
+                          <span className="text-xs font-bold text-slate-600">회차 반복</span>
+                          <div className="flex items-center gap-1 ml-auto">
+                            {[2, 3, 4, 5].map(n => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() => setTreasureRounds(n)}
+                                className={`px-2 py-1 rounded text-[10px] font-black transition-all cursor-pointer ${
+                                  treasureRounds === n
+                                    ? 'bg-amber-500 text-white shadow-xs'
+                                    : 'bg-amber-100/70 text-amber-800 hover:bg-amber-200'
+                                }`}
+                              >
+                                {n}회
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 문항 믹싱 토글 */}
+                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <span className="text-xs font-black text-amber-950 flex items-center gap-1">
+                            <span className="text-sm">🔀</span> 문항 무작위 믹싱
+                          </span>
+                          <p className="text-[10px] text-slate-500 font-medium">
+                            회차마다 문제 순서를 섞어 외워서 풀기 방지
+                          </p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={treasureShuffle}
+                            onChange={e => setTreasureShuffle(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* 3. 타임어택 방식 라디오 카드 */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-black text-amber-950 block">
+                        ⏱️ 타임어택 (시간 단축) 방식 선택
+                      </label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {[
+                          { id: 'percent', label: '일괄 % 감소', desc: '매회 동일 % 단축' },
+                          { id: 'manual', label: '회차별 직접 입력', desc: '회차별 분 지정' },
+                          { id: 'variable_percent', label: '단계별 가변 %', desc: '회차 사이별 차등 단축' },
+                          { id: 'fixed', label: '고정 시간', desc: '동일 시간 반복' },
+                        ].map(m => (
+                          <div
+                            key={m.id}
+                            onClick={() => setTreasureTimeMode(m.id as TimeAttackMode)}
+                            className={`p-2 rounded-xl border-2 cursor-pointer transition-all text-center select-none ${
+                              treasureTimeMode === m.id
+                                ? 'border-amber-500 bg-white shadow-xs ring-1 ring-amber-400'
+                                : 'border-amber-200/70 bg-white/60 hover:bg-white'
+                            }`}
+                          >
+                            <span className="text-xs font-black text-amber-950 block">{m.label}</span>
+                            <span className="text-[9px] text-slate-500 block mt-0.5">{m.desc}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 4. 타임어택 세부 옵션 인풋 */}
+                    {treasureTimeMode === 'percent' && (
+                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex items-center justify-between text-xs">
+                        <span className="font-bold text-amber-900">회차당 시간 감소율:</span>
+                        <div className="flex items-center gap-1.5">
+                          {[10, 15, 20, 25].map(p => (
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => setTreasurePercentReduction(p)}
+                              className={`px-2 py-1 rounded text-[11px] font-black cursor-pointer ${
+                                treasurePercentReduction === p
+                                  ? 'bg-amber-500 text-white'
+                                  : 'bg-amber-50 text-amber-800 hover:bg-amber-100'
+                              }`}
+                            >
+                              -{p}%
+                            </button>
+                          ))}
+                          <input
+                            type="number"
+                            min={0}
+                            max={50}
+                            value={treasurePercentReduction}
+                            onChange={e => setTreasurePercentReduction(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                            className="w-14 px-2 py-1 rounded border border-amber-300 text-center font-black text-xs"
+                          />
+                          <span className="font-bold text-slate-500">%</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 5. ⏱️ 실시간 회차별 타임라인 미리보기 */}
+                    <div className="bg-amber-900/5 border border-amber-200/80 rounded-xl p-3 space-y-1.5">
+                      <span className="text-[11px] font-black text-amber-900 flex items-center gap-1">
+                        <span>🎯</span> 회차별 예상 타임어택 코스 미리보기:
+                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                        {Array.from({ length: Math.min(10, treasureRounds) }, (_, i) => {
+                          const r = i + 1;
+                          const baseMin = wrongExamDurationMode === 'unlimited' ? 30 : Math.max(1, wrongExamCustomMinutes);
+                          const dur = calculateRoundDuration(
+                            baseMin,
+                            r,
+                            treasureTimeMode,
+                            treasurePercentReduction,
+                            treasureManualDurations,
+                            treasureVariableReductions
+                          );
+                          return (
+                            <div key={r} className="flex items-center gap-1">
+                              <span className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 font-black text-amber-950 text-[11px] shadow-2xs">
+                                {r}회차: <strong className="text-amber-700 font-extrabold">{dur}분</strong>
+                              </span>
+                              {r < Math.min(10, treasureRounds) && (
+                                <span className="text-amber-400 font-bold">➔</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {treasureRounds > 10 && (
+                          <span className="text-[10px] text-amber-600 font-bold">... (총 {treasureRounds}회차까지 진행)</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* 2. C안 안내 배너: 쌍둥이 없는 문항 Fallback 알림 */}
               {wrongExamMode === 'twin' && (() => {
                 const total = wrongExamModal.wrongQuestions.length;
@@ -5646,7 +6060,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 type="button"
                 onClick={handleConfirmCreateWrongExam}
                 disabled={creatingWrongExamModal}
-                className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-700 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-200 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                className={`px-5 py-2.5 text-white rounded-xl text-xs font-black shadow-lg transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer ${
+                  treasureEnabled
+                    ? 'bg-gradient-to-r from-amber-500 via-amber-600 to-rose-600 hover:from-amber-600 hover:to-rose-700 shadow-amber-500/20'
+                    : 'bg-gradient-to-r from-purple-600 to-rose-600 hover:from-purple-700 hover:to-rose-700 shadow-rose-200'
+                }`}
               >
                 {creatingWrongExamModal ? (
                   <>
@@ -5656,7 +6074,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 ) : (
                   <>
                     <Sparkles size={14} />
-                    <span>{wrongExamMode === 'twin' ? '쌍둥이 오답 시험지 생성 및 배정' : '원본 오답 시험지 생성 및 배정'}</span>
+                    <span>
+                      {treasureEnabled
+                        ? (wrongExamMode === 'twin' ? '💎 보물회수 쌍둥이 시험지 생성 및 배정' : '💎 보물회수 시험지 생성 및 배정')
+                        : (wrongExamMode === 'twin' ? '쌍둥이 오답 시험지 생성 및 배정' : '원본 오답 시험지 생성 및 배정')}
+                    </span>
                   </>
                 )}
               </button>

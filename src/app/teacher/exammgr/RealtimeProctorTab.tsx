@@ -23,7 +23,8 @@ import {
   ChevronRight,
   FileCheck,
   X,
-  Trash2
+  Trash2,
+  Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -708,6 +709,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
               const isAway = status === 'AWAY';
               const isTesting = status === 'TESTING' && hasActiveExam;
               const isFinished = status === 'FINISHED';
+              const isTreasure = Boolean(live.current_exam_title?.includes('보물') || live.current_exam_title?.includes('보물회수') || (live as any).is_treasure_hunt);
               const remainingSec = getCalculatedRemainingTime(live);
 
               return (
@@ -716,6 +718,8 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                   className={`rounded-3xl p-6 transition-all border flex flex-col justify-between relative overflow-hidden ${
                     isAway
                       ? 'bg-rose-50/70 border-2 border-rose-500 shadow-xl shadow-rose-100 ring-2 ring-rose-300'
+                      : isTreasure && isTesting
+                      ? 'bg-gradient-to-br from-amber-50/60 via-white to-yellow-50/40 border-2 border-amber-400 shadow-lg shadow-amber-500/10 ring-2 ring-amber-300/40'
                       : isTesting
                       ? 'bg-white border-violet-200 shadow-md hover:shadow-lg'
                       : isFinished
@@ -740,17 +744,24 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                         {isAway ? (
                           <span className="flex items-center gap-1 text-xs font-black text-rose-600 bg-rose-100 px-3 py-1 rounded-full border border-rose-200 animate-pulse">
                             <ShieldAlert size={14} />
-                            화면 이탈 (잠김)
+                            {isTreasure ? '보물회수 이탈 (잠김)' : '화면 이탈 (잠김)'}
                           </span>
                         ) : isTesting ? (
-                          <span className="flex items-center gap-1.5 text-xs font-black text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                            응시 중
-                          </span>
+                          isTreasure ? (
+                            <span className="flex items-center gap-1.5 text-xs font-black text-amber-950 bg-gradient-to-r from-amber-200 to-yellow-200 px-3 py-1 rounded-full border border-amber-300 shadow-xs animate-pulse">
+                              <Sparkles size={13} className="text-amber-700 fill-amber-500 animate-spin" style={{ animationDuration: '3s' }} />
+                              💎 보물회수 중
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-xs font-black text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                              응시 중
+                            </span>
+                          )
                         ) : isFinished ? (
                           <span className="flex items-center gap-1 text-xs font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
                             <CheckCircle2 size={14} />
-                            시험 완료
+                            {isTreasure ? '보물회수 완료' : '시험 완료'}
                           </span>
                         ) : (
                           <span className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
@@ -785,7 +796,11 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                       {isTesting || isAway ? (
                         <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100">
                           <div className="flex items-center gap-1.5">
-                            {live.current_round ? (
+                            {isTreasure ? (
+                              <span className="px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 rounded-md font-black text-[11px] shadow-2xs">
+                                💎 {live.current_round ? `${live.current_round}회차` : '보물회수'}
+                              </span>
+                            ) : live.current_round ? (
                               <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-md font-black text-[11px]">
                                 제 {live.current_round}회
                               </span>
