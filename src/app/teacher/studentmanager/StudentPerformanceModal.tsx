@@ -150,12 +150,37 @@ function extractQuestionResults(item: EnrichedSubmission): QuestionResultItem[] 
   return [];
 }
 
+// 🧠 각 문항별 풀이 소요시간(초)의 총합을 안전하게 계산
+function calculatePureSolvingTimeSec(answers?: Record<string, any> | any[]): number {
+  if (!answers) return 0;
+  let totalSec = 0;
+  if (Array.isArray(answers)) {
+    for (const a of answers) {
+      if (typeof a?.time_spent_sec === 'number' && a.time_spent_sec > 0) {
+        totalSec += a.time_spent_sec;
+      }
+    }
+  } else if (typeof answers === 'object') {
+    for (const val of Object.values(answers)) {
+      if (typeof val?.time_spent_sec === 'number' && val.time_spent_sec > 0) {
+        totalSec += val.time_spent_sec;
+      }
+    }
+  }
+  return totalSec;
+}
+
 interface EnrichedSubmission {
   submission: StudentSubmissionLite;
   exam: ExamPaperLite;
   scorePercent: number;
   formattedDate: string;
   durationMin: number;
+  isUnlimitedTime: boolean;
+  targetDurationMin: number;
+  pureSolvingTimeSec: number;
+  focusRatioPercent: number;
+  timeUsagePercent: number | null;
 }
 
 interface StudentPerformanceModalProps {
@@ -179,9 +204,15 @@ export default function StudentPerformanceModal({
   // ── 필터 상태 (시험지 관리와 동일한 다중 선택 & 미분류 체계) ──
   const [selectedChipIds, setSelectedChipIds] = useState<string[]>([]);
   const [isUncategorizedFilter, setIsUncategorizedFilter] = useState<boolean>(false);
+  // 🌟 시간 모드 필터: 'ALL' (전체) | 'TIMED' (제한시간 시험) | 'UNLIMITED' (자율 무제한)
+  const [timeModeFilter, setTimeModeFilter] = useState<'ALL' | 'TIMED' | 'UNLIMITED'>('ALL');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [dateRange, setDateRange] = useState<'ALL' | '1M' | '3M' | '6M'>('ALL');
   const [sortOrder, setSortOrder] = useState<'latest' | 'score_desc' | 'score_asc'>('latest');
+
+  // ── 🌟 [신규] 복합 차트 표시 제어 토글 (점수선 / 소요시간 막대) ──
+  const [showScoreLine, setShowScoreLine] = useState<boolean>(true);
+  const [showDurationBar, setShowDurationBar] = useState<boolean>(true);
 
   // ── 🌟 [신규] 개별 시험지 선택 상태 (선택된 시험지만 그래프/지표에 반영) ──
   const [selectedSubmissionIds, setSelectedSubmissionIds] = useState<Set<string>>(new Set());
@@ -279,12 +310,13 @@ export default function StudentPerformanceModal({
   const handleResetFilters = () => {
     setSelectedChipIds([]);
     setIsUncategorizedFilter(false);
+    setTimeModeFilter('ALL');
     setSearchKeyword('');
     setDateRange('ALL');
     setSortOrder('latest');
   };
 
-  // 학생의 전체 응시 기록과 시험지 매핑 (Enrichment)
+  // 학생의 전체 응시 기록과 시험지 매핑 (Enrichment - 시간 및 집중도 정밀 계산)
   const enrichedSubmissions: EnrichedSubmission[] = useMemo(() => {
     if (!student || submissions.length === 0) return [];
 
@@ -306,9 +338,29 @@ export default function StudentPerformanceModal({
         ? '날짜 미상'
         : `${dateObj.getFullYear()}.${String(dateObj.getMonth() + 1).padStart(2, '0')}.${String(dateObj.getDate()).padStart(2, '0')}`;
 
-      const durationMin = sub.duration_seconds && sub.duration_seconds > 0 
-        ? Math.round(sub.duration_seconds / 60) 
-        : exam.duration_min;
+      // 🌟 타이머 및 소요시간 정밀 계산
+      const isUnlimitedTime = typeof exam.duration_min === 'number' && exam.duration_min <= 0;
+      const targetDurationMin = isUnlimitedTime ? 0 : (exam.duration_min || 0);
+
+      // 문항별 풀이 시간(초) 총합
+      const pureSolvingTimeSec = calculatePureSolvingTimeSec(sub.answers);
+
+      // 실제 소요시간 (초)
+      const actualDurationSec = (sub.duration_seconds && sub.duration_seconds > 0)
+        ? sub.duration_seconds
+        : (pureSolvingTimeSec > 0 ? pureSolvingTimeSec : (targetDurationMin > 0 ? targetDurationMin * 60 : 0));
+
+      const durationMin = Math.round(actualDurationSec / 60);
+
+      // 제한시간 대비 소진율 (%)
+      const timeUsagePercent = (!isUnlimitedTime && targetDurationMin > 0)
+        ? Math.round((actualDurationSec / (targetDurationMin * 60)) * 100)
+        : null;
+
+      // 순수 문항 풀이 집중도 (%)
+      const focusRatioPercent = (actualDurationSec > 0 && pureSolvingTimeSec > 0)
+        ? Math.min(100, Math.round((pureSolvingTimeSec / actualDurationSec) * 100))
+        : 100;
 
       return {
         submission: sub,
@@ -316,50 +368,82 @@ export default function StudentPerformanceModal({
         scorePercent,
         formattedDate,
         durationMin,
+        isUnlimitedTime,
+        targetDurationMin,
+        pureSolvingTimeSec,
+        focusRatioPercent,
+        timeUsagePercent,
       };
     });
   }, [submissions, exams, student]);
 
-  // 🌟 [시험지 관리와 동일] 시스템 기본 칩 (단일 시험지, 오답 시험지) + 커스텀 필터칩 + 미분류 카운트 집계
-  const availableChipsInfo = useMemo(() => {
-    let normalCount = 0;
-    let wrongCount = 0;
-    let uncategorizedCount = 0;
-    const customChipCountMap: Record<string, number> = {};
-
-    enrichedSubmissions.forEach((item) => {
-      const isWrong = !!item.exam.is_wrong_review || item.exam.title.startsWith('[오답]') || item.exam.title.includes('오답');
-      if (isWrong) {
-        wrongCount++;
-      } else {
-        normalCount++;
-      }
-
-      const chipIds = item.exam.filter_chip_ids || [];
-      if (chipIds.length === 0) {
-        uncategorizedCount++;
-      } else {
-        chipIds.forEach((id) => {
-          customChipCountMap[id] = (customChipCountMap[id] || 0) + 1;
+  // 🌟 [시험지 관리와 100% 동일] 등록된 모든 필터칩 (시스템 기본 칩 + 커스텀 칩) 정렬 및 보장
+  const allFilterChips = useMemo(() => {
+    let list: FilterChip[] = [];
+    if (filterChips && filterChips.length > 0) {
+      list = [...filterChips];
+      const hasNormal = list.some(c => c.id === 'chip_default_normal');
+      const hasWrong = list.some(c => c.id === 'chip_default_wrong');
+      if (!hasNormal) {
+        list.unshift({
+          id: 'chip_default_normal',
+          name: '단원 시험지',
+          icon: '📝',
+          color: 'violet',
+          effect: 'clean',
+          order: 1,
+          isSystem: true,
+          created_at: new Date().toISOString(),
         });
       }
+      if (!hasWrong) {
+        const normIdx = list.findIndex(c => c.id === 'chip_default_normal');
+        list.splice(normIdx + 1, 0, {
+          id: 'chip_default_wrong',
+          name: '오답 시험지',
+          icon: '🔄',
+          color: 'rose',
+          effect: 'clean',
+          order: 2,
+          isSystem: true,
+          created_at: new Date().toISOString(),
+        });
+      }
+    } else {
+      list = [
+        { id: 'chip_default_normal', name: '단원 시험지', icon: '📝', color: 'violet', effect: 'clean', order: 1, isSystem: true, created_at: '' },
+        { id: 'chip_default_wrong', name: '오답 시험지', icon: '🔄', color: 'rose', effect: 'clean', order: 2, isSystem: true, created_at: '' },
+      ];
+    }
+    return list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, [filterChips]);
+
+  // 각 필터칩별 학생 응시 매칭 건수 계산 헬퍼
+  const getChipCount = (chipId: string) => {
+    if (chipId === 'chip_default_normal') {
+      return enrichedSubmissions.filter(item => !(item.exam.is_wrong_review || item.exam.title.startsWith('[오답]') || item.exam.title.includes('오답'))).length;
+    }
+    if (chipId === 'chip_default_wrong') {
+      return enrichedSubmissions.filter(item => item.exam.is_wrong_review || item.exam.title.startsWith('[오답]') || item.exam.title.includes('오답')).length;
+    }
+    return enrichedSubmissions.filter(item => Array.isArray(item.exam.filter_chip_ids) && item.exam.filter_chip_ids.includes(chipId)).length;
+  };
+
+  // 🏷️ 미분류 건수
+  const uncategorizedCount = useMemo(() => {
+    return enrichedSubmissions.filter(item => !item.exam.filter_chip_ids || item.exam.filter_chip_ids.length === 0).length;
+  }, [enrichedSubmissions]);
+
+  // 🌟 시간 모드 건수 집계
+  const timeCounts = useMemo(() => {
+    let timedCount = 0;
+    let unlimitedCount = 0;
+    enrichedSubmissions.forEach(item => {
+      if (item.isUnlimitedTime) unlimitedCount++;
+      else timedCount++;
     });
-
-    // filterChips 중 system chip(chip_default_normal, chip_default_wrong)을 제외한 커스텀 칩
-    const customList = filterChips
-      .filter((c) => c.id !== 'chip_default_normal' && c.id !== 'chip_default_wrong')
-      .map((chip) => ({
-        ...chip,
-        count: customChipCountMap[chip.id] || 0,
-      }));
-
-    return {
-      normalCount,
-      wrongCount,
-      uncategorizedCount,
-      customChips: customList,
-    };
-  }, [enrichedSubmissions, filterChips]);
+    return { timedCount, unlimitedCount };
+  }, [enrichedSubmissions]);
 
   // 🌟 [핵심] 필터링 적용된 응시 기록 리스트
   const filteredSubmissions: EnrichedSubmission[] = useMemo(() => {
@@ -379,13 +463,20 @@ export default function StudentPerformanceModal({
       });
     }
 
-    // 2. 검색어 필터 (시험지 제목)
+    // 2. 🌟 시간 모드 필터 (제한시간 vs 자율 무제한)
+    if (timeModeFilter === 'TIMED') {
+      result = result.filter((item) => !item.isUnlimitedTime);
+    } else if (timeModeFilter === 'UNLIMITED') {
+      result = result.filter((item) => item.isUnlimitedTime);
+    }
+
+    // 3. 검색어 필터 (시험지 제목)
     if (searchKeyword.trim()) {
       const q = searchKeyword.trim().toLowerCase();
       result = result.filter((item) => item.exam.title.toLowerCase().includes(q));
     }
 
-    // 3. 기간 필터
+    // 4. 기간 필터
     if (dateRange !== 'ALL') {
       const now = Date.now();
       const days = dateRange === '1M' ? 30 : dateRange === '3M' ? 90 : 180;
@@ -396,7 +487,7 @@ export default function StudentPerformanceModal({
       });
     }
 
-    // 4. 정렬
+    // 5. 정렬
     result.sort((a, b) => {
       if (sortOrder === 'score_desc') return b.submission.score - a.submission.score;
       if (sortOrder === 'score_asc') return a.submission.score - b.submission.score;
@@ -407,12 +498,12 @@ export default function StudentPerformanceModal({
     });
 
     return result;
-  }, [enrichedSubmissions, selectedChipIds, isUncategorizedFilter, searchKeyword, dateRange, sortOrder]);
+  }, [enrichedSubmissions, selectedChipIds, isUncategorizedFilter, timeModeFilter, searchKeyword, dateRange, sortOrder]);
 
   // 필터 조건 변경 시 자동으로 필터링된 시험지들을 전체 선택
   useEffect(() => {
     setSelectedSubmissionIds(new Set(filteredSubmissions.map((s) => s.submission.id)));
-  }, [selectedChipIds, isUncategorizedFilter, searchKeyword, dateRange]);
+  }, [selectedChipIds, isUncategorizedFilter, timeModeFilter, searchKeyword, dateRange]);
 
   // 🌟 [핵심] 체크박스 선택된 시험지 목록 (그래프 및 KPI 지표 연동)
   const activeChartSubmissions = useMemo(() => {
@@ -429,6 +520,9 @@ export default function StudentPerformanceModal({
         maxScore: 0,
         minScore: 0,
         avgDuration: 0,
+        avgFocusRate: 0,
+        timedCount: 0,
+        unlimitedCount: 0,
         passRate: 0,
       };
     }
@@ -442,6 +536,12 @@ export default function StudentPerformanceModal({
     const durations = activeChartSubmissions.map((s) => s.durationMin);
     const avgDuration = Math.round(durations.reduce((acc, cur) => acc + cur, 0) / totalCount);
 
+    const focusRates = activeChartSubmissions.map((s) => s.focusRatioPercent);
+    const avgFocusRate = Math.round(focusRates.reduce((acc, cur) => acc + cur, 0) / totalCount);
+
+    const timedCount = activeChartSubmissions.filter((s) => !s.isUnlimitedTime).length;
+    const unlimitedCount = activeChartSubmissions.filter((s) => s.isUnlimitedTime).length;
+
     const passCount = scores.filter((sc) => sc >= 80).length;
     const passRate = Math.round((passCount / totalCount) * 100);
 
@@ -451,6 +551,9 @@ export default function StudentPerformanceModal({
       maxScore,
       minScore,
       avgDuration,
+      avgFocusRate,
+      timedCount,
+      unlimitedCount,
       passRate,
     };
   }, [activeChartSubmissions]);
@@ -470,16 +573,26 @@ export default function StudentPerformanceModal({
     if (activeChartSubmissions.length !== filteredSubmissions.length) {
       return `선택된 ${activeChartSubmissions.length}개 시험`;
     }
-    if (selectedChipIds.length === 0 && !isUncategorizedFilter) return '전체 시험';
-    if (isUncategorizedFilter) return '미분류 시험';
-    if (selectedChipIds.length === 1) {
-      if (selectedChipIds[0] === 'chip_default_normal') return '단일 시험지';
-      if (selectedChipIds[0] === 'chip_default_wrong') return '오답 시험지';
-      const found = filterChips.find((c) => c.id === selectedChipIds[0]);
-      return found ? `${found.name} 분류` : '선택 분류';
+    const parts: string[] = [];
+    if (timeModeFilter === 'TIMED') parts.push('제한시간 시험');
+    if (timeModeFilter === 'UNLIMITED') parts.push('자율(무제한) 시험');
+
+    if (isUncategorizedFilter) {
+      parts.push('미분류');
+    } else if (selectedChipIds.length === 1) {
+      if (selectedChipIds[0] === 'chip_default_normal') parts.push('단원 시험지');
+      else if (selectedChipIds[0] === 'chip_default_wrong') parts.push('오답 시험지');
+      else {
+        const found = allFilterChips.find((c) => c.id === selectedChipIds[0]);
+        if (found) parts.push(found.name);
+      }
+    } else if (selectedChipIds.length > 1) {
+      parts.push(`${selectedChipIds.length}개 분류`);
     }
-    return `선택된 ${selectedChipIds.length}개 분류`;
-  }, [activeChartSubmissions.length, filteredSubmissions.length, selectedChipIds, isUncategorizedFilter, filterChips]);
+
+    if (parts.length === 0) return '전체 시험';
+    return parts.join(' · ');
+  }, [activeChartSubmissions.length, filteredSubmissions.length, timeModeFilter, selectedChipIds, isUncategorizedFilter, allFilterChips]);
 
   // ── 필터 및 체크박스 제어 헬퍼 ──
   const handleSelectAllFilter = () => {
@@ -531,7 +644,15 @@ export default function StudentPerformanceModal({
     const recentExamsText = trendData
       .slice(-5)
       .reverse()
-      .map((item, idx) => `  ${idx + 1}. [${item.exam.title}] : ${item.submission.score}점 (${item.formattedDate}, ${item.durationMin}분 소요)`)
+      .map((item, idx) => {
+        const timeDesc = item.isUnlimitedTime
+          ? `자율 무제한 (${item.durationMin}분 소요)`
+          : `제한 ${item.targetDurationMin}분 중 ${item.durationMin}분 소요`;
+        const focusDesc = item.pureSolvingTimeSec > 0
+          ? `, 문항 집중: ${Math.floor(item.pureSolvingTimeSec / 60)}분 ${item.pureSolvingTimeSec % 60}초`
+          : '';
+        return `  ${idx + 1}. [${item.exam.title}] : ${item.submission.score}점 (${item.formattedDate}, ${timeDesc}${focusDesc})`;
+      })
       .join('\n');
 
     let feedback = '성실하게 모든 평가에 임하고 있으며 실전 감각이 안정적입니다.';
@@ -543,11 +664,15 @@ export default function StudentPerformanceModal({
       feedback = '단원별 핵심 유형 복습과 오답 클리닉을 병행하여 기초 체력을 다지는 중입니다.';
     }
 
+    const timeSummary = stats.avgFocusRate > 0
+      ? `약 ${stats.avgDuration}분 (문항 순수 집중도: 평균 ${stats.avgFocusRate}%)`
+      : `약 ${stats.avgDuration}분`;
+
     const text = `[Eduest 학생 성적 리포트 - ${currentFilterLabel}]
 ■ 학생명: ${student.name} (${student.grade}${student.school ? ` · ${student.school}` : ''})
 ■ 조회 기준: ${currentFilterLabel} (총 ${stats.count}회 응시)
 ■ 평균 점수: ${stats.avgScore}점 (최고 ${stats.maxScore}점 / 최저 ${stats.minScore}점)
-■ 평균 소요시간: 약 ${stats.avgDuration}분 (80점 이상 달성률: ${stats.passRate}%)
+■ 평균 소요시간: ${timeSummary} (80점 이상 달성률: ${stats.passRate}%)
 ■ 최근 응시 기록:
 ${recentExamsText}
 ■ 지도 총평: ${feedback}
@@ -619,114 +744,101 @@ ${recentExamsText}
 
         {/* 2. 스마트 필터 컨트롤바 */}
         <div className="shrink-0 bg-slate-50/90 border-b border-slate-200/80 px-6 py-3.5 space-y-3">
-          {/* 분류 필터칩 탭 (시험지 관리와 동일한 구성) */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
-            <span className="text-xs font-bold text-slate-400 mr-1 flex items-center gap-1 shrink-0">
-              <SlidersHorizontal size={13} />
-              분류:
-            </span>
-
-            {/* 전체 칩 */}
-            <button
-              type="button"
-              onClick={handleSelectAllFilter}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all shrink-0 flex items-center gap-1.5 cursor-pointer ${
-                selectedChipIds.length === 0 && !isUncategorizedFilter
-                  ? 'bg-slate-800 text-white shadow-xs'
-                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              <span>전체</span>
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                selectedChipIds.length === 0 && !isUncategorizedFilter
-                  ? 'bg-white/25 text-white'
-                  : 'bg-slate-100 text-slate-500'
-              }`}>
-                {enrichedSubmissions.length}
+          {/* 분류 필터 바 (시험지 관리 화면과 100% 동일한 구성 및 스타일) */}
+          <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-b border-slate-100 pb-2.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold text-slate-400 mr-1 flex items-center gap-1.5 text-xs">
+                <SlidersHorizontal size={13} />
+                <span>분류</span>
+                <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/80 shadow-2xs">
+                  {student.name} 학생 기준
+                </span>
+                <span>:</span>
               </span>
-            </button>
 
-            {/* 1. 단일 시험지 칩 (시스템 기본) */}
-            <button
-              type="button"
-              onClick={() => handleToggleFilterChip('chip_default_normal')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
-                selectedChipIds.includes('chip_default_normal')
-                  ? 'bg-violet-600 text-white border-violet-600 shadow-xs font-black'
-                  : availableChipsInfo.normalCount === 0
-                  ? 'bg-white text-slate-400 border-slate-200 opacity-40 grayscale-40'
-                  : 'bg-white text-violet-700 border-violet-200 hover:bg-violet-50'
-              }`}
-              title="오답/쌍둥이가 아닌 일반 단일 시험지만 필터링"
-            >
-              <span>📄</span>
-              <span>단일 시험지</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-black bg-black/10">
-                {availableChipsInfo.normalCount}
-              </span>
-            </button>
+              {/* 전체 칩 */}
+              <button
+                type="button"
+                onClick={handleSelectAllFilter}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
+                  selectedChipIds.length === 0 && !isUncategorizedFilter
+                    ? 'bg-slate-800 text-white shadow-2xs font-black'
+                    : 'text-slate-500 hover:bg-slate-100'
+                }`}
+              >
+                전체 ({enrichedSubmissions.length})
+              </button>
 
-            {/* 2. 오답 시험지 칩 (시스템 기본) */}
-            <button
-              type="button"
-              onClick={() => handleToggleFilterChip('chip_default_wrong')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 transition-all cursor-pointer flex items-center gap-1.5 ${
-                selectedChipIds.includes('chip_default_wrong')
-                  ? 'bg-rose-600 text-white border-rose-600 shadow-xs font-black'
-                  : availableChipsInfo.wrongCount === 0
-                  ? 'bg-white text-slate-400 border-slate-200 opacity-40 grayscale-40'
-                  : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
-              }`}
-              title="오답 및 쌍둥이 복습 시험지만 필터링"
-            >
-              <span>📑</span>
-              <span>오답 시험지</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-black bg-black/10">
-                {availableChipsInfo.wrongCount}
-              </span>
-            </button>
-
-            {/* 3. 커스텀 필터칩들 */}
-            {availableChipsInfo.customChips.map((chip) => {
-              const isSelected = selectedChipIds.includes(chip.id);
-              return (
-                <button
-                  key={chip.id}
-                  type="button"
-                  onClick={() => handleToggleFilterChip(chip.id)}
-                  className={`shrink-0 transition-transform cursor-pointer ${
-                    isSelected ? 'scale-105' : chip.count === 0 ? 'opacity-40 grayscale-40' : 'opacity-90 hover:opacity-100'
-                  }`}
-                >
+              {/* 등록된 모든 필터칩 (단원 시험지, 오답 시험지, 커스텀 필터칩들) */}
+              {allFilterChips.map((chip) => {
+                const isSelected = selectedChipIds.includes(chip.id);
+                const matchCount = getChipCount(chip.id);
+                return (
                   <FilterChipBadge
+                    key={chip.id}
                     chip={chip}
                     size="sm"
-                    isSelected={isSelected}
-                    badgeCount={chip.count}
+                    isActive={isSelected}
+                    count={matchCount}
+                    className={matchCount === 0 && !isSelected ? 'opacity-40 grayscale-40' : ''}
+                    onClick={() => handleToggleFilterChip(chip.id)}
                   />
-                </button>
-              );
-            })}
+                );
+              })}
 
-            {/* 4. 미분류 칩 */}
-            <button
-              type="button"
-              onClick={handleToggleUncategorized}
-              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border shrink-0 transition-all cursor-pointer flex items-center gap-1 ${
-                isUncategorizedFilter
-                  ? 'bg-slate-700 text-white border-slate-700 shadow-xs font-black'
-                  : availableChipsInfo.uncategorizedCount === 0
-                  ? 'bg-white text-slate-400 border-slate-200 opacity-40 grayscale-40'
-                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
-              }`}
-              title="커스텀 분류 필터칩이 지정되지 않은 시험지만 모아보기"
-            >
-              <span>🏷️</span>
-              <span>미분류</span>
-              <span className="text-[10px] opacity-75 font-bold">
-                ({availableChipsInfo.uncategorizedCount})
-              </span>
-            </button>
+              {/* 🏷️ 미분류 필터칩 */}
+              <button
+                type="button"
+                onClick={handleToggleUncategorized}
+                className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer border flex items-center gap-1 ${
+                  isUncategorizedFilter
+                    ? 'bg-slate-700 text-white border-slate-700 shadow-xs font-black'
+                    : uncategorizedCount === 0
+                    ? 'bg-white text-slate-300 border-slate-200 opacity-40 grayscale-40'
+                    : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                }`}
+                title="분류 필터칩이 지정되지 않은 시험지만 모아보기"
+              >
+                <span>🏷️</span>
+                <span>미분류</span>
+                <span className="text-[10px] opacity-75">({uncategorizedCount})</span>
+              </button>
+            </div>
+
+            {/* 🌟 우측: 타이머 모드 퀵 필터 (제한시간 vs 자율 무제한) */}
+            <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 text-[11px] shrink-0">
+              <button
+                type="button"
+                onClick={() => setTimeModeFilter('ALL')}
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                  timeModeFilter === 'ALL' ? 'bg-white text-indigo-700 shadow-2xs font-black' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                전체 시간 ({enrichedSubmissions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimeModeFilter(timeModeFilter === 'TIMED' ? 'ALL' : 'TIMED')}
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                  timeModeFilter === 'TIMED' ? 'bg-indigo-600 text-white shadow-2xs font-black' : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="제한시간이 설정된 시험지만 모아보기"
+              >
+                <span>⏱️ 제한시간</span>
+                <span className="text-[10px] opacity-80">({timeCounts.timedCount})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimeModeFilter(timeModeFilter === 'UNLIMITED' ? 'ALL' : 'UNLIMITED')}
+                className={`px-2 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                  timeModeFilter === 'UNLIMITED' ? 'bg-violet-600 text-white shadow-2xs font-black' : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="시간 제한 없이 자율로 푼 시험지만 모아보기"
+              >
+                <span>♾️ 자율(무제한)</span>
+                <span className="text-[10px] opacity-80">({timeCounts.unlimitedCount})</span>
+              </button>
+            </div>
           </div>
 
           {/* 검색어 & 기간 & 정렬 & 리셋 바 */}
@@ -859,38 +971,65 @@ ${recentExamsText}
                     </div>
                   </div>
 
-                  {/* 카드 4: 평균 소요시간 */}
+                  {/* 카드 4: 평균 소요시간 & 집중도 */}
                   <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs flex items-center gap-3.5">
                     <div className="w-10 h-10 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center shrink-0">
                       <Clock size={20} />
                     </div>
                     <div>
                       <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">평균 풀이 시간</p>
-                      <p className="text-2xl font-black text-slate-800 tracking-tight">
-                        {stats.avgDuration}<span className="text-xs font-bold text-slate-500 ml-1">분</span>
-                      </p>
+                      <div className="flex items-baseline gap-1.5 flex-wrap">
+                        <p className="text-2xl font-black text-slate-800 tracking-tight">
+                          {stats.avgDuration}<span className="text-xs font-bold text-slate-500 ml-1">분</span>
+                        </p>
+                        {stats.avgFocusRate > 0 && (
+                          <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded-md border border-indigo-100">
+                            집중 {stats.avgFocusRate}%
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* 🌟 성적 추이 그래프 (SVG 미니 라인 차트) */}
+              {/* 🌟 성적 추이 & 소요시간 복합 듀얼 차트 (Combo Chart) */}
               <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs space-y-3">
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <TrendingUp size={16} className="text-indigo-600" />
                     <h4 className="text-sm font-bold text-slate-800">
-                      성적 추이 그래프{' '}
+                      성적 & 풀이시간 추이{' '}
                       <span className="text-xs text-indigo-600 font-bold">
                         ({currentFilterLabel} 기준 {trendData.length}회 선택됨)
                       </span>
                     </h4>
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-slate-500">
-                    <span className="flex items-center gap-1.5 font-bold text-indigo-700">
+                  <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+                    {/* 점수선 토글 */}
+                    <label className="flex items-center gap-1.5 font-bold text-indigo-700 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={showScoreLine}
+                        onChange={(e) => setShowScoreLine(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
                       <span className="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
-                      응시 점수
-                    </span>
+                      <span>점수 (점)</span>
+                    </label>
+
+                    {/* 소요시간 막대 토글 */}
+                    <label className="flex items-center gap-1.5 font-bold text-violet-700 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={showDurationBar}
+                        onChange={(e) => setShowDurationBar(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded text-violet-600 focus:ring-violet-500 cursor-pointer"
+                      />
+                      <span className="w-2.5 h-2.5 rounded-xs bg-violet-400"></span>
+                      <span>소요시간 (분)</span>
+                    </label>
+
                     <span className="flex items-center gap-1.5 font-bold text-emerald-700">
                       <span className="w-4 h-0.5 bg-emerald-500 border-t border-dashed"></span>
                       평균 ({stats.avgScore}점)
@@ -916,35 +1055,59 @@ ${recentExamsText}
                     </button>
                   </div>
                 ) : (
-                  /* SVG 꺾은선 렌더링 */
+                  /* SVG 복합 듀얼 차트 렌더링 */
                   <div className="w-full bg-slate-50/70 rounded-xl p-4 pt-6 border border-slate-100 overflow-x-auto">
-                    <div className="min-w-[480px]">
+                    <div className="min-w-[500px]">
                       {(() => {
-                        const height = 140;
+                        const height = 150;
                         const width = 640;
                         const paddingX = 40;
-                        const paddingY = 25;
+                        const paddingY = 26;
                         const innerWidth = width - paddingX * 2;
                         const innerHeight = height - paddingY * 2;
 
                         const stepX = trendData.length > 1 ? innerWidth / (trendData.length - 1) : innerWidth / 2;
+                        const maxDuration = Math.max(60, ...trendData.map((d) => d.durationMin || 0));
 
                         const points = trendData.map((d, i) => {
                           const x = paddingX + i * stepX;
-                          // 0~100점 스케일
                           const clampedScore = Math.min(100, Math.max(0, d.submission.score));
-                          const y = height - paddingY - (clampedScore / 100) * innerHeight;
-                          return { x, y, score: d.submission.score, title: d.exam.title, date: d.formattedDate };
+                          const scoreY = height - paddingY - (clampedScore / 100) * innerHeight;
+
+                          const durMin = d.durationMin || 0;
+                          const barHeight = Math.max(6, (durMin / maxDuration) * (innerHeight * 0.75));
+                          const barY = height - paddingY - barHeight;
+                          const barWidth = Math.min(22, Math.max(12, stepX * 0.36));
+                          const barX = x - barWidth / 2;
+
+                          return {
+                            x,
+                            scoreY,
+                            score: d.submission.score,
+                            durMin,
+                            barX,
+                            barY,
+                            barWidth,
+                            barHeight,
+                            title: d.exam.title,
+                            date: d.formattedDate,
+                            isUnlimited: d.isUnlimitedTime,
+                          };
                         });
 
-                        const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-
-                        // 평균 점수 수평 기준선
+                        const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.scoreY}`).join(' ');
                         const avgY = height - paddingY - (Math.min(100, Math.max(0, stats.avgScore)) / 100) * innerHeight;
 
                         return (
-                          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-36 overflow-visible">
-                            {/* 배경 수평 가이드선 (80점, 50점) */}
+                          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-38 overflow-visible">
+                            <defs>
+                              <linearGradient id="durationBarGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#c4b5fd" stopOpacity="0.85" />
+                                <stop offset="100%" stopColor="#ede9fe" stopOpacity="0.4" />
+                              </linearGradient>
+                            </defs>
+
+                            {/* 배경 수평 가이드선 (80점 목표) */}
                             <line
                               x1={paddingX}
                               y1={height - paddingY - 0.8 * innerHeight}
@@ -953,9 +1116,9 @@ ${recentExamsText}
                               stroke="#e2e8f0"
                               strokeDasharray="3 3"
                             />
-                            <text x={paddingX - 8} y={height - paddingY - 0.8 * innerHeight + 4} fontSize="9" textAnchor="end" fill="#94a3b8">80 (목표)</text>
+                            <text x={paddingX - 8} y={height - paddingY - 0.8 * innerHeight + 3} fontSize="9" textAnchor="end" fill="#94a3b8">80 (목표)</text>
 
-                            {/* 초록색 평균선 */}
+                            {/* 초록색 평균 점수선 */}
                             <line
                               x1={paddingX}
                               y1={avgY}
@@ -966,7 +1129,7 @@ ${recentExamsText}
                               strokeDasharray="4 4"
                             />
 
-                            {/* 🌟 [사용자 질문 반영] 초록색 평균선 명시적 라벨 뱃지 */}
+                            {/* 초록색 평균선 라벨 뱃지 */}
                             <g>
                               <rect
                                 x={width - paddingX - 68}
@@ -990,45 +1153,79 @@ ${recentExamsText}
                               </text>
                             </g>
 
-                            {/* 성적 꺾은선 */}
-                            <path
-                              d={pathD}
-                              fill="none"
-                              stroke="#6366f1"
-                              strokeWidth="2.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
+                            {/* 🌟 1. 소요시간 막대 기둥들 */}
+                            {showDurationBar && points.map((p, idx) => (
+                              <g key={`bar-${idx}`} className="group cursor-pointer">
+                                <rect
+                                  x={p.barX}
+                                  y={p.barY}
+                                  width={p.barWidth}
+                                  height={p.barHeight}
+                                  rx={4}
+                                  fill="url(#durationBarGradient)"
+                                  stroke="#c4b5fd"
+                                  strokeWidth="1"
+                                  className="group-hover:opacity-100 transition-opacity"
+                                />
+                                <text
+                                  x={p.x}
+                                  y={p.barY - 3}
+                                  fontSize="8"
+                                  fontWeight="bold"
+                                  textAnchor="middle"
+                                  className="fill-violet-700 font-bold"
+                                >
+                                  {p.durMin}분
+                                </text>
+                              </g>
+                            ))}
 
-                            {/* 점수 포인트 원 및 텍스트 */}
-                            {points.map((p, idx) => (
-                              <g key={idx} className="group cursor-pointer">
+                            {/* 🌟 2. 점수 꺾은선 */}
+                            {showScoreLine && (
+                              <path
+                                d={pathD}
+                                fill="none"
+                                stroke="#6366f1"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            )}
+
+                            {/* 🌟 3. 점수 포인트 원 및 텍스트 */}
+                            {showScoreLine && points.map((p, idx) => (
+                              <g key={`pt-${idx}`} className="group cursor-pointer">
                                 <circle
                                   cx={p.x}
-                                  cy={p.y}
+                                  cy={p.scoreY}
                                   r="5"
                                   className="fill-indigo-600 stroke-white stroke-2 group-hover:scale-125 transition-transform"
                                 />
                                 <text
                                   x={p.x}
-                                  y={p.y - 9}
+                                  y={p.scoreY - 8}
                                   fontSize="10"
-                                  fontWeight="bold"
+                                  fontWeight="black"
                                   textAnchor="middle"
                                   className="fill-slate-800"
                                 >
-                                  {p.score}
-                                </text>
-                                <text
-                                  x={p.x}
-                                  y={height - 6}
-                                  fontSize="9"
-                                  textAnchor="middle"
-                                  className="fill-slate-400"
-                                >
-                                  {p.date.slice(5)}
+                                  {p.score}점
                                 </text>
                               </g>
+                            ))}
+
+                            {/* 날짜 레이블 (하단) */}
+                            {points.map((p, idx) => (
+                              <text
+                                key={`date-${idx}`}
+                                x={p.x}
+                                y={height - 6}
+                                fontSize="9"
+                                textAnchor="middle"
+                                className="fill-slate-400 font-medium"
+                              >
+                                {p.date.slice(5)}
+                              </text>
                             ))}
                           </svg>
                         );
@@ -1128,20 +1325,30 @@ ${recentExamsText}
                                       <p className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
                                         <span>{item.exam.title}</span>
                                       </p>
-                                      {/* 필터칩 배지들 */}
+                                      {/* 필터칩 및 시간 모드 배지들 */}
                                       <div className="flex flex-wrap gap-1">
-                                        {/* 시스템 단일 / 오답 배지 */}
+                                        {/* 시스템 단원 / 오답 배지 */}
                                         {isWrong ? (
                                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
                                             📑 오답 시험지
                                           </span>
                                         ) : (
                                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200">
-                                            📄 단일 시험지
+                                            📝 단원 시험지
+                                          </span>
+                                        )}
+                                        {/* 시간 모드 배지 */}
+                                        {item.isUnlimitedTime ? (
+                                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200">
+                                            ♾️ 자율
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                                            ⏱️ {item.targetDurationMin}분
                                           </span>
                                         )}
                                         {item.exam.filter_chip_ids && item.exam.filter_chip_ids.map(chipId => {
-                                          const chip = filterChips.find(c => c.id === chipId);
+                                          const chip = allFilterChips.find(c => c.id === chipId);
                                           if (!chip || chip.id === 'chip_default_normal' || chip.id === 'chip_default_wrong') return null;
                                           return <FilterChipBadge key={chipId} chip={chip} size="sm" />;
                                         })}
@@ -1178,9 +1385,39 @@ ${recentExamsText}
                                     </div>
                                   </td>
 
-                                  {/* 소요시간 */}
-                                  <td className="py-3 px-3 text-slate-600 whitespace-nowrap font-medium">
-                                    {item.durationMin}분
+                                  {/* 소요시간 및 집중 시간 */}
+                                  <td className="py-3 px-3 whitespace-nowrap">
+                                    <div className="space-y-0.5">
+                                      <div className="flex items-center gap-1.5 font-bold text-slate-800 text-xs">
+                                        {item.isUnlimitedTime ? (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-md font-black bg-purple-50 text-purple-700 border border-purple-200">
+                                            ♾️ 자율(무제한)
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-md font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                            ⏱️ 제한 {item.targetDurationMin}분
+                                          </span>
+                                        )}
+                                        <span className="font-extrabold text-slate-700">{item.durationMin}분 소요</span>
+                                      </div>
+
+                                      <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                                        {item.timeUsagePercent !== null && (
+                                          <span className={`font-semibold ${item.timeUsagePercent > 90 ? 'text-amber-600' : 'text-slate-500'}`}>
+                                            {item.timeUsagePercent}% 소진
+                                          </span>
+                                        )}
+                                        {item.pureSolvingTimeSec > 0 && (
+                                          <span className="flex items-center gap-0.5 text-slate-600 font-medium" title="각 문항별 풀이시간(초) 총합산">
+                                            <span className="text-indigo-600 font-bold">🧠 순수 집중:</span>
+                                            <span>{Math.floor(item.pureSolvingTimeSec / 60)}분 {item.pureSolvingTimeSec % 60}초</span>
+                                            {item.focusRatioPercent < 100 && (
+                                              <span className="text-slate-400 font-normal">({item.focusRatioPercent}%)</span>
+                                            )}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
                                   </td>
 
                                   {/* 액션 */}
@@ -1204,7 +1441,7 @@ ${recentExamsText}
                                 {/* 문항별 상세 아코디언 */}
                                 {isExpanded && (
                                   <tr className="bg-slate-50/90 animate-in fade-in duration-150">
-                                    <td colSpan={6} className="p-4 border-t border-slate-200">
+                                    <td colSpan={7} className="p-4 border-t border-slate-200">
                                       {(() => {
                                         const questionResults = extractQuestionResults(item);
                                         if (questionResults.length === 0) {
@@ -1221,9 +1458,14 @@ ${recentExamsText}
 
                                         return (
                                           <div className="space-y-3">
-                                            <div className="flex items-center justify-between text-xs font-bold text-slate-700 bg-white p-2.5 rounded-xl border border-slate-200/80">
-                                              <div className="flex items-center gap-2">
+                                            <div className="flex items-center justify-between text-xs font-bold text-slate-700 bg-white p-2.5 rounded-xl border border-slate-200/80 flex-wrap gap-2">
+                                              <div className="flex items-center gap-2 flex-wrap">
                                                 <span>📋 문항별 정오표 ({questionResults.length}문항)</span>
+                                                {item.pureSolvingTimeSec > 0 && (
+                                                  <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
+                                                    ⏱️ 순수 풀이 집중: {Math.floor(item.pureSolvingTimeSec / 60)}분 {item.pureSolvingTimeSec % 60}초
+                                                  </span>
+                                                )}
                                                 <span className="text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
                                                   정답 {correctNum}
                                                 </span>
