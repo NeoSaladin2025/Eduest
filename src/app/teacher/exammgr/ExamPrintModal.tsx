@@ -2058,7 +2058,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                             }`}>
                               {(() => {
                                 const parsed = parseExamRoundAndBaseTitle(exam.title);
-                                return exam.base_exam_title || parsed.cleanBaseTitle;
+                                return parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
                               })()}
                             </h1>
 
@@ -2106,7 +2106,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                         <span>
                           {(() => {
                             const parsed = parseExamRoundAndBaseTitle(exam.title);
-                            return exam.base_exam_title || parsed.cleanBaseTitle;
+                            return parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
                           })()} ({exam.grade})
                         </span>
                         <span>

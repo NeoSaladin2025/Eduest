@@ -1804,8 +1804,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
       // 🏷️ 원본 제목에서 중복된 [오답], (학생이름) 완전 정제 및 N회차 자동 증분
       const parsedTitle = parseExamRoundAndBaseTitle(exam.title);
-      const nextRound = parsedTitle.nextRound;
-      const cleanBase = parsedTitle.cleanBaseTitle;
+      const currentRound = exam.wrong_round || parsedTitle.currentRound;
+      const nextRound = currentRound > 0 ? currentRound + 1 : 1;
+      const cleanBase = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
 
       if (treasureEnabled) {
         if (wrongExamMode === 'twin') {
@@ -2928,7 +2929,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         const parsed = parseExamRoundAndBaseTitle(exam.title);
                         const isTreasure = Boolean(exam.is_treasure_hunt || parsed.isTreasure);
                         const roundNum = exam.wrong_round || parsed.currentRound;
-                        const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+                        const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
                         const studentDisplay = exam.target_student_name || parsed.studentName;
 
                         return (

@@ -117,15 +117,19 @@ export interface ParsedExamTitleInfo {
 export function parseExamRoundAndBaseTitle(title: string): ParsedExamTitleInfo {
   let t = (title || '').trim();
 
-  // 1. 끝에 붙은 (학생이름) 또는 [학생이름] 추출 및 제거
+  // 1. 끝에 붙은 (학생이름) 또는 [학생이름] 추출 및 제거 (여러 개 반복되어 있는 경우도 모두 제거)
   let studentName: string | undefined = undefined;
-  const studentMatch = t.match(/[\(\[]([가-힣a-zA-Z0-9\s]{2,10})[\)\]]\s*$/);
-  if (studentMatch && studentMatch[1]) {
-    const candidate = studentMatch[1].trim();
-    if (!candidate.match(/(?:오답|보물|쌍둥이|회차|차|스페셜)/)) {
-      studentName = candidate;
-      t = t.replace(/[\(\[][가-힣a-zA-Z0-9\s]{2,10}[\)\]]\s*$/, '').trim();
+  while (true) {
+    const studentMatch = t.match(/[\(\[]([가-힣a-zA-Z0-9\s]{2,10})[\)\]]\s*$/);
+    if (studentMatch && studentMatch[1]) {
+      const candidate = studentMatch[1].trim();
+      if (!candidate.match(/(?:오답|보물|쌍둥이|회차|차|스페셜)/)) {
+        if (!studentName) studentName = candidate;
+        t = t.replace(/[\(\[][가-힣a-zA-Z0-9\s]{2,10}[\)\]]\s*$/, '').trim();
+        continue;
+      }
     }
+    break;
   }
 
   const isTreasure = t.includes('보물');
@@ -133,23 +137,32 @@ export function parseExamRoundAndBaseTitle(title: string): ParsedExamTitleInfo {
   const isWrong = t.includes('오답') || isTreasure;
 
   // 2. 기존 회차 숫자 파싱 (예: [오답 2회차], [보물회수 3차], 오답 1회차 등)
-  const roundMatch = t.match(/(?:오답|보물회수|보물)[^\]\d]*?(\d+)\s*(?:회차|차)/i);
   let currentRound = 0;
-  if (roundMatch && roundMatch[1]) {
-    currentRound = parseInt(roundMatch[1], 10);
+  const roundMatches = Array.from(t.matchAll(/(?:오답|보물회수|보물)[^\]\d]*?(\d+)\s*(?:회차|차)/gi));
+  if (roundMatches.length > 0) {
+    for (const rm of roundMatches) {
+      const num = parseInt(rm[1], 10);
+      if (num > currentRound) currentRound = num;
+    }
   } else {
     // 회차 숫자가 없는 단일 [오답] 또는 [보물회수] 개수 카운트
     const count = (t.match(/\[?(?:오답|보물회수|보물)\]?/g) || []).length;
     currentRound = count;
   }
 
-  // 3. 기존 모든 오답/보물회수 태그 제거하여 순수 원본 타이틀 획득
-  let cleanBaseTitle = t
-    .replace(/\[?(?:오답|보물회수|보물)(?:·쌍둥이)?(?:\s*\d+\s*(?:회차|차))?\]?\s*/gi, '')
-    .trim();
-
-  // 대괄호 찌꺼기 정리
-  cleanBaseTitle = cleanBaseTitle.replace(/^\[\s*\]\s*/, '').trim();
+  // 3. 기존 모든 오답/보물회수/쌍둥이 접두사 태그 및 찌꺼기 완전 정제
+  // (예: [오답 2회차·쌍둥이], [보물회수 1회차·쌍둥이], ·쌍둥이], [쌍둥이] 등이 결코 남지 않도록 루프로 정제)
+  let cleanBaseTitle = t;
+  let prev = '';
+  while (prev !== cleanBaseTitle) {
+    prev = cleanBaseTitle;
+    cleanBaseTitle = cleanBaseTitle
+      .replace(/^\[(?:오답|보물회수|보물|쌍둥이)[^\]]*\]\s*/i, '')
+      .replace(/^(?:·|•|\s)*쌍둥이\]?\s*/i, '')
+      .replace(/^(?:오답|보물회수|보물)(?:\s*\d+\s*(?:회차|차))?\s*/i, '')
+      .replace(/^\[\s*\]\s*/, '')
+      .trim();
+  }
 
   return {
     cleanBaseTitle: cleanBaseTitle || title,

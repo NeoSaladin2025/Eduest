@@ -1756,7 +1756,7 @@ export default function StudentTest2View({
                         {(() => {
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound;
-                          const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+                          const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
 
                           return (
                             <div>
@@ -1881,7 +1881,7 @@ export default function StudentTest2View({
                         {(() => {
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound;
-                          const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+                          const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
 
                           return (
                             <div>
