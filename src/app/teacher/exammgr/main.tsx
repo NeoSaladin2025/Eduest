@@ -42,7 +42,9 @@ import {
   Star,
   BarChart3,
   SlidersHorizontal,
-  RefreshCw
+  RefreshCw,
+  FolderKanban,
+  BookmarkPlus
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -59,6 +61,7 @@ import FilterChipStudioModal from './FilterChipStudioModal';
 import FilterPresetModal from './FilterPresetModal';
 import BatchAssignModal from './BatchAssignModal';
 import BatchFilterChipModal from './BatchFilterChipModal';
+import ScoreTemplateModal from './ScoreTemplateModal';
 import {
   TreasureConfig,
   TreasureTemplate,
@@ -199,6 +202,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   // 'none' | 'add' (올리는 보정) | 'subtract' (깎는 보정) | 'micro_add' (미세 올림) | 'micro_sub' (미세 깎기)
   const [adjustMode, setAdjustMode] = useState<'none' | 'add' | 'subtract' | 'micro_add' | 'micro_sub'>('none');
   const [selectedAdjustIndices, setSelectedAdjustIndices] = useState<Set<number>>(new Set());
+  // 🌟 [신규] 배점 템플릿 모달 상태
+  const [isScoreTemplateModalOpen, setIsScoreTemplateModalOpen] = useState(false);
 
   // 🌟 문항별 단독 병렬 재추출 상태 및 비교 모달 상태
   const [reExtractingIds, setReExtractingIds] = useState<Set<string>>(new Set());
@@ -1186,6 +1191,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setAdjustMode('micro_sub');
       }
     }
+  };
+
+  // 🌟 [신규] 배점 템플릿 원클릭("딸깍") 적용 헬퍼
+  const handleApplyScoreTemplate = (templatePoints: number[], templateName: string) => {
+    setExtractedQuestions(prev => {
+      return prev.map((q, idx) => {
+        if (idx < templatePoints.length) {
+          const pt10 = Math.round(Number(templatePoints[idx]) * 10);
+          return {
+            ...q,
+            points: pt10 / 10,
+          };
+        }
+        return q;
+      });
+    });
+    setPointsMode('manual');
+    setAdjustMode('none');
+    setSelectedAdjustIndices(new Set());
+    alert(`✓ '${templateName}' 배점 템플릿이 성공적으로 적용되었습니다!`);
   };
 
   // 학생 배정 체크박스 토글
@@ -4194,6 +4219,35 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         <RotateCcw size={12} />
                         <span>균등 리셋</span>
                       </button>
+
+                      <div className="h-5 w-px bg-slate-200 mx-1 hidden sm:block" />
+
+                      {/* 🌟 [신규] 배점 템플릿 보관함 & 원클릭 적용 버튼 */}
+                      <button
+                        type="button"
+                        onClick={() => setIsScoreTemplateModalOpen(true)}
+                        className="px-3 py-1.5 text-xs font-black text-violet-800 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                        title="저장된 배점 템플릿 목록을 확인하고 원클릭(딸깍)으로 일괄 적용합니다"
+                      >
+                        <FolderKanban size={13} className="text-violet-600" />
+                        <span>📁 배점 템플릿</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (extractedQuestions.length === 0) {
+                            alert('저장할 문항이 없습니다.');
+                            return;
+                          }
+                          setIsScoreTemplateModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs"
+                        title="현재 설정된 배점을 새 템플릿으로 저장합니다"
+                      >
+                        <BookmarkPlus size={13} className="text-slate-600" />
+                        <span>💾 현재 배점 저장</span>
+                      </button>
                     </div>
 
                     {/* 우측: 총점 상태 배지 및 보정 트리거 버튼 */}
@@ -6528,6 +6582,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         isOpen={!!perfModalStudent}
         onClose={() => setPerfModalStudent(null)}
         student={perfModalStudent}
+      />
+
+      {/* 🌟 [신규 기능] 배점 템플릿 보관함 & 원클릭("딸깍") 적용 모달 */}
+      <ScoreTemplateModal
+        isOpen={isScoreTemplateModalOpen}
+        onClose={() => setIsScoreTemplateModalOpen(false)}
+        currentQuestionCount={extractedQuestions.length}
+        currentPoints={extractedQuestions.map((q) => Number(q.points) || 0)}
+        onApplyTemplate={handleApplyScoreTemplate}
       />
 
     </div>
