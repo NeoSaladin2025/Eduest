@@ -42,6 +42,7 @@ interface Student {
   current_round?: number;
   current_question_idx?: number;
   total_questions?: number;
+  enable_lockdown?: boolean; // 🌟 이탈방지 여부 (이탈방지 ON 시험만 시험감독 모니터링 대상)
 }
 
 interface RealtimeProctorTabProps {
@@ -151,46 +152,72 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
     }
   }, []);
 
-  // 초기 학생 데이터 로드
-  useEffect(() => {
-    const fetchStudentsData = async () => {
-      const { data } = await supabase
+  // 🌟 [핵심 함수] 전체 학생 상태 로드 & 실시간 시험 상세 상태(/api/test2/proctor-state) 스캔
+  const fetchStudentsData = useCallback(async () => {
+    try {
+      // 1) DB students 기본 상태 로드 (유효한 컬럼만 조회하여 DB 42703 에러 원천 방지)
+      const { data: dbStudents } = await supabase
         .from('students')
-        .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, current_exam_title, current_bundle_title, current_round, updated_at, last_away_at');
-      if (data) {
+        .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at');
+
+      // 2) 실시간 시험 상세 정보(/api/test2/proctor-state) 로드
+      let activeStates: Record<string, any> = {};
+      try {
+        const res = await fetch('/api/test2/proctor-state');
+        const json = await res.json();
+        if (json.success && json.states) {
+          activeStates = json.states;
+        }
+      } catch (e) {
+        console.warn('Failed to fetch proctor states:', e);
+      }
+
+      if (dbStudents) {
         const map: Record<string, Student> = {};
-        data.forEach((s: any) => {
+        dbStudents.forEach((s: any) => {
+          const pState = activeStates[s.id];
           map[s.id] = {
             id: s.id,
             name: s.name,
             grade: s.grade,
-            test_status: s.test_status || 'IDLE',
-            test_remaining_sec: s.test_remaining_sec || 0,
+            test_status: pState?.test_status || s.test_status || 'IDLE',
+            test_remaining_sec: pState?.test_remaining_sec !== undefined ? pState.test_remaining_sec : (s.test_remaining_sec || 0),
             test_duration_min: s.test_duration_min,
-            current_exam_title: s.current_exam_title,
-            current_bundle_title: s.current_bundle_title,
-            current_round: s.current_round,
-            updated_at: s.updated_at,
+            current_exam_title: pState?.exam_title,
+            current_bundle_title: pState?.bundle_title,
+            current_round: pState?.round,
+            current_question_idx: pState?.question_idx,
+            total_questions: pState?.total_questions,
+            enable_lockdown: pState?.enable_lockdown,
+            updated_at: pState?.updated_at || s.updated_at,
             last_away_at: s.last_away_at,
           };
-          prevStatusesRef.current[s.id] = s.test_status || 'IDLE';
+          prevStatusesRef.current[s.id] = map[s.id].test_status || 'IDLE';
         });
         setLiveStudentsMap(map);
         isInitializedRef.current = true;
       }
-    };
+    } catch (err) {
+      console.error('fetchStudentsData error:', err);
+    }
+  }, []);
 
+  // 초기 학생 데이터 로드
+  useEffect(() => {
     fetchStudentsData();
 
     // 1초마다 현재 시각 갱신
     const clock = setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => clearInterval(clock);
-  }, []);
+  }, [fetchStudentsData]);
 
   // 📡 Supabase Realtime 채널 구독
+  const channelRef = useRef<any>(null);
   useEffect(() => {
-    const channel = supabase
-      .channel('proctoring_room')
+    const channel = supabase.channel('proctoring_room');
+    channelRef.current = channel;
+
+    channel
       .on('broadcast', { event: 'proctor_sync' }, (payload: any) => {
         const p = payload.payload;
         if (!p || !p.student_id) return;
@@ -218,6 +245,7 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
               current_round: p.round || existing.current_round,
               current_question_idx: p.question_idx,
               total_questions: p.total_questions,
+              enable_lockdown: p.enable_lockdown !== undefined ? p.enable_lockdown : existing.enable_lockdown,
               updated_at: p.updated_at,
             },
           };
@@ -248,21 +276,56 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
               test_status: student.test_status,
               test_remaining_sec: student.test_remaining_sec,
               test_duration_min: student.test_duration_min ?? existing.test_duration_min,
-              current_exam_title: student.current_exam_title ?? existing.current_exam_title,
-              current_bundle_title: student.current_bundle_title ?? existing.current_bundle_title,
-              current_round: student.current_round ?? existing.current_round,
               last_away_at: student.last_away_at,
               updated_at: student.updated_at,
             },
           };
         });
       })
-      .subscribe();
+      .subscribe((status: string) => {
+        if (status === 'SUBSCRIBED') {
+          channel.send({
+            type: 'broadcast',
+            event: 'ping_students',
+            payload: { timestamp: Date.now() },
+          });
+          channel.send({
+            type: 'broadcast',
+            event: 'ping_proctor',
+            payload: { timestamp: Date.now() },
+          });
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, [playAlertSound, triggerOsNotification]);
+
+  // 🌟 [사용자 요청] 시험 감독 화면 실시간 동기화 & 시험 응시 인원 전체 스캔
+  const [isScanning, setIsScanning] = useState(false);
+  const handleScanAndSyncProctor = async () => {
+    setIsScanning(true);
+    try {
+      await fetchStudentsData();
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'ping_students',
+          payload: { timestamp: Date.now() },
+        });
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'ping_proctor',
+          payload: { timestamp: Date.now() },
+        });
+      }
+    } catch (e) {
+      console.error('Scan error:', e);
+    } finally {
+      setTimeout(() => setIsScanning(false), 500);
+    }
+  };
 
   // 알림 권한 요청
   const handleRequestNotifPermission = () => {
@@ -410,20 +473,24 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
-  // 🌟 [자동 등록] 시험을 시작한 학생(TESTING 또는 AWAY)은 수동 선택 여부와 무관하게 모니터링 목록에 실시간 자동 포함!
-  const activeTestingIds = useMemo(() => {
+  // 🌟 [사용자 요청] '이탈방지(enable_lockdown)'가 걸린 시험지를 응시 중인 학생(TESTING 또는 AWAY)만 시험 감독 모니터링에 자동 포함!
+  // (이탈방지가 없는 자율 시험지는 일상 모니터링에만 남고, 시험 감독 화면에는 자동 등록되지 않습니다)
+  const activeLockdownTestingIds = useMemo(() => {
     return Object.keys(liveStudentsMap).filter(id => {
       const st = liveStudentsMap[id];
-      return st && (st.test_status === 'TESTING' || st.test_status === 'AWAY');
+      if (!st) return false;
+      const isTesting = st.test_status === 'TESTING' || st.test_status === 'AWAY';
+      // 이탈방지(enable_lockdown)가 켜진 시험지인 경우에만 자동 감독 대상!
+      return isTesting && Boolean(st.enable_lockdown);
     });
   }, [liveStudentsMap]);
 
-  // 최종 모니터링 대상 ID 목록: 선생님이 수동 선택한 학생 + 실시간 시험 응시/이탈 중인 학생
+  // 최종 모니터링 대상 ID 목록: 선생님이 수동 선택한 학생 + 이탈방지 시험 응시/이탈 중인 학생
   const effectiveMonitoringIds = useMemo(() => {
     const set = new Set(selectedStudentIds);
-    activeTestingIds.forEach(id => set.add(id));
+    activeLockdownTestingIds.forEach(id => set.add(id));
     return Array.from(set);
-  }, [selectedStudentIds, activeTestingIds]);
+  }, [selectedStudentIds, activeLockdownTestingIds]);
 
   // 모니터링 대상 학생 객체 배열
   const monitoringStudents: Student[] = effectiveMonitoringIds
@@ -468,6 +535,21 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
 
         {/* 툴바 컨트롤 */}
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {/* 🌟 [사용자 요청] 시험 감독 화면 실시간 상태 동기화 & 전체 인원 스캔 버튼 */}
+          <button
+            onClick={handleScanAndSyncProctor}
+            disabled={isScanning}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black transition-all shadow-xs cursor-pointer ${
+              isScanning
+                ? 'bg-violet-600 text-white shadow-md'
+                : 'bg-white hover:bg-violet-50 text-violet-700 border border-violet-200'
+            }`}
+            title="현재 시험 응시 중인 학생 전체 스캔 및 진행 상황 동기화"
+          >
+            <RefreshCw size={15} className={isScanning ? 'animate-spin' : ''} />
+            <span>{isScanning ? '시험 현황 스캔 중...' : '상태 동기화'}</span>
+          </button>
+
           <button
             onClick={() => setSoundEnabled(prev => !prev)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
@@ -521,13 +603,13 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
       {!isMonitoring ? (
         <div className="bg-white rounded-3xl border border-slate-200 p-8 space-y-6 shadow-sm">
           {/* 🌟 현재 시험 응시 중인 학생이 있을 경우 즉각 모니터링 알림 배너 */}
-          {activeTestingIds.length > 0 && (
+          {activeLockdownTestingIds.length > 0 && (
             <div className="bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 p-4 rounded-2xl text-white flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg shadow-violet-500/20">
               <div className="flex items-center gap-3">
                 <Sparkles size={20} className="text-amber-300 animate-bounce" />
                 <div>
                   <p className="text-sm font-black">
-                    현재 {activeTestingIds.length}명의 학생이 시험에 응시 중입니다!
+                    현재 {activeLockdownTestingIds.length}명의 학생이 이탈방지 시험에 응시 중입니다!
                   </p>
                   <p className="text-[11px] text-violet-200">
                     실시간 시험 모니터링 화면으로 바로 진입하여 학생들의 진행 상태를 확인하세요.

@@ -163,47 +163,64 @@ export default function DailyActivityMonitoringTab({
     }
   }, []);
 
-  // 🌟 [최초 로드 즉시 동기화] DB에서 이미 시험 중(TESTING / AWAY)인 학생 상태 즉시 수집
-  useEffect(() => {
-    const fetchActiveTestingStudents = async () => {
-      try {
-        const { data } = await supabase
+  // 🌟 [최초 로드 및 수동 동기화] DB에서 이미 시험 중(TESTING / AWAY)인 학생 상태 및 proctor-state 즉시 수집
+  const fetchActiveTestingStudents = useCallback(async () => {
+    try {
+      const [studentsRes, proctorRes] = await Promise.all([
+        supabase
           .from('students')
-          .select('id, name, grade, test_status, test_remaining_sec, current_exam_title, current_bundle_title, current_round, updated_at, last_away_at')
-          .in('test_status', ['TESTING', 'AWAY']);
+          .select('id, name, grade, test_status, test_remaining_sec, updated_at, last_away_at')
+          .in('test_status', ['TESTING', 'AWAY']),
+        fetch('/api/test2/proctor-state')
+          .then((r) => r.json())
+          .catch(() => ({ states: {} })),
+      ]);
 
-        if (data && data.length > 0) {
-          setLiveMap((prev) => {
-            const next = { ...prev };
-            data.forEach((s: any) => {
-              const isAway = s.test_status === 'AWAY';
-              next[s.id] = {
-                ...(next[s.id] || {}),
-                student_id: s.id,
-                student_name: s.name,
-                student_grade: s.grade,
-                mode: 'test',
-                location_title: `시험: ${s.current_bundle_title ? `[${s.current_bundle_title}] ` : ''}${s.current_exam_title || '테스트 진행 중'}`,
-                is_away: isAway,
-                exam_title: s.current_exam_title,
-                bundle_title: s.current_bundle_title,
-                round: s.current_round,
-                test_status: s.test_status,
-                test_remaining_sec: s.test_remaining_sec,
-                entered_at: Date.now(),
-                updated_at: s.updated_at || new Date().toISOString(),
-              };
-            });
-            return next;
+      const data = studentsRes.data;
+      const activeStates = proctorRes?.states || {};
+
+      if (data && data.length > 0) {
+        setLiveMap((prev) => {
+          const next = { ...prev };
+          data.forEach((s: any) => {
+            const isAway = s.test_status === 'AWAY';
+            const pState = activeStates[s.id] || {};
+            const examTitle = pState.exam_title || '';
+            const bundleTitle = pState.bundle_title || '';
+            const round = pState.round || 1;
+            const qIdx = pState.question_idx !== undefined ? pState.question_idx : 0;
+            const totalQ = pState.total_questions !== undefined ? pState.total_questions : 0;
+
+            next[s.id] = {
+              ...(next[s.id] || {}),
+              student_id: s.id,
+              student_name: s.name,
+              student_grade: s.grade,
+              mode: 'test',
+              location_title: `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
+              is_away: isAway,
+              exam_title: examTitle,
+              bundle_title: bundleTitle,
+              round: round,
+              question_idx: qIdx,
+              total_questions: totalQ,
+              test_status: s.test_status,
+              test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
+              entered_at: Date.now(),
+              updated_at: s.updated_at || new Date().toISOString(),
+            };
           });
-        }
-      } catch (err) {
-        console.error('Failed to pre-fetch testing students:', err);
+          return next;
+        });
       }
-    };
-
-    fetchActiveTestingStudents();
+    } catch (err) {
+      console.error('Failed to pre-fetch testing students:', err);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchActiveTestingStudents();
+  }, [fetchActiveTestingStudents]);
 
   // 📡 Supabase Realtime 'proctoring_room' 채널 구독
   const channelRef = useRef<any>(null);
@@ -302,13 +319,12 @@ export default function DailyActivityMonitoringTab({
               student_name: student.name || existing?.student_name,
               student_grade: student.grade || existing?.student_grade,
               mode: 'test',
-              location_title: `시험: ${student.current_bundle_title ? `[${student.current_bundle_title}] ` : ''}${student.current_exam_title || '테스트 진행 중'}`,
+              location_title: existing?.exam_title
+                ? `시험: ${existing?.bundle_title ? `[${existing.bundle_title}] ` : ''}${existing.exam_title}`
+                : existing?.location_title || '시험 진행 중',
               is_away: isAway,
-              exam_title: student.current_exam_title,
-              bundle_title: student.current_bundle_title,
-              round: student.current_round,
               test_status: student.test_status,
-              test_remaining_sec: student.test_remaining_sec,
+              test_remaining_sec: student.test_remaining_sec ?? existing?.test_remaining_sec,
               entered_at: existing?.entered_at || Date.now(),
               updated_at: student.updated_at || new Date().toISOString(),
             },
@@ -330,10 +346,15 @@ export default function DailyActivityMonitoringTab({
 
     channel.subscribe((status: string) => {
       if (status === 'SUBSCRIBED') {
-        // 접속 시 학생들에게 현재 위치 핑 요청
+        // 접속 시 학생들에게 현재 위치 및 시험 상태 핑 요청
         channel.send({
           type: 'broadcast',
           event: 'ping_students',
+          payload: { timestamp: Date.now() },
+        });
+        channel.send({
+          type: 'broadcast',
+          event: 'ping_proctor',
           payload: { timestamp: Date.now() },
         });
       }
@@ -352,7 +373,13 @@ export default function DailyActivityMonitoringTab({
         event: 'ping_students',
         payload: { timestamp: Date.now() },
       });
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'ping_proctor',
+        payload: { timestamp: Date.now() },
+      });
     }
+    fetchActiveTestingStudents();
   };
 
   // 모달 열기 핸들러

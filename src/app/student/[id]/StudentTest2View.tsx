@@ -535,12 +535,16 @@ export default function StudentTest2View({
               .update({
                 test_status: 'IDLE',
                 test_remaining_sec: 0,
-                current_exam_title: null,
-                current_bundle_title: null,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', studentId)
               .then();
+
+            fetch('/api/test2/proctor-state', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'clear', studentId }),
+            }).catch(() => {});
           }
         });
     } catch (e) {
@@ -561,6 +565,8 @@ export default function StudentTest2View({
     (status: 'TESTING' | 'AWAY' | 'PAUSED' | 'FINISHED', overrideTime?: number) => {
       if (!currentExam) return;
       const curTime = overrideTime !== undefined ? overrideTime : timeLeft;
+      const isLockdownActive = getExamLockdownActive(currentExam);
+
       const payload = {
         student_id: studentId,
         student_name: studentName,
@@ -574,6 +580,7 @@ export default function StudentTest2View({
         total_questions: currentExam.questions.length,
         test_status: status,
         test_remaining_sec: curTime,
+        enable_lockdown: isLockdownActive,
         updated_at: new Date().toISOString(),
       };
 
@@ -586,20 +593,29 @@ export default function StudentTest2View({
         });
       }
 
-      // 2) Supabase students 테이블 업데이트
+      // 2) Supabase students 테이블 업데이트 (존재하는 유효 컬럼만 업데이트하여 DB 에러 방지)
       supabase
         .from('students')
         .update({
           test_status: status,
           test_remaining_sec: curTime,
-          current_exam_title: currentExam.title,
-          current_bundle_title: currentBundle?.title || null,
-          current_round: currentRound,
+          test_duration_min: currentExam?.duration_min ?? 0,
           last_away_at: status === 'AWAY' ? new Date().toISOString() : undefined,
           updated_at: new Date().toISOString(),
         })
         .eq('id', studentId)
         .then();
+
+      // 3) 시험 상세 진행 정보 영구 보존 (/api/test2/proctor-state)
+      fetch('/api/test2/proctor-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: status === 'FINISHED' || status === 'PAUSED' ? 'clear' : 'update',
+          studentId,
+          state: payload,
+        }),
+      }).catch(() => {});
     },
     [currentExam, timeLeft, studentId, studentName, studentGrade, currentBundle, currentRound, currentQuestionIndex]
   );
@@ -621,6 +637,12 @@ export default function StudentTest2View({
       })
       .on('broadcast', { event: 'ping_students' }, () => {
         // 선생님 모니터링 화면에서 핑 요청 시 현재 시험 응시 상태 즉시 회신
+        if (viewMode === 'taking' && currentExam) {
+          broadcastProctorStatus(isLocked ? 'AWAY' : 'TESTING');
+        }
+      })
+      .on('broadcast', { event: 'ping_proctor' }, () => {
+        // 시험 감독 동기화 핑 요청 시 즉시 회신
         if (viewMode === 'taking' && currentExam) {
           broadcastProctorStatus(isLocked ? 'AWAY' : 'TESTING');
         }
@@ -749,22 +771,19 @@ export default function StudentTest2View({
 
           // 시작 상태 알림 (감시 시스템 연동)
           setTimeout(() => {
-            const displayTitle = isTreasureExam 
-              ? (data.exam.title.startsWith('[보물') ? data.exam.title : `[보물회수] ${data.exam.title}`)
-              : (bundle ? `[${bundle.title}] ${data.exam.title}` : data.exam.title);
-
             supabase
               .from('students')
               .update({
                 test_status: 'TESTING',
                 test_remaining_sec: initialTime,
                 test_duration_min: data.exam.duration_min ?? 0,
-                current_exam_title: displayTitle,
-                current_round: roundNum,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', studentId)
               .then();
+
+            // 즉각 상태 브로드캐스트 & 영구 상태 저장
+            broadcastProctorStatus('TESTING', initialTime);
           }, 200);
         }
       } else {
