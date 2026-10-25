@@ -24,9 +24,17 @@ import {
   X,
   UserPlus,
   SlidersHorizontal,
-  PlaySquare
+  PlaySquare,
+  FileText,
+  Copy,
+  Trash2,
+  Lock,
+  Unlock,
+  Calendar,
+  Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { StudentAwayLog } from '@/app/api/monitoring/away-logs/route';
 
 export interface StudentActivity {
   student_id: string;
@@ -47,6 +55,8 @@ export interface StudentActivity {
   total_questions?: number;
   test_status?: string;
   test_remaining_sec?: number;
+  duration_min?: number;
+  test_duration_min?: number;
 }
 
 interface Student {
@@ -118,6 +128,122 @@ export default function DailyActivityMonitoringTab({
   // 실시간 활동 맵 (student_id -> StudentActivity)
   const [liveMap, setLiveMap] = useState<Record<string, StudentActivity>>({});
   const prevAwayMapRef = useRef<Record<string, boolean>>({});
+
+  // 🚨 [신규] 자리 이탈(딴짓) 히스토리 로그 상태 및 모달
+  const [awayLogs, setAwayLogs] = useState<StudentAwayLog[]>([]);
+  const [selectedStudentForLogs, setSelectedStudentForLogs] = useState<Student | null>(null);
+  const [logsDateTab, setLogsDateTab] = useState<'today' | 'all'>('today');
+
+  const fetchAwayLogs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/monitoring/away-logs');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.logs)) {
+        setAwayLogs(data.logs);
+      }
+    } catch (e) {
+      console.error('Failed to load away logs:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAwayLogs();
+  }, [fetchAwayLogs]);
+
+  const handleDeleteAwayLog = async (logId: string) => {
+    if (!confirm('이 딴짓 기록을 삭제하시겠습니까?')) return;
+    try {
+      const res = await fetch('/api/monitoring/away-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', logId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAwayLogs((prev) => prev.filter((l) => l.id !== logId));
+      }
+    } catch (e) {
+      alert('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleToggleArchiveAwayLog = async (logId: string) => {
+    try {
+      const res = await fetch('/api/monitoring/away-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'toggle_archive', logId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAwayLogs((prev) =>
+          prev.map((l) => (l.id === logId ? { ...l, is_archived: !l.is_archived } : l))
+        );
+      }
+    } catch (e) {
+      alert('보관 처리 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleClearTodayAwayLogs = async (studentId: string, studentName: string) => {
+    if (!confirm(`'${studentName}' 학생의 오늘 딴짓 기록(보관 건 제외)을 모두 삭제하시겠습니까?`)) return;
+    try {
+      const res = await fetch('/api/monitoring/away-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear_today', studentId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const today = new Date().toISOString().slice(0, 10);
+        setAwayLogs((prev) =>
+          prev.filter((l) => !(l.student_id === studentId && l.started_at.startsWith(today) && !l.is_archived))
+        );
+        alert('오늘의 딴짓 기록이 정리되었습니다.');
+      }
+    } catch (e) {
+      alert('정리 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleCopyConsultationMessage = (student: Student, logs: StudentAwayLog[]) => {
+    const today = new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' });
+    const totalCount = logs.length;
+    const totalSec = logs.reduce((acc, l) => acc + l.duration_sec, 0);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    const durationStr = min > 0 ? `${min}분 ${sec}초` : `${sec}초`;
+    const focusScore = Math.max(30, Math.min(100, Math.round(100 - (totalSec / 3600) * 100)));
+
+    const logDetails = logs
+      .slice(0, 5)
+      .map((l, idx) => {
+        const start = new Date(l.started_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const end = new Date(l.ended_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const m = Math.floor(l.duration_sec / 60);
+        const s = l.duration_sec % 60;
+        const dur = m > 0 ? `${m}분 ${s}초` : `${s}초`;
+        return `  ${idx + 1}) [${start} ~ ${end} (${dur})] ${l.location_title || l.context}`;
+      })
+      .join('\n');
+
+    const msg = `[에듀이스트 학습 태도 리포트 - ${student.name} 학생]
+• 기준 일시: ${today}
+• 자리 이탈(딴짓) 횟수: 총 ${totalCount}회
+• 총 이탈(딴짓) 누적 시간: ${durationStr}
+• 오늘 학습 집중도 지수: ${focusScore}점 / 100점
+• 주요 이탈 구간:
+${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈 기록` : ''}
+
+※ 학생이 시험/학습 화면을 벗어나 타 브라우저 탭(웹서핑/SNS/유튜브 등)을 이용한 실제 누적 시간입니다.
+가정에서도 올바른 학습 습관 형성을 위해 관심과 지도 부탁드립니다.`;
+
+    navigator.clipboard.writeText(msg).then(() => {
+      alert(`📋 '${student.name}' 학생의 학부모 상담용 리포트가 클립보드에 복사되었습니다!\n카카오톡 등에 바로 붙여넣기(Ctrl+V)하여 사용하실 수 있습니다.`);
+    }).catch(() => {
+      alert('클립보드 복사에 실패했습니다.');
+    });
+  };
 
   // 1초마다 시계 갱신 (로컬 체류 타이머용 - 서버 통신 0회)
   useEffect(() => {
@@ -206,6 +332,8 @@ export default function DailyActivityMonitoringTab({
               total_questions: totalQ,
               test_status: s.test_status,
               test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
+              duration_min: pState.duration_min !== undefined ? pState.duration_min : pState.test_duration_min,
+              test_duration_min: pState.test_duration_min,
               entered_at: Date.now(),
               updated_at: s.updated_at || new Date().toISOString(),
             };
@@ -296,6 +424,8 @@ export default function DailyActivityMonitoringTab({
             total_questions: p.total_questions,
             test_status: p.test_status,
             test_remaining_sec: p.test_remaining_sec,
+            duration_min: p.duration_min !== undefined ? p.duration_min : p.test_duration_min,
+            test_duration_min: p.test_duration_min,
             updated_at: p.updated_at || new Date().toISOString(),
           },
         };
@@ -340,6 +470,17 @@ export default function DailyActivityMonitoringTab({
               test_status: student.test_status,
             },
           };
+        });
+      }
+    });
+
+    // 4. 자리 이탈(딴짓) 로그 발생 실시간 감지
+    channel.on('broadcast', { event: 'away_log_created' }, (payload: any) => {
+      const newLog = payload?.payload;
+      if (newLog && newLog.id) {
+        setAwayLogs((prev) => {
+          if (prev.some((l) => l.id === newLog.id)) return prev;
+          return [newLog, ...prev];
         });
       }
     });
@@ -776,6 +917,17 @@ export default function DailyActivityMonitoringTab({
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600">
                         {st.grade}
                       </span>
+                      {/* 📋 딴짓 이탈 기록 모달 열기 버튼 */}
+                      <button
+                        onClick={() => {
+                          setSelectedStudentForLogs(st);
+                          setLogsDateTab('today');
+                        }}
+                        className="p-1 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-all"
+                        title="자리 이탈/딴짓 상세 기록 및 상담 리포트"
+                      >
+                        <FileText size={15} />
+                      </button>
                     </div>
 
                     <div className="flex items-center gap-1.5">
@@ -843,11 +995,26 @@ export default function DailyActivityMonitoringTab({
                           <span>
                             진행: 문항 {act?.question_idx || 1} / {act?.total_questions || '?'}
                           </span>
-                          {act?.test_remaining_sec !== undefined && (
-                            <span className="font-mono text-violet-900 font-black">
-                              남은 시간: {Math.floor(act.test_remaining_sec / 60)}분 {act.test_remaining_sec % 60}초
-                            </span>
-                          )}
+                          {(() => {
+                            const isUnlimited =
+                              (act?.duration_min !== undefined && act.duration_min <= 0) ||
+                              (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
+                            if (isUnlimited) {
+                              return (
+                                <span className="font-bold text-violet-600 bg-violet-100/80 px-2 py-0.5 rounded text-[10px]">
+                                  자율 응시 (무제한)
+                                </span>
+                              );
+                            }
+                            if (act?.test_remaining_sec !== undefined) {
+                              return (
+                                <span className="font-mono text-violet-900 font-black">
+                                  남은 시간: {Math.floor(act.test_remaining_sec / 60)}분 {act.test_remaining_sec % 60}초
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </div>
                     ) : isOnline ? (
@@ -898,6 +1065,41 @@ export default function DailyActivityMonitoringTab({
                       </div>
                     )}
                   </div>
+
+                  {/* 🚨 오늘 딴짓 통계 뱃지 (기록이 있을 때 노출) */}
+                  {(() => {
+                    const todayStr = new Date().toISOString().slice(0, 10);
+                    const studentTodayLogs = awayLogs.filter(
+                      (l) => l.student_id === st.id && l.started_at.startsWith(todayStr)
+                    );
+                    if (studentTodayLogs.length === 0) return null;
+                    const studentTodayCount = studentTodayLogs.length;
+                    const studentTodaySec = studentTodayLogs.reduce((acc, l) => acc + l.duration_sec, 0);
+                    const studentTodayMin = Math.floor(studentTodaySec / 60);
+                    const studentTodayRemSec = studentTodaySec % 60;
+                    return (
+                      <button
+                        onClick={() => {
+                          setSelectedStudentForLogs(st);
+                          setLogsDateTab('today');
+                        }}
+                        className="w-full mt-2 px-2.5 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200/80 text-amber-800 flex items-center justify-between text-xs font-bold transition-all shadow-2xs group"
+                        title="클릭하여 상세 이탈 내역 및 학부모 상담 리포트 확인"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <AlertTriangle size={13} className="text-amber-600 shrink-0" />
+                          <span>
+                            오늘 딴짓 <strong className="font-black text-amber-900">{studentTodayCount}회</strong> (
+                            {studentTodayMin > 0 ? `${studentTodayMin}분 ` : ''}
+                            {studentTodayRemSec}초)
+                          </span>
+                        </span>
+                        <span className="text-[11px] text-amber-600 font-black group-hover:translate-x-0.5 transition-transform">
+                          내역 보기 &gt;
+                        </span>
+                      </button>
+                    );
+                  })()}
                 </div>
 
                 {/* 하단 푸터: 체류 시간 타이머 or 시험 감독 이동 버튼 */}
@@ -1095,6 +1297,247 @@ export default function DailyActivityMonitoringTab({
           </div>
         </div>
       )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          6. 🚨 학생 자리 이탈(딴짓) 히스토리 로그 & 상담 리포트 모달
+      ───────────────────────────────────────────────────────────── */}
+      {selectedStudentForLogs && (() => {
+        const student = selectedStudentForLogs;
+        const studentAllLogs = awayLogs
+          .filter((l) => l.student_id === student.id)
+          .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const studentTodayLogs = studentAllLogs.filter((l) => l.started_at.startsWith(todayStr));
+        const displayedLogs = logsDateTab === 'today' ? studentTodayLogs : studentAllLogs;
+
+        const totalCount = displayedLogs.length;
+        const totalSec = displayedLogs.reduce((acc, l) => acc + l.duration_sec, 0);
+        const totalMin = Math.floor(totalSec / 60);
+        const remSec = totalSec % 60;
+        const focusScore = Math.max(30, Math.min(100, Math.round(100 - (totalSec / 3600) * 100)));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[88vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+              
+              {/* 모달 헤더 */}
+              <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                    <AlertTriangle size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
+                      <span>{student.name}</span>
+                      <span className="text-xs px-2 py-0.5 rounded-lg bg-slate-200/80 text-slate-700 font-bold">
+                        {student.grade}
+                      </span>
+                      <span className="text-xs font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                        자리 이탈(딴짓) 기록부
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      학생이 시험/학습 화면을 벗어나 타 사이트/앱으로 딴짓한 시간과 내역입니다.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedStudentForLogs(null)}
+                  className="w-9 h-9 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-all"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* 통계 요약 카드 & 탭 필터 */}
+              <div className="p-4 sm:p-5 bg-gradient-to-b from-slate-50 to-white border-b border-slate-100 space-y-4">
+                {/* 탭 버튼 */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-bold">
+                    <button
+                      onClick={() => setLogsDateTab('today')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        logsDateTab === 'today'
+                          ? 'bg-white text-slate-900 shadow-xs font-black'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      📅 오늘 기록 ({studentTodayLogs.length})
+                    </button>
+                    <button
+                      onClick={() => setLogsDateTab('all')}
+                      className={`px-3 py-1.5 rounded-lg transition-all ${
+                        logsDateTab === 'all'
+                          ? 'bg-white text-slate-900 shadow-xs font-black'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      🗂️ 전체/보관 기록 ({studentAllLogs.length})
+                    </button>
+                  </div>
+
+                  {/* 오늘 기록 일괄 정리 버튼 (오늘 탭이고 기록 있을 때) */}
+                  {logsDateTab === 'today' && studentTodayLogs.length > 0 && (
+                    <button
+                      onClick={() => handleClearTodayAwayLogs(student.id, student.name)}
+                      className="text-xs font-bold text-slate-400 hover:text-rose-600 flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition-all"
+                      title="보관된 기록을 제외한 오늘의 딴짓 기록을 일괄 정리합니다"
+                    >
+                      <Trash2 size={13} />
+                      <span>오늘 기록 정리</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* 통계 3단 지표 */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/70 text-center">
+                    <div className="text-[11px] font-bold text-slate-500 mb-0.5">이탈 횟수</div>
+                    <div className="text-lg font-black text-slate-900 font-mono">
+                      {totalCount}<span className="text-xs font-normal text-slate-500 ml-0.5">회</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200/70 text-center">
+                    <div className="text-[11px] font-bold text-amber-700 mb-0.5">총 딴짓 누적 시간</div>
+                    <div className="text-lg font-black text-amber-900 font-mono">
+                      {totalMin > 0 ? `${totalMin}분 ` : ''}{remSec}<span className="text-xs font-normal text-amber-700 ml-0.5">초</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200/70 text-center">
+                    <div className="text-[11px] font-bold text-emerald-700 mb-0.5">학습 집중도 지수</div>
+                    <div className="text-lg font-black text-emerald-700 font-mono">
+                      {focusScore}<span className="text-xs font-normal text-emerald-600 ml-0.5">점</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 학부모 상담용 카톡 리포트 복사 버튼 */}
+                <button
+                  onClick={() => handleCopyConsultationMessage(student, displayedLogs)}
+                  disabled={displayedLogs.length === 0}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-xs sm:text-sm shadow-md shadow-amber-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  <Copy size={15} />
+                  <span>📋 학부모 상담용 카톡 리포트 문구 복사</span>
+                </button>
+              </div>
+
+              {/* 타임라인 목록 */}
+              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-2.5">
+                {displayedLogs.length === 0 ? (
+                  <div className="py-12 text-center flex flex-col items-center justify-center text-slate-400">
+                    <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center mb-2">
+                      <Sparkles size={24} />
+                    </div>
+                    <p className="text-sm font-black text-slate-700">기록된 딴짓 내역이 없습니다</p>
+                    <p className="text-xs text-slate-400 mt-1">학생이 딴짓하지 않고 아주 성실하게 집중하고 있습니다! 🎉</p>
+                  </div>
+                ) : (
+                  displayedLogs.map((log) => {
+                    const startStr = new Date(log.started_at).toLocaleTimeString('ko-KR', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    });
+                    const endStr = new Date(log.ended_at).toLocaleTimeString('ko-KR', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    });
+                    const dateStr = new Date(log.started_at).toLocaleDateString('ko-KR', {
+                      month: 'numeric',
+                      day: 'numeric',
+                    });
+                    const m = Math.floor(log.duration_sec / 60);
+                    const s = log.duration_sec % 60;
+                    const durText = m > 0 ? `${m}분 ${s}초` : `${s}초`;
+
+                    return (
+                      <div
+                        key={log.id}
+                        className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
+                          log.is_archived
+                            ? 'bg-amber-50/50 border-amber-300 ring-1 ring-amber-200'
+                            : 'bg-white border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {logsDateTab === 'all' && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                                {dateStr}
+                              </span>
+                            )}
+                            <span className="font-mono text-xs font-bold text-slate-700">
+                              {startStr} ~ {endStr}
+                            </span>
+                            <span className={`text-[11px] font-black px-2 py-0.5 rounded-full ${
+                              log.duration_sec >= 60
+                                ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                                : 'bg-amber-100 text-amber-800 border border-amber-200'
+                            }`}>
+                              ⏱️ {durText} 이탈
+                            </span>
+                            {log.is_archived && (
+                              <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-600 text-white flex items-center gap-1">
+                                <Lock size={10} />
+                                상담용 보관
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs font-bold text-slate-800 truncate">
+                            <span className="text-slate-400 font-normal">위치: </span>
+                            {log.location_title || log.context || '화면 이탈'}
+                          </p>
+                        </div>
+
+                        {/* 보관 / 삭제 버튼 */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => handleToggleArchiveAwayLog(log.id)}
+                            className={`p-2 rounded-xl transition-all ${
+                              log.is_archived
+                                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                : 'text-slate-400 hover:text-amber-600 hover:bg-amber-50'
+                            }`}
+                            title={log.is_archived ? '보관 해제' : '상담용 영구 보관 (일괄 정리 시 삭제 안 됨)'}
+                          >
+                            {log.is_archived ? <Unlock size={14} /> : <Lock size={14} />}
+                          </button>
+                          <button
+                            onClick={() => handleDeleteAwayLog(log.id)}
+                            className="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-all"
+                            title="이 기록 삭제"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* 모달 푸터 */}
+              <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+                  ※ 3초 이상 에듀이스트 화면을 벗어나 타 브라우저/앱을 사용했을 때 자동 집계됩니다.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedStudentForLogs(null)}
+                  className="px-5 py-2 rounded-xl bg-slate-800 text-white text-xs font-black hover:bg-slate-900 transition-all ml-auto"
+                >
+                  닫기
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );

@@ -966,16 +966,26 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
                       <div className={`p-3 rounded-2xl flex items-center justify-between border ${
                         isAway 
                           ? 'bg-rose-100/50 border-rose-200 text-rose-700' 
+                          : live.test_duration_min !== undefined && live.test_duration_min <= 0
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                           : remainingSec < 300 
                           ? 'bg-amber-50 border-amber-200 text-amber-700' 
                           : 'bg-slate-50 border-slate-100 text-slate-700'
                       }`}>
                         <div className="flex items-center gap-1.5 text-xs font-bold">
                           <Clock size={15} />
-                          <span>{isAway ? '일시정지된 시간' : '남은 제한시간'}</span>
+                          <span>
+                            {isAway 
+                              ? '일시정지된 시간' 
+                              : live.test_duration_min !== undefined && live.test_duration_min <= 0
+                              ? '응시 모드'
+                              : '남은 제한시간'}
+                          </span>
                         </div>
-                        <span className="font-mono font-black text-base tracking-wider">
-                          {formatSec(remainingSec)}
+                        <span className="font-mono font-black text-sm tracking-wider">
+                          {live.test_duration_min !== undefined && live.test_duration_min <= 0
+                            ? '자율 응시 (무제한)'
+                            : formatSec(remainingSec)}
                         </span>
                       </div>
                     )}

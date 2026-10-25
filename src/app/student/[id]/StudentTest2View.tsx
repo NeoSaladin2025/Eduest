@@ -191,6 +191,7 @@ export default function StudentTest2View({
   const [userAnswers, setUserAnswers] = useState<Record<string, any>>({});
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
+  const testAwayStartRef = useRef<number | undefined>(undefined);
 
   // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
   const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
@@ -560,6 +561,48 @@ export default function StudentTest2View({
     }
   }, [studentId, loadAssignedData]);
 
+  // 🚨 [신규] 시험 중 이탈(딴짓) 종료 로그 기록 및 브로드캐스트
+  const recordTestAwayReturnLog = useCallback(() => {
+    if (!testAwayStartRef.current || !studentId || !currentExam) return;
+    const durationSec = Math.round((Date.now() - testAwayStartRef.current) / 1000);
+    const startedIso = new Date(testAwayStartRef.current).toISOString();
+    const endedIso = new Date().toISOString();
+    testAwayStartRef.current = undefined;
+
+    if (durationSec >= 3) {
+      fetch('/api/monitoring/away-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create',
+          log: {
+            student_id: studentId,
+            student_name: studentName,
+            student_grade: studentGrade,
+            started_at: startedIso,
+            ended_at: endedIso,
+            duration_sec: durationSec,
+            context: 'test',
+            location_title: `시험: ${currentExam.title} (${currentQuestionIndex + 1}번 문항 풀이 중)`,
+            exam_title: currentExam.title,
+            question_idx: currentQuestionIndex + 1,
+          },
+        }),
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (res.success && res.log && channelRef.current) {
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'away_log_created',
+              payload: res.log,
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [studentId, studentName, studentGrade, currentExam, currentQuestionIndex]);
+
   // 실시간 모니터링 상태 전송 헬퍼 (Broadcast + DB sync)
   const broadcastProctorStatus = useCallback(
     (status: 'TESTING' | 'AWAY' | 'PAUSED' | 'FINISHED', overrideTime?: number) => {
@@ -580,6 +623,8 @@ export default function StudentTest2View({
         total_questions: currentExam.questions.length,
         test_status: status,
         test_remaining_sec: curTime,
+        duration_min: currentExam.duration_min ?? 0,
+        test_duration_min: currentExam.duration_min ?? 0,
         enable_lockdown: isLockdownActive,
         updated_at: new Date().toISOString(),
       };
@@ -631,6 +676,7 @@ export default function StudentTest2View({
     channel
       .on('broadcast', { event: 'unlock_student' }, (eventPayload: any) => {
         if (eventPayload?.payload?.studentId === studentId) {
+          recordTestAwayReturnLog();
           setIsLocked(false);
           setIsPaused(false);
         }
@@ -655,6 +701,7 @@ export default function StudentTest2View({
       }, (payload: any) => {
         const newStatus = payload.new?.test_status;
         if (newStatus === 'TESTING') {
+          recordTestAwayReturnLog();
           setIsLocked(false);
           setIsPaused(false);
         } else if (newStatus === 'PAUSED') {
@@ -1013,7 +1060,7 @@ export default function StudentTest2View({
     }, 100);
   };
 
-  // 🚨 5. 화면 이탈 감지 (부정행위 방지: 화면 잠금 + 타이머 정지 + 원격 해제 대기)
+  // 🚨 5. 화면 이탈 감지 (부정행위 방지: 잠금 활성화 시 화면 잠금 + 자율 응시 시에도 딴짓 로그 기록)
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam) return;
 
@@ -1023,35 +1070,50 @@ export default function StudentTest2View({
       ? Boolean(studentOverride.enable_lockdown)
       : Boolean((currentExam as any).enable_lockdown);
 
-    // 잠금 모드가 OFF(자율 응시)이거나 스페셜 시험인 경우 이탈 감지 패스
-    if (!isLockdownActive) return;
-
-    const triggerAwayLock = () => {
-      if (isLocked) return;
-      setIsLocked(true);
-
-      // 모니터링 경보 발송
+    const handleLeaving = () => {
+      if (!testAwayStartRef.current) testAwayStartRef.current = Date.now();
       broadcastProctorStatus('AWAY', timeLeft);
+      if (isLockdownActive && !isLocked) {
+        setIsLocked(true);
+      }
+    };
+
+    const handleReturning = () => {
+      if (!isLockdownActive) {
+        recordTestAwayReturnLog();
+        broadcastProctorStatus('TESTING', timeLeft);
+      }
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        triggerAwayLock();
+        handleLeaving();
+      } else {
+        handleReturning();
       }
     };
 
     const handleBlur = () => {
-      triggerAwayLock();
+      if (typeof document !== 'undefined' && document.activeElement && document.activeElement.tagName === 'IFRAME') {
+        return;
+      }
+      handleLeaving();
+    };
+
+    const handleFocus = () => {
+      handleReturning();
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
     };
-  }, [viewMode, currentExam, isLocked, timeLeft, broadcastProctorStatus, studentId]);
+  }, [viewMode, currentExam, isLocked, timeLeft, broadcastProctorStatus, studentId, recordTestAwayReturnLog]);
 
   // 잠금 상태일 때 2.5초마다 DB 상태 폴링 (웹소켓 유실 대비 백업 해제 감지)
   useEffect(() => {

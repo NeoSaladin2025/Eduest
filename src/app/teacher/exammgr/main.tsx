@@ -5690,30 +5690,37 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (wrongExamDurationMode === 'unlimited') {
-                            setWrongExamDurationMode('custom');
-                          } else {
-                            setWrongExamDurationMode('unlimited');
-                          }
-                        }}
-                        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all border ${
-                          wrongExamDurationMode === 'unlimited'
-                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                            : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
-                        }`}
-                      >
-                        {wrongExamDurationMode === 'unlimited' ? '✓ 시간제한 없음 (자율)' : '시간제한 없음 (OFF)'}
-                      </button>
+                      <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setWrongExamDurationMode('custom')}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            wrongExamDurationMode !== 'unlimited'
+                              ? 'bg-white text-purple-700 shadow-xs font-black'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          ⏱️ 제한시간 설정
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWrongExamDurationMode('unlimited')}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            wrongExamDurationMode === 'unlimited'
+                              ? 'bg-emerald-600 text-white shadow-xs font-black'
+                              : 'text-slate-500 hover:text-slate-800'
+                          }`}
+                        >
+                          ♾️ 시간제한 없음 (자율)
+                        </button>
+                      </div>
 
                       {wrongExamDurationMode !== 'unlimited' && (
                         <div className="flex items-center bg-white border border-slate-300 rounded-xl overflow-hidden shadow-2xs">
                           <button
                             type="button"
                             onClick={() => setWrongExamCustomMinutes(prev => Math.max(5, prev - 5))}
-                            className="px-2 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors"
+                            className="px-2.5 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                           >
                             -5분
                           </button>
@@ -5723,13 +5730,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             max={300}
                             value={wrongExamCustomMinutes}
                             onChange={e => setWrongExamCustomMinutes(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-12 text-center text-xs font-black text-slate-800 border-x border-slate-200 py-1 focus:outline-none focus:bg-purple-50/50"
+                            className="w-14 text-center text-xs font-black text-slate-800 border-x border-slate-200 py-1 focus:outline-none focus:bg-purple-50/50"
                           />
                           <span className="text-[10px] font-bold text-slate-400 px-1">분</span>
                           <button
                             type="button"
                             onClick={() => setWrongExamCustomMinutes(prev => prev + 5)}
-                            className="px-2 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors"
+                            className="px-2.5 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                           >
                             +5분
                           </button>

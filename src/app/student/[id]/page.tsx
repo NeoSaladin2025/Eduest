@@ -346,6 +346,47 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       }
     });
 
+    const handleReturnFromAway = () => {
+      if (awayStartedAtRef.current && student?.id) {
+        const durationSec = Math.round((Date.now() - awayStartedAtRef.current) / 1000);
+        const startedIso = new Date(awayStartedAtRef.current).toISOString();
+        const endedIso = new Date().toISOString();
+        awayStartedAtRef.current = undefined;
+
+        if (durationSec >= 3) {
+          const loc = computeCurrentLocation();
+          fetch('/api/monitoring/away-logs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'create',
+              log: {
+                student_id: student.id,
+                student_name: student.name,
+                student_grade: student.grade,
+                started_at: startedIso,
+                ended_at: endedIso,
+                duration_sec: durationSec,
+                context: mode,
+                location_title: loc.title,
+              },
+            }),
+          })
+            .then((r) => r.json())
+            .then((res) => {
+              if (res.success && res.log && proctorChannelRef.current) {
+                proctorChannelRef.current.send({
+                  type: 'broadcast',
+                  event: 'away_log_created',
+                  payload: res.log,
+                });
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    };
+
     // 딴짓 / 외부 사이트 이탈 감지 (mode !== 'test' 일 때)
     const handleVisibilityChange = () => {
       if (mode === 'test') return;
@@ -357,8 +398,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         sendActivityBroadcast(true, true);
       } else {
         if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
+        handleReturnFromAway();
         isAwayRef.current = false;
-        awayStartedAtRef.current = undefined;
         sendActivityBroadcast(true, false);
       }
     };
@@ -390,8 +431,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     const handleFocus = () => {
       if (mode === 'test') return;
       if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
+      handleReturnFromAway();
       isAwayRef.current = false;
-      awayStartedAtRef.current = undefined;
       sendActivityBroadcast(true, false);
     };
 
