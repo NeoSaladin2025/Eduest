@@ -63,7 +63,8 @@ import {
   TreasureTemplate,
   DEFAULT_TREASURE_TEMPLATES,
   calculateRoundDuration,
-  TimeAttackMode
+  TimeAttackMode,
+  parseExamRoundAndBaseTitle
 } from './treasureTypes';
 import StudentPerformanceModal from '../studentmanager/StudentPerformanceModal';
 import { ExamFilterChip, FilterPreset } from '@/app/api/test2/filter-chips/route';
@@ -1801,16 +1802,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       let finalQuestions: ExamQuestion[] = [];
       let examTitle = '';
 
+      // 🏷️ 원본 제목에서 중복된 [오답], (학생이름) 완전 정제 및 N회차 자동 증분
+      const parsedTitle = parseExamRoundAndBaseTitle(exam.title);
+      const nextRound = parsedTitle.nextRound;
+      const cleanBase = parsedTitle.cleanBaseTitle;
+
       if (treasureEnabled) {
         if (wrongExamMode === 'twin') {
-          examTitle = `[보물회수·쌍둥이] ${exam.title} (${student.name})`;
+          examTitle = `[보물회수 ${nextRound}회차·쌍둥이] ${cleanBase}`;
         } else {
-          examTitle = `[보물회수] ${exam.title} (${student.name})`;
+          examTitle = `[보물회수 ${nextRound}회차] ${cleanBase}`;
         }
       } else if (wrongExamMode === 'twin') {
-        examTitle = `[오답·쌍둥이] ${exam.title} (${student.name})`;
+        examTitle = `[오답 ${nextRound}회차·쌍둥이] ${cleanBase}`;
       } else {
-        examTitle = `[오답] ${exam.title} (${student.name})`;
+        examTitle = `[오답 ${nextRound}회차] ${cleanBase}`;
       }
 
       if (wrongExamMode === 'twin') {
@@ -1872,6 +1878,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           treasure_config: treasureConfigPayload,
           parent_exam_id: exam.id,
           remind_popup: wrongExamRemindPopup,
+          wrong_round: nextRound,
+          base_exam_title: cleanBase,
+          target_student_name: student.name,
+          target_student_id: student.id,
         }),
       });
 
@@ -2913,19 +2923,54 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </button>
                       </div>
 
-                      {/* 시험지 타이틀 */}
-                      <div>
-                        <h3 className={`text-xl font-black transition-colors line-clamp-1 ${
-                          isWrong
-                            ? 'text-slate-800 group-hover:text-rose-600'
-                            : 'text-slate-800 group-hover:text-violet-700'
-                        }`}>
-                          {exam.title}
-                        </h3>
-                        <p className="text-xs text-slate-400 font-medium mt-1">
-                          총 {exam.questions.length}문항 • 생성일: {new Date(exam.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
+                      {/* 시험지 타이틀 및 소형 아이브로우 뱃지 */}
+                      {(() => {
+                        const parsed = parseExamRoundAndBaseTitle(exam.title);
+                        const isTreasure = Boolean(exam.is_treasure_hunt || parsed.isTreasure);
+                        const roundNum = exam.wrong_round || parsed.currentRound;
+                        const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+                        const studentDisplay = exam.target_student_name || parsed.studentName;
+
+                        return (
+                          <div>
+                            {/* 소형 회차 아이브로우 뱃지 */}
+                            {(isWrong || isTreasure || roundNum > 0) && (
+                              <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                                {isTreasure ? (
+                                  <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 border border-amber-400/40 text-[10px] font-black flex items-center gap-1 shadow-2xs">
+                                    <Sparkles size={11} className="fill-amber-500 text-amber-500" />
+                                    <span>💎 보물회수 {roundNum > 0 ? `${roundNum}회차` : ''}</span>
+                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black flex items-center gap-1 shadow-2xs">
+                                    <RotateCcw size={10} />
+                                    <span>오답 {roundNum > 0 ? `${roundNum}회차` : '클리닉'}</span>
+                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                  </span>
+                                )}
+
+                                {studentDisplay && (
+                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                    수험자: {studentDisplay}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <h3 className={`text-xl font-black transition-colors line-clamp-1 ${
+                              isWrong
+                                ? 'text-slate-800 group-hover:text-rose-600'
+                                : 'text-slate-800 group-hover:text-violet-700'
+                            }`} title={cleanDisplayTitle}>
+                              {cleanDisplayTitle}
+                            </h3>
+                            <p className="text-xs text-slate-400 font-medium mt-1">
+                              총 {exam.questions.length}문항 • 생성일: {new Date(exam.created_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                        );
+                      })()}
 
                       {/* 🌟 특정 학생 필터가 걸려있을 때: 해당 학생의 점수 / 미응시 뱃지 직관적 노출 */}
                       {isSingleStudentMode ? (
@@ -6111,6 +6156,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         isOpen={!!printModalExam}
         onClose={() => setPrintModalExam(null)}
         exam={printModalExam}
+        students={students}
       />
 
       {/* ⏱️ 시험지 설정 및 정보 통합 수정 모달 (제목 + 시험시간 + 필터칩) */}

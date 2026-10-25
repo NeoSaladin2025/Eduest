@@ -25,11 +25,19 @@ import {
   BookOpen
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
+import { parseExamRoundAndBaseTitle } from './treasureTypes';
+
+interface Student {
+  id: string;
+  name: string;
+  grade: string;
+}
 
 interface ExamPrintModalProps {
   isOpen: boolean;
   onClose: () => void;
   exam: ExamPaper | null;
+  students?: Student[];
 }
 
 export type QuestionsPerPageType = 1 | 2 | 4 | 6;
@@ -37,10 +45,12 @@ export type DuplexBindingType = 'long' | 'short';
 export type AnswerFontFamilyType = 'math' | 'sans' | 'serif';
 export type AnswerFontSizeType = 'small' | 'medium' | 'large';
 export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
+export type TitleFontSizeType = 'small' | 'medium' | 'large';
+export type HeaderDensityType = 'compact' | 'normal';
 
 const DEFAULT_CHIPS = ['모의평가', '단원평가', '주간테스트', '과제물', '중간고사 대비'];
 
-export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModalProps) {
+export default function ExamPrintModal({ isOpen, onClose, exam, students }: ExamPrintModalProps) {
   // 레이아웃 & 옵션 상태
   const [questionsPerPage, setQuestionsPerPage] = useState<QuestionsPerPageType>(4);
   const [columns, setColumns] = useState<1 | 2>(2);
@@ -70,6 +80,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const [answerFontSize, setAnswerFontSize] = useState<AnswerFontSizeType>('medium'); // 디폴트: 보통 (12px)
   const [answerFontWeight, setAnswerFontWeight] = useState<AnswerFontWeightType>('bold'); // 디폴트: 굵게 (700)
   const [smartMathFormatting, setSmartMathFormatting] = useState(true); // 디폴트: ON (cm³, cm² 위첨자 및 π 세리프 자동 정규화)
+
+  // 🏷️ 제목 크기 & 헤더 레이아웃 조절 상태
+  const [titleFontSize, setTitleFontSize] = useState<TitleFontSizeType>('medium'); // 디폴트: 보통 (20px)
+  const [headerDensity, setHeaderDensity] = useState<HeaderDensityType>('normal'); // 디폴트: 표준형
+  const [showStudentName, setShowStudentName] = useState(true); // 디폴트: 성명 자동 기재 ON
+  const [customStudentName, setCustomStudentName] = useState('');
+  const [showClassName, setShowClassName] = useState(true); // 디폴트: 반 자동 기재 ON
+  const [customClassName, setCustomClassName] = useState('');
 
   // 🏫 학원명 토글 & 입력 (디폴트: OFF)
   const [showAcademyName, setShowAcademyName] = useState(false);
@@ -218,10 +236,53 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
       } else {
         setDuplexBinding('long'); // 디폴트: 긴 가장자리 (책 넘김★)
       }
+
+      // 8. 제목 크기 & 헤더 밀도 & 수험표 복원
+      const savedTitleSize = localStorage.getItem('eduest_print_title_size');
+      if (savedTitleSize === 'small' || savedTitleSize === 'medium' || savedTitleSize === 'large') {
+        setTitleFontSize(savedTitleSize as TitleFontSizeType);
+      }
+      const savedHeaderDensity = localStorage.getItem('eduest_print_header_density');
+      if (savedHeaderDensity === 'compact' || savedHeaderDensity === 'normal') {
+        setHeaderDensity(savedHeaderDensity as HeaderDensityType);
+      }
+      const savedShowStudent = localStorage.getItem('eduest_print_show_student_name');
+      if (savedShowStudent !== null) {
+        setShowStudentName(savedShowStudent === 'true');
+      }
+      const savedShowClass = localStorage.getItem('eduest_print_show_class_name');
+      if (savedShowClass !== null) {
+        setShowClassName(savedShowClass === 'true');
+      }
     } catch (e) {
       console.warn('Failed to load saved print config:', e);
     }
   }, []);
+
+  // 🎓 배정 학생 성명 및 반 자동 초기화 (exam 또는 students prop 변경 시)
+  useEffect(() => {
+    if (!exam) return;
+    let resolvedName = exam.target_student_name || '';
+    let resolvedClass = exam.grade || '';
+
+    if (!resolvedName && exam.assigned_student_ids && exam.assigned_student_ids.length === 1 && students) {
+      const singleStudent = students.find(s => s.id === exam.assigned_student_ids[0]);
+      if (singleStudent) {
+        resolvedName = singleStudent.name;
+        resolvedClass = singleStudent.grade || exam.grade || '';
+      }
+    }
+
+    if (!resolvedName) {
+      const parsed = parseExamRoundAndBaseTitle(exam.title);
+      if (parsed.studentName) {
+        resolvedName = parsed.studentName;
+      }
+    }
+
+    setCustomStudentName(resolvedName);
+    setCustomClassName(resolvedClass);
+  }, [exam, students]);
 
   // 🔄 설정 변경 헬퍼 및 localStorage 동기화
   const handleDuplexBindingChange = (binding: DuplexBindingType) => {
@@ -237,6 +298,26 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
   const handleToggleCenterDivider = (checked: boolean) => {
     setShowCenterDivider(checked);
     localStorage.setItem('eduest_print_show_center_divider', String(checked));
+  };
+
+  const handleTitleFontSizeChange = (size: TitleFontSizeType) => {
+    setTitleFontSize(size);
+    localStorage.setItem('eduest_print_title_size', size);
+  };
+
+  const handleHeaderDensityChange = (density: HeaderDensityType) => {
+    setHeaderDensity(density);
+    localStorage.setItem('eduest_print_header_density', density);
+  };
+
+  const handleToggleStudentName = (checked: boolean) => {
+    setShowStudentName(checked);
+    localStorage.setItem('eduest_print_show_student_name', String(checked));
+  };
+
+  const handleToggleClassName = (checked: boolean) => {
+    setShowClassName(checked);
+    localStorage.setItem('eduest_print_show_class_name', String(checked));
   };
 
   const handleToggleShowFolderInfo = (checked: boolean) => {
@@ -1229,6 +1310,120 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
             )}
           </div>
 
+          {/* 🌟 2-3. 제목 크기 & 헤더 레이아웃 (공간 최적화) */}
+          <div className="space-y-3 p-3.5 bg-slate-800/60 rounded-2xl border border-slate-700/80 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-black text-slate-200 flex items-center gap-1.5">
+                <Sliders size={13} className="text-violet-400" />
+                <span>제목 크기 & 헤더 레이아웃</span>
+              </label>
+              <span className="text-[10px] text-violet-300 font-extrabold px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30">
+                {titleFontSize === 'small' ? '작게' : titleFontSize === 'large' ? '크게' : '보통'} • {headerDensity === 'compact' ? '슬림' : '표준'}
+              </span>
+            </div>
+
+            {/* A. 제목 글자 크기 3단계 세그먼트 버튼 */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
+                <span>제목 크기</span>
+                <span className="text-[9px] text-slate-500">{titleFontSize === 'small' ? '16px (공간 절약)' : titleFontSize === 'large' ? '24px (강조)' : '20px (표준)'}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-700">
+                {(['small', 'medium', 'large'] as TitleFontSizeType[]).map(size => (
+                  <button
+                    key={size}
+                    type="button"
+                    onClick={() => handleTitleFontSizeChange(size)}
+                    className={`py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                      titleFontSize === size
+                        ? 'bg-violet-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {size === 'small' ? '작게' : size === 'medium' ? '보통' : '크게'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* B. 헤더 상하 밀도 (슬림형 vs 표준형) */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
+                <span>헤더 밀도 (상하 여백)</span>
+                <span className="text-[9px] text-slate-500">{headerDensity === 'compact' ? '문제 공간 최대 확보' : '표준 여백'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => handleHeaderDensityChange('compact')}
+                  className={`py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                    headerDensity === 'compact'
+                      ? 'bg-violet-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="헤더 여백과 수험표 높이를 줄여 1페이지 문제 배치 공간을 최대로 확보합니다."
+                >
+                  <span>슬림형 (공간절약)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleHeaderDensityChange('normal')}
+                  className={`py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                    headerDensity === 'normal'
+                      ? 'bg-violet-600 text-white shadow-xs'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="클래식한 시험지 표준 여백"
+                >
+                  <span>표준형</span>
+                </button>
+              </div>
+            </div>
+
+            {/* C. 수험표 학생 성명 및 반 자동 기재 설정 */}
+            <div className="pt-2 border-t border-slate-700/60 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-300">수험자 성명 자동 기재</span>
+                <button
+                  type="button"
+                  onClick={() => handleToggleStudentName(!showStudentName)}
+                  className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ${
+                    showStudentName ? 'bg-violet-600' : 'bg-slate-700'
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition duration-200 ${
+                    showStudentName ? 'translate-x-3' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+
+              {showStudentName && (
+                <div className="grid grid-cols-2 gap-2 animate-in fade-in duration-150">
+                  <div className="space-y-0.5">
+                    <span className="text-[9px] text-slate-400">성명</span>
+                    <input
+                      type="text"
+                      value={customStudentName}
+                      onChange={e => setCustomStudentName(e.target.value)}
+                      placeholder="성명 (예: 김민우)"
+                      className="w-full px-2 py-1 bg-slate-900 border border-slate-700 focus:border-violet-500 rounded-lg text-xs text-white focus:outline-hidden font-bold"
+                    />
+                  </div>
+                  <div className="space-y-0.5">
+                    <span className="text-[9px] text-slate-400">반 / 학년</span>
+                    <input
+                      type="text"
+                      value={customClassName}
+                      onChange={e => setCustomClassName(e.target.value)}
+                      placeholder="반 (예: 고2 A반)"
+                      className="w-full px-2 py-1 bg-slate-900 border border-slate-700 focus:border-violet-500 rounded-lg text-xs text-white focus:outline-hidden font-bold"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* 3. 🏫 학원 / 기관명 표기 (디폴트 OFF, 토글 ON 시 활성화 + localStorage 자동 기억) */}
           <div className="space-y-2 pt-2 border-t border-slate-800">
             <div className="flex items-center justify-between">
@@ -1804,12 +1999,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                   )}
 
                   {/* 상단 헤더 영역 */}
-                  <div className="shrink-0 mb-4">
+                  <div className={`shrink-0 ${headerDensity === 'compact' ? 'mb-2' : 'mb-4'}`}>
                     {isFirstPage ? (
                       /* 1페이지 메인 헤더: 학원 시험지 전통 스타일 상단 박스 */
-                      <div className="border-b-2 border-slate-900 pb-3">
+                      <div className={`border-b-2 border-slate-900 ${headerDensity === 'compact' ? 'pb-2' : 'pb-3'}`}>
                         <div className="flex items-start justify-between">
-                          <div className="space-y-1">
+                          <div className="space-y-1 pr-3">
                             
                             {/* 학원명 & 시험구분 칩 결합 헤더 라인 */}
                             {(showAcademyName && academyName) || selectedChip ? (
@@ -1826,9 +2021,47 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                               </div>
                             ) : null}
 
-                            <h1 className="text-xl font-black text-slate-900 tracking-tight leading-snug">
-                              {exam.title}
+                            {/* 🏷️ 소형 회차 아이브로우 뱃지 (제목 상단 분리) */}
+                            {(() => {
+                              const parsed = parseExamRoundAndBaseTitle(exam.title);
+                              const isTreasure = Boolean(exam.is_treasure_hunt || parsed.isTreasure);
+                              const roundNum = exam.wrong_round || parsed.currentRound;
+
+                              if (!(isTreasure || exam.is_wrong_review || roundNum > 0)) return null;
+
+                              return (
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                  {isTreasure ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-950 border border-amber-300">
+                                      <Sparkles size={11} className="fill-amber-600 text-amber-600" />
+                                      <span>보물회수 {roundNum > 0 ? `${roundNum}회차` : ''}</span>
+                                      {parsed.isTwin && <span className="opacity-80">• 쌍둥이(변형)</span>}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-950 border border-rose-300">
+                                      <RotateCcw size={10} />
+                                      <span>오답 {roundNum > 0 ? `${roundNum}회차` : '클리닉'}</span>
+                                      {parsed.isTwin && <span className="opacity-80">• 쌍둥이(변형)</span>}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* 시험지 메인 타이틀 (크기 옵션 연동 & 순수 타이틀 출력) */}
+                            <h1 className={`font-black text-slate-900 tracking-tight ${
+                              titleFontSize === 'small'
+                                ? 'text-base leading-snug'
+                                : titleFontSize === 'large'
+                                ? 'text-2xl leading-tight'
+                                : 'text-xl leading-snug'
+                            }`}>
+                              {(() => {
+                                const parsed = parseExamRoundAndBaseTitle(exam.title);
+                                return exam.base_exam_title || parsed.cleanBaseTitle;
+                              })()}
                             </h1>
+
                             <div className="flex items-center gap-3 text-xs font-semibold text-slate-600">
                               <span>학년: <strong>{exam.grade}</strong></span>
                               <span>•</span>
@@ -1840,20 +2073,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                             </div>
                           </div>
 
-                          {/* 수험자 기재란 박스 */}
+                          {/* 수험자 기재란 박스 (반 / 성명 자동 기재 & 슬림 밀도 연동) */}
                           {showHeaderInfo && (
                             <div className="border border-slate-900 rounded-md overflow-hidden text-xs shrink-0 self-start">
                               <table className="border-collapse text-center">
                                 <tbody>
                                   <tr className="border-b border-slate-300 bg-slate-50">
-                                    <th className="px-3 py-1 font-bold text-slate-700 border-r border-slate-300">반</th>
-                                    <th className="px-4 py-1 font-bold text-slate-700 border-r border-slate-300">성 명</th>
-                                    <th className="px-3 py-1 font-bold text-slate-700">점 수</th>
+                                    <th className={`px-2.5 ${headerDensity === 'compact' ? 'py-0.5 text-[10px]' : 'py-1 text-xs'} font-bold text-slate-700 border-r border-slate-300`}>반</th>
+                                    <th className={`px-3.5 ${headerDensity === 'compact' ? 'py-0.5 text-[10px]' : 'py-1 text-xs'} font-bold text-slate-700 border-r border-slate-300`}>성 명</th>
+                                    <th className={`px-2.5 ${headerDensity === 'compact' ? 'py-0.5 text-[10px]' : 'py-1 text-xs'} font-bold text-slate-700`}>점 수</th>
                                   </tr>
                                   <tr>
-                                    <td className="h-8 border-r border-slate-300 w-16"></td>
-                                    <td className="h-8 border-r border-slate-300 w-24"></td>
-                                    <td className="h-8 w-16 text-[10px] text-slate-400 font-mono align-bottom pb-1">
+                                    <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-16 font-bold text-slate-800`}>
+                                      {showClassName ? customClassName : ''}
+                                    </td>
+                                    <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-24 font-black text-slate-950`}>
+                                      {showStudentName ? customStudentName : ''}
+                                    </td>
+                                    <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[9px]' : 'h-8 text-[10px]'} w-16 text-slate-400 font-mono align-bottom pb-1`}>
                                       / 100
                                     </td>
                                   </tr>
@@ -1866,7 +2103,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam }: ExamPrintModal
                     ) : (
                       /* 2페이지 이후 간이 러닝 헤더 */
                       <div className="border-b border-slate-300 pb-1.5 flex items-center justify-between text-xs text-slate-500 font-bold">
-                        <span>{exam.title} ({exam.grade})</span>
+                        <span>
+                          {(() => {
+                            const parsed = parseExamRoundAndBaseTitle(exam.title);
+                            return exam.base_exam_title || parsed.cleanBaseTitle;
+                          })()} ({exam.grade})
+                        </span>
                         <span>
                           {showAcademyName && academyName
                             ? academyName

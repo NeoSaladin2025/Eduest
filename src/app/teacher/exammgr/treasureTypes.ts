@@ -102,3 +102,62 @@ export function shuffleArray<T>(array: T[]): T[] {
   }
   return result;
 }
+
+// 🏷️ 시험지 제목에서 오답/보물회수 N회차 및 순수 원본 제목 파싱 헬퍼
+export interface ParsedExamTitleInfo {
+  cleanBaseTitle: string;
+  currentRound: number;
+  nextRound: number;
+  isWrong: boolean;
+  isTreasure: boolean;
+  isTwin: boolean;
+  studentName?: string;
+}
+
+export function parseExamRoundAndBaseTitle(title: string): ParsedExamTitleInfo {
+  let t = (title || '').trim();
+
+  // 1. 끝에 붙은 (학생이름) 또는 [학생이름] 추출 및 제거
+  let studentName: string | undefined = undefined;
+  const studentMatch = t.match(/[\(\[]([가-힣a-zA-Z0-9\s]{2,10})[\)\]]\s*$/);
+  if (studentMatch && studentMatch[1]) {
+    const candidate = studentMatch[1].trim();
+    if (!candidate.match(/(?:오답|보물|쌍둥이|회차|차|스페셜)/)) {
+      studentName = candidate;
+      t = t.replace(/[\(\[][가-힣a-zA-Z0-9\s]{2,10}[\)\]]\s*$/, '').trim();
+    }
+  }
+
+  const isTreasure = t.includes('보물');
+  const isTwin = t.includes('쌍둥이');
+  const isWrong = t.includes('오답') || isTreasure;
+
+  // 2. 기존 회차 숫자 파싱 (예: [오답 2회차], [보물회수 3차], 오답 1회차 등)
+  const roundMatch = t.match(/(?:오답|보물회수|보물)[^\]\d]*?(\d+)\s*(?:회차|차)/i);
+  let currentRound = 0;
+  if (roundMatch && roundMatch[1]) {
+    currentRound = parseInt(roundMatch[1], 10);
+  } else {
+    // 회차 숫자가 없는 단일 [오답] 또는 [보물회수] 개수 카운트
+    const count = (t.match(/\[?(?:오답|보물회수|보물)\]?/g) || []).length;
+    currentRound = count;
+  }
+
+  // 3. 기존 모든 오답/보물회수 태그 제거하여 순수 원본 타이틀 획득
+  let cleanBaseTitle = t
+    .replace(/\[?(?:오답|보물회수|보물)(?:·쌍둥이)?(?:\s*\d+\s*(?:회차|차))?\]?\s*/gi, '')
+    .trim();
+
+  // 대괄호 찌꺼기 정리
+  cleanBaseTitle = cleanBaseTitle.replace(/^\[\s*\]\s*/, '').trim();
+
+  return {
+    cleanBaseTitle: cleanBaseTitle || title,
+    currentRound,
+    nextRound: currentRound > 0 ? currentRound + 1 : 1,
+    isWrong,
+    isTreasure,
+    isTwin,
+    studentName,
+  };
+}

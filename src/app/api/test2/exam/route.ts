@@ -69,6 +69,10 @@ export interface ExamPaper {
   student_overrides?: Record<string, StudentOverrideConfig>;
   parent_exam_id?: string;
   filter_chip_ids?: string[];
+  wrong_round?: number;
+  base_exam_title?: string;
+  target_student_name?: string;
+  target_student_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -221,7 +225,11 @@ export async function POST(req: NextRequest) {
       remind_popup,
       student_overrides,
       parent_exam_id,
-      filter_chip_ids
+      filter_chip_ids,
+      wrong_round,
+      base_exam_title,
+      target_student_name,
+      target_student_id
     } = body;
 
     if (!title || !questions || !Array.isArray(questions) || questions.length === 0) {
@@ -267,6 +275,10 @@ export async function POST(req: NextRequest) {
       student_overrides: typeof student_overrides === 'object' && student_overrides !== null ? student_overrides : {},
       parent_exam_id: parent_exam_id || undefined,
       filter_chip_ids: Array.isArray(filter_chip_ids) ? filter_chip_ids : [],
+      wrong_round: typeof wrong_round === 'number' ? wrong_round : undefined,
+      base_exam_title: typeof base_exam_title === 'string' ? base_exam_title : undefined,
+      target_student_name: typeof target_student_name === 'string' ? target_student_name : undefined,
+      target_student_id: typeof target_student_id === 'string' ? target_student_id : undefined,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };

@@ -40,7 +40,7 @@ import { supabase } from '@/lib/supabase';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
 import ZoomableImageViewer from './ZoomableImageViewer';
-import { calculateRoundDuration, shuffleArray } from '@/app/teacher/exammgr/treasureTypes';
+import { calculateRoundDuration, shuffleArray, parseExamRoundAndBaseTitle } from '@/app/teacher/exammgr/treasureTypes';
 
 interface StudentTest2ViewProps {
   studentId: string;
@@ -1723,14 +1723,31 @@ export default function StudentTest2View({
                           )}
                         </div>
 
-                        <div>
-                          <h3 className="text-2xl font-black text-white group-hover:text-rose-400 transition-colors line-clamp-2 leading-tight">
-                            {exam.title}
-                          </h3>
-                          <p className="text-xs text-slate-500 font-bold mt-2">
-                            오답 문항 총 {exam.question_count}문제 • {exam.duration_min > 0 ? `제한시간 ${exam.duration_min}분` : '제한시간 무제한'}
-                          </p>
-                        </div>
+                        {(() => {
+                          const parsed = parseExamRoundAndBaseTitle(exam.title);
+                          const roundNum = exam.wrong_round || parsed.currentRound;
+                          const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+
+                          return (
+                            <div>
+                              {roundNum > 0 && (
+                                <div className="mb-1.5">
+                                  <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
+                                    <RotateCcw size={10} />
+                                    <span>오답 {roundNum}회차</span>
+                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                  </span>
+                                </div>
+                              )}
+                              <h3 className="text-2xl font-black text-white group-hover:text-rose-400 transition-colors line-clamp-2 leading-tight" title={cleanDisplayTitle}>
+                                {cleanDisplayTitle}
+                              </h3>
+                              <p className="text-xs text-slate-500 font-bold mt-2">
+                                오답 문항 총 {exam.question_count}문제 • {exam.duration_min > 0 ? `제한시간 ${exam.duration_min}분` : '제한시간 무제한'}
+                              </p>
+                            </div>
+                          );
+                        })()}
 
                         {isSubmitted && exam.submission && (
                           <div className="bg-white/5 rounded-2xl p-3 flex items-center justify-between border border-white/5 text-xs">
@@ -1831,28 +1848,45 @@ export default function StudentTest2View({
                           )}
                         </div>
 
-                        <div>
-                          <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2">
-                            {exam.title}
-                          </h3>
-                          <p className="text-xs text-amber-300/70 font-bold mt-2 flex items-center gap-2 flex-wrap">
-                            <span>💎 보물 문항 총 {exam.question_count}문제</span>
-                            <span>•</span>
-                            <span>{exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한'}</span>
-                            {Boolean(exam.treasure_config?.total_rounds || exam.treasure_config?.repeat_rounds) && (
-                              <>
+                        {(() => {
+                          const parsed = parseExamRoundAndBaseTitle(exam.title);
+                          const roundNum = exam.wrong_round || parsed.currentRound;
+                          const cleanDisplayTitle = exam.base_exam_title || parsed.cleanBaseTitle;
+
+                          return (
+                            <div>
+                              {roundNum > 0 && (
+                                <div className="mb-1.5">
+                                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
+                                    <Sparkles size={10} className="fill-amber-300 text-amber-300" />
+                                    <span>💎 보물회수 {roundNum}회차</span>
+                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                  </span>
+                                </div>
+                              )}
+                              <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2" title={cleanDisplayTitle}>
+                                {cleanDisplayTitle}
+                              </h3>
+                              <p className="text-xs text-amber-300/70 font-bold mt-2 flex items-center gap-2 flex-wrap">
+                                <span>💎 보물 문항 총 {exam.question_count}문제</span>
                                 <span>•</span>
-                                <span className="text-amber-200">🔁 총 {exam.treasure_config.total_rounds || exam.treasure_config.repeat_rounds}회차 코스</span>
-                              </>
-                            )}
-                            {Boolean(exam.treasure_config?.enable_shuffle || exam.treasure_config?.enable_mixing) && (
-                              <>
-                                <span>•</span>
-                                <span className="text-amber-300">🔀 문항 믹싱</span>
-                              </>
-                            )}
-                          </p>
-                        </div>
+                                <span>{exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한'}</span>
+                                {Boolean(exam.treasure_config?.total_rounds || exam.treasure_config?.repeat_rounds) && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-amber-200">🔁 총 {exam.treasure_config.total_rounds || exam.treasure_config.repeat_rounds}회차 코스</span>
+                                  </>
+                                )}
+                                {Boolean(exam.treasure_config?.enable_shuffle || exam.treasure_config?.enable_mixing) && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-amber-300">🔀 문항 믹싱</span>
+                                  </>
+                                )}
+                              </p>
+                            </div>
+                          );
+                        })()}
 
                         {isSubmitted && exam.submission && (
                           <div className="bg-amber-500/10 rounded-2xl p-3 flex items-center justify-between border border-amber-400/20 text-xs">
