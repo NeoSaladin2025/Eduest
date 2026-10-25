@@ -204,6 +204,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [selectedAdjustIndices, setSelectedAdjustIndices] = useState<Set<number>>(new Set());
   // 🌟 [신규] 배점 템플릿 모달 상태
   const [isScoreTemplateModalOpen, setIsScoreTemplateModalOpen] = useState(false);
+  // 🌟 [신규] 특정 문항 유형 하이라이트 상태 ('ALL' | 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE')
+  const [highlightQuestionType, setHighlightQuestionType] = useState<'ALL' | 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE'>('ALL');
 
   // 🌟 문항별 단독 병렬 재추출 상태 및 비교 모달 상태
   const [reExtractingIds, setReExtractingIds] = useState<Set<string>>(new Set());
@@ -1033,6 +1035,41 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const totalPoints = useMemo(() => Math.round(totalPoints10) / 10, [totalPoints10]);
   const pointsDiff10 = useMemo(() => 1000 - totalPoints10, [totalPoints10]); // 100.0 * 10 = 1000
   const pointsDiff = useMemo(() => Math.round(pointsDiff10) / 10, [pointsDiff10]);
+
+  // 🌟 [유형 상황] 객관식, 단답형, 서술형 문항 수 및 배점 실시간 통계 (10배 정수 연산)
+  const questionTypeStats = useMemo(() => {
+    let multipleCount = 0;
+    let multiplePoints10 = 0;
+    let shortCount = 0;
+    let shortPoints10 = 0;
+    let descriptiveCount = 0;
+    let descriptivePoints10 = 0;
+
+    extractedQuestions.forEach((q) => {
+      const p10 = Math.round((Number(q.points) || 0) * 10);
+      const isDescriptive = q.question_type === 'DESCRIPTIVE' || !!q.is_descriptive;
+      const isMultiple = q.question_type === 'MULTIPLE' || (!q.question_type && !isDescriptive && /^[1-5]$/.test(String(q.answer || '').trim()));
+
+      if (isDescriptive) {
+        descriptiveCount++;
+        descriptivePoints10 += p10;
+      } else if (isMultiple) {
+        multipleCount++;
+        multiplePoints10 += p10;
+      } else {
+        shortCount++;
+        shortPoints10 += p10;
+      }
+    });
+
+    return {
+      multiple: { count: multipleCount, points: Math.round(multiplePoints10) / 10 },
+      short: { count: shortCount, points: Math.round(shortPoints10) / 10 },
+      descriptive: { count: descriptiveCount, points: Math.round(descriptivePoints10) / 10 },
+      totalCount: extractedQuestions.length,
+      totalPoints: Math.round(totalPoints10) / 10,
+    };
+  }, [extractedQuestions, totalPoints10]);
 
   // 문항별 배점 수동 직접 수정
   const handleUpdateQuestionPoints = (qIndex: number, newPoints: number) => {
@@ -4410,6 +4447,95 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     </div>
                   </div>
 
+                  {/* 🌟 [유형 상황] 객관식, 단답형, 서술형 문항 수 및 배점 실시간 정보 바 */}
+                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {/* 유형 상황 라벨 */}
+                      <span className="font-black text-slate-700 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 shadow-2xs">
+                        <Layers size={13} className="text-violet-600" />
+                        <span>유형 상황</span>
+                      </span>
+
+                      {/* 객관식 뱃지 */}
+                      <button
+                        type="button"
+                        onClick={() => setHighlightQuestionType(prev => prev === 'MULTIPLE' ? 'ALL' : 'MULTIPLE')}
+                        className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                          highlightQuestionType === 'MULTIPLE'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs font-black ring-2 ring-indigo-300'
+                            : 'bg-indigo-50/80 text-indigo-800 border-indigo-200 hover:bg-indigo-100'
+                        }`}
+                        title="클릭 시 객관식 문항만 강조"
+                      >
+                        <span className={`w-2 h-2 rounded-full ${highlightQuestionType === 'MULTIPLE' ? 'bg-white' : 'bg-indigo-600'}`}></span>
+                        <span>객관식</span>
+                        <strong className="font-black">({questionTypeStats.multiple.count}문항)</strong>
+                        <span className={`text-[10px] ${highlightQuestionType === 'MULTIPLE' ? 'text-indigo-100' : 'text-indigo-600 font-semibold'}`}>
+                          {questionTypeStats.multiple.points.toFixed(1)}점
+                        </span>
+                      </button>
+
+                      {/* 단답형 뱃지 */}
+                      <button
+                        type="button"
+                        onClick={() => setHighlightQuestionType(prev => prev === 'SHORT' ? 'ALL' : 'SHORT')}
+                        className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                          highlightQuestionType === 'SHORT'
+                            ? 'bg-violet-600 text-white border-violet-600 shadow-xs font-black ring-2 ring-violet-300'
+                            : 'bg-violet-50/80 text-violet-800 border-violet-200 hover:bg-violet-100'
+                        }`}
+                        title="클릭 시 단답형 문항만 강조"
+                      >
+                        <span className={`w-2 h-2 rounded-full ${highlightQuestionType === 'SHORT' ? 'bg-white' : 'bg-violet-600'}`}></span>
+                        <span>단답형</span>
+                        <strong className="font-black">({questionTypeStats.short.count}문항)</strong>
+                        <span className={`text-[10px] ${highlightQuestionType === 'SHORT' ? 'text-violet-100' : 'text-violet-600 font-semibold'}`}>
+                          {questionTypeStats.short.points.toFixed(1)}점
+                        </span>
+                      </button>
+
+                      {/* 서술형 뱃지 */}
+                      <button
+                        type="button"
+                        onClick={() => setHighlightQuestionType(prev => prev === 'DESCRIPTIVE' ? 'ALL' : 'DESCRIPTIVE')}
+                        className={`px-3 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                          highlightQuestionType === 'DESCRIPTIVE'
+                            ? 'bg-amber-600 text-white border-amber-600 shadow-xs font-black ring-2 ring-amber-300'
+                            : 'bg-amber-50/80 text-amber-900 border-amber-300 hover:bg-amber-100'
+                        }`}
+                        title="클릭 시 서술형 문항만 강조"
+                      >
+                        <span className={`w-2 h-2 rounded-full ${highlightQuestionType === 'DESCRIPTIVE' ? 'bg-white' : 'bg-amber-600'}`}></span>
+                        <span>서술형</span>
+                        <strong className="font-black">({questionTypeStats.descriptive.count}문항)</strong>
+                        <span className={`text-[10px] ${highlightQuestionType === 'DESCRIPTIVE' ? 'text-amber-100' : 'text-amber-800 font-semibold'}`}>
+                          {questionTypeStats.descriptive.points.toFixed(1)}점
+                        </span>
+                      </button>
+
+                      {/* 하이라이트 활성 시 전체보기 해제 버튼 */}
+                      {highlightQuestionType !== 'ALL' && (
+                        <button
+                          type="button"
+                          onClick={() => setHighlightQuestionType('ALL')}
+                          className="px-2 py-1 rounded-lg text-[10px] font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                        >
+                          ✕ 필터 해제
+                        </button>
+                      )}
+                    </div>
+
+                    {/* 총 문항 및 총 배점 실시간 요약 */}
+                    <div className="flex items-center gap-2">
+                      <div className="px-3 py-1 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold text-[11px] flex items-center gap-1.5 shadow-2xs">
+                        <FileText size={12} className="text-slate-500" />
+                        <span>총 <strong className="font-black text-slate-900">{questionTypeStats.totalCount}문항</strong></span>
+                        <span className="text-slate-300">|</span>
+                        <span>배점합 <strong className="font-black text-violet-700">{questionTypeStats.totalPoints.toFixed(1)}점</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
                   {/* 보정 활성 상태 안내 배너 */}
                   {adjustMode !== 'none' && (
                     <div className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-between gap-3 flex-wrap ${
@@ -4462,24 +4588,35 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {extractedQuestions.map((q, idx) => (
-                    <div
-                      key={q.id || idx}
-                      onClick={() => {
-                        if (adjustMode !== 'none') {
-                          handleToggleAdjustQuestion(idx);
-                        }
-                      }}
-                      className={`bg-white p-3.5 rounded-xl border shadow-xs space-y-2.5 text-xs transition-all relative ${
-                        adjustMode !== 'none'
-                          ? 'cursor-pointer hover:border-violet-400'
-                          : ''
-                      } ${
-                        selectedAdjustIndices.has(idx)
-                          ? 'ring-2 ring-violet-500 border-violet-500 bg-violet-50/30 shadow-md'
-                          : 'border-violet-100'
-                      }`}
-                    >
+                  {extractedQuestions.map((q, idx) => {
+                    const isDescriptive = q.question_type === 'DESCRIPTIVE' || !!q.is_descriptive;
+                    const isMultiple = q.question_type === 'MULTIPLE' || (!q.question_type && !isDescriptive && /^[1-5]$/.test(String(q.answer || '').trim()));
+                    const currentType = isDescriptive ? 'DESCRIPTIVE' : isMultiple ? 'MULTIPLE' : 'SHORT';
+                    const isTypeMatched = highlightQuestionType === 'ALL' || highlightQuestionType === currentType;
+                    const isTypeDimmed = highlightQuestionType !== 'ALL' && !isTypeMatched;
+
+                    return (
+                      <div
+                        key={q.id || idx}
+                        onClick={() => {
+                          if (adjustMode !== 'none') {
+                            handleToggleAdjustQuestion(idx);
+                          }
+                        }}
+                        className={`bg-white p-3.5 rounded-xl border shadow-xs space-y-2.5 text-xs transition-all relative ${
+                          adjustMode !== 'none'
+                            ? 'cursor-pointer hover:border-violet-400'
+                            : ''
+                        } ${
+                          selectedAdjustIndices.has(idx)
+                            ? 'ring-2 ring-violet-500 border-violet-500 bg-violet-50/30 shadow-md'
+                            : isTypeDimmed
+                            ? 'border-slate-200 opacity-40 grayscale-30'
+                            : highlightQuestionType !== 'ALL' && isTypeMatched
+                            ? 'ring-2 ring-violet-400 border-violet-400 bg-violet-50/20 shadow-md'
+                            : 'border-violet-100'
+                        }`}
+                      >
                       {/* 문항 헤더: 번호 및 유형 세그먼트 */}
                       <div className="flex items-center justify-between gap-1 flex-wrap">
                         <div className="flex items-center gap-1.5">
@@ -4784,7 +4921,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
                       )}
                     </div>
-                  ))}
+                  );
+                })}
                 </div>
               </div>
             )}
