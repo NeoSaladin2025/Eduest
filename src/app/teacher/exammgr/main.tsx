@@ -2542,7 +2542,36 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
               {/* 하단 서브 필터: 필터칩 (다중 선택 지원) & 미분류 & 즐겨찾기 프리셋 툴바 */}
               {(() => {
-                const uncategorizedCount = exams.filter(
+                // 🌟 [사용자 요청] 학년 및 학생 필터 조건이 반영된 시험지 목록(Scoped Exams)을 기준으로 분류 카운트 산출
+                const scopedExams = exams.filter(exam => {
+                  if (examListGradeFilter !== 'ALL' && exam.grade !== examListGradeFilter) {
+                    return false;
+                  }
+                  if (selectedStudentFilterId !== 'ALL') {
+                    if (!exam.assigned_student_ids || !exam.assigned_student_ids.includes(selectedStudentFilterId)) {
+                      return false;
+                    }
+                  }
+                  if (appliedExamSearch.trim()) {
+                    if (!exam.title.toLowerCase().includes(appliedExamSearch.trim().toLowerCase())) {
+                      return false;
+                    }
+                  }
+                  return true;
+                });
+
+                const scopeLabel = (() => {
+                  if (selectedStudentFilterId !== 'ALL') {
+                    const st = students.find(s => s.id === selectedStudentFilterId);
+                    return st ? `${st.name} 학생` : '선택 학생';
+                  }
+                  if (examListGradeFilter !== 'ALL') {
+                    return examListGradeFilter;
+                  }
+                  return null;
+                })();
+
+                const uncategorizedCount = scopedExams.filter(
                   e => !Array.isArray(e.filter_chip_ids) || e.filter_chip_ids.length === 0
                 ).length;
                 const isAllSelected = selectedFilterChipIds.length === 0 && !isUncategorizedFilter;
@@ -2560,8 +2589,14 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     {/* 1행: 분류 필터 바 */}
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-400 mr-1 flex items-center gap-1">
-                          <span>분류:</span>
+                        <span className="font-bold text-slate-400 mr-1 flex items-center gap-1.5">
+                          <span>분류</span>
+                          {scopeLabel && (
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/80 shadow-2xs">
+                              {scopeLabel} 기준
+                            </span>
+                          )}
+                          <span>:</span>
                         </span>
 
                         {/* 전체 칩 (모든 필터 해제) */}
@@ -2574,7 +2609,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               : 'text-slate-500 hover:bg-slate-100'
                           }`}
                         >
-                          전체 ({exams.length})
+                          전체 ({scopedExams.length})
                         </button>
 
                         {/* 등록된 커스텀 필터칩들 목록 렌더링 (다중 선택 토글) */}
@@ -2582,11 +2617,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           const isSelected = selectedFilterChipIds.includes(chip.id);
                           let matchCount = 0;
                           if (chip.id === 'chip_default_normal') {
-                            matchCount = exams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length;
+                            matchCount = scopedExams.filter(e => !(e.is_wrong_review || e.title.startsWith('[오답]'))).length;
                           } else if (chip.id === 'chip_default_wrong') {
-                            matchCount = exams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length;
+                            matchCount = scopedExams.filter(e => e.is_wrong_review || e.title.startsWith('[오답]')).length;
                           } else {
-                            matchCount = exams.filter(e => Array.isArray(e.filter_chip_ids) && e.filter_chip_ids.includes(chip.id)).length;
+                            matchCount = scopedExams.filter(e => Array.isArray(e.filter_chip_ids) && e.filter_chip_ids.includes(chip.id)).length;
                           }
 
                           return (
@@ -2596,6 +2631,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               size="sm"
                               isActive={isSelected}
                               count={matchCount}
+                              className={matchCount === 0 && !isSelected ? 'opacity-40 grayscale-40' : ''}
                               onClick={() => handleToggleFilterChip(chip.id)}
                             />
                           );
@@ -2608,6 +2644,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           className={`px-2.5 py-1 rounded-lg font-bold text-[11px] transition-all cursor-pointer border flex items-center gap-1 ${
                             isUncategorizedFilter
                               ? 'bg-slate-700 text-white border-slate-700 shadow-xs font-black'
+                              : uncategorizedCount === 0
+                              ? 'bg-white text-slate-300 border-slate-200 opacity-40 grayscale-40'
                               : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
                           }`}
                           title="분류 필터칩이 지정되지 않은 시험지만 모아보기"
