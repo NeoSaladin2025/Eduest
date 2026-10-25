@@ -12,6 +12,8 @@ interface StudentSessionGuardOptions {
   // 설정값 (기본: 10분 = 600,000ms, 경고: 만료 1분 전 = 60,000ms)
   timeoutMs?: number;
   warningMs?: number;
+  // 🌟 시험 중(test) 또는 동영상 시청 중(video) 무입력 자동 로그아웃 일시정지 옵션
+  pauseInactivityTimeout?: boolean;
 }
 
 export function useStudentSessionGuard({
@@ -21,6 +23,7 @@ export function useStudentSessionGuard({
   onLogout,
   timeoutMs = 10 * 60 * 1000, // 10분
   warningMs = 60 * 1000,      // 1분 전 경고
+  pauseInactivityTimeout = false,
 }: StudentSessionGuardOptions) {
   // 모달 상태
   const [showInactivityWarning, setShowInactivityWarning] = useState(false);
@@ -75,6 +78,15 @@ export function useStudentSessionGuard({
 
   // 2. [기능 1] 10분 무입력 타이머
   useEffect(() => {
+    // 🌟 [시험 & 영상강의 보호] 시험 중이거나 동영상 시청 중일 때는 10분 무입력 타이머 및 경고창을 일시정지!
+    if (pauseInactivityTimeout) {
+      if (showInactivityWarning) {
+        setShowInactivityWarning(false);
+      }
+      lastActivityTimeRef.current = Date.now();
+      return;
+    }
+
     if (!enabled || !studentId || kickedOutReason) return;
 
     // 감지 이벤트 등록
@@ -114,7 +126,7 @@ export function useStudentSessionGuard({
       });
       clearInterval(interval);
     };
-  }, [enabled, studentId, timeoutMs, warningMs, kickedOutReason, registerUserActivity, showInactivityWarning, onLogout]);
+  }, [enabled, studentId, timeoutMs, warningMs, kickedOutReason, registerUserActivity, showInactivityWarning, onLogout, pauseInactivityTimeout]);
 
   // 3. [기능 2] 단일 세션 (1계정당 1개 로그인 - 다른 기기에서 로그인 시 기존 기기 자동 로그아웃)
   useEffect(() => {

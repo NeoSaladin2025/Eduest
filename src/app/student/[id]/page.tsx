@@ -124,10 +124,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [pwdErrorMsg, setPwdErrorMsg] = useState('');
 
   // 🛡️ 10분 무입력 자동 로그아웃 및 1계정 1로그인(단일 세션) 실시간 감지
+  // 🌟 [시험 & 인강 집중 모드] 시험(test) 및 영상강의(video) 학습 중에는 10분 무입력 자동 로그아웃을 정지하여 화면 가림/잠금 방지!
   const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
     studentId: student?.id,
     studentName: student?.name,
     enabled: !!student?.id && (!student?.has_password && !student?.password || pwdVerified),
+    pauseInactivityTimeout: mode === 'test' || mode === 'video',
     onLogout: () => {
       setPwdVerified(false);
     },
