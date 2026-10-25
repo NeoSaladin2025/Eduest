@@ -23,7 +23,8 @@ import {
   Check,
   X,
   UserPlus,
-  SlidersHorizontal
+  SlidersHorizontal,
+  PlaySquare
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -31,7 +32,7 @@ export interface StudentActivity {
   student_id: string;
   student_name: string;
   student_grade: string;
-  mode: 'library' | 'review' | 'homework' | 'idle' | 'test';
+  mode: 'library' | 'review' | 'homework' | 'idle' | 'test' | 'video';
   location_title: string;
   sub_detail?: string;
   is_away: boolean;
@@ -162,6 +163,48 @@ export default function DailyActivityMonitoringTab({
     }
   }, []);
 
+  // 🌟 [최초 로드 즉시 동기화] DB에서 이미 시험 중(TESTING / AWAY)인 학생 상태 즉시 수집
+  useEffect(() => {
+    const fetchActiveTestingStudents = async () => {
+      try {
+        const { data } = await supabase
+          .from('students')
+          .select('id, name, grade, test_status, test_remaining_sec, current_exam_title, current_bundle_title, current_round, updated_at, last_away_at')
+          .in('test_status', ['TESTING', 'AWAY']);
+
+        if (data && data.length > 0) {
+          setLiveMap((prev) => {
+            const next = { ...prev };
+            data.forEach((s: any) => {
+              const isAway = s.test_status === 'AWAY';
+              next[s.id] = {
+                ...(next[s.id] || {}),
+                student_id: s.id,
+                student_name: s.name,
+                student_grade: s.grade,
+                mode: 'test',
+                location_title: `시험: ${s.current_bundle_title ? `[${s.current_bundle_title}] ` : ''}${s.current_exam_title || '테스트 진행 중'}`,
+                is_away: isAway,
+                exam_title: s.current_exam_title,
+                bundle_title: s.current_bundle_title,
+                round: s.current_round,
+                test_status: s.test_status,
+                test_remaining_sec: s.test_remaining_sec,
+                entered_at: Date.now(),
+                updated_at: s.updated_at || new Date().toISOString(),
+              };
+            });
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error('Failed to pre-fetch testing students:', err);
+      }
+    };
+
+    fetchActiveTestingStudents();
+  }, []);
+
   // 📡 Supabase Realtime 'proctoring_room' 채널 구독
   const channelRef = useRef<any>(null);
 
@@ -227,7 +270,7 @@ export default function DailyActivityMonitoringTab({
             student_name: p.student_name || existing.student_name,
             student_grade: p.student_grade || existing.student_grade,
             mode: 'test',
-            location_title: `시험: ${p.exam_title || p.bundle_title || '테스트'}`,
+            location_title: `시험: ${p.bundle_title ? `[${p.bundle_title}] ` : ''}${p.exam_title || '테스트 진행 중'}`,
             is_away: isAway,
             exam_title: p.exam_title,
             bundle_title: p.bundle_title,
@@ -240,6 +283,49 @@ export default function DailyActivityMonitoringTab({
           },
         };
       });
+    });
+
+    // 3. Supabase DB 변경 실시간 감지 (시험 상태 동기화)
+    channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
+      const student = payload.new;
+      if (!student || !student.id) return;
+
+      if (student.test_status === 'TESTING' || student.test_status === 'AWAY') {
+        const isAway = student.test_status === 'AWAY';
+        setLiveMap((prev) => {
+          const existing = prev[student.id];
+          return {
+            ...prev,
+            [student.id]: {
+              ...(existing || {}),
+              student_id: student.id,
+              student_name: student.name || existing?.student_name,
+              student_grade: student.grade || existing?.student_grade,
+              mode: 'test',
+              location_title: `시험: ${student.current_bundle_title ? `[${student.current_bundle_title}] ` : ''}${student.current_exam_title || '테스트 진행 중'}`,
+              is_away: isAway,
+              exam_title: student.current_exam_title,
+              bundle_title: student.current_bundle_title,
+              round: student.current_round,
+              test_status: student.test_status,
+              test_remaining_sec: student.test_remaining_sec,
+              entered_at: existing?.entered_at || Date.now(),
+              updated_at: student.updated_at || new Date().toISOString(),
+            },
+          };
+        });
+      } else if (student.test_status === 'IDLE' || student.test_status === 'FINISHED') {
+        setLiveMap((prev) => {
+          if (!prev[student.id]) return prev;
+          return {
+            ...prev,
+            [student.id]: {
+              ...prev[student.id],
+              test_status: student.test_status,
+            },
+          };
+        });
+      }
     });
 
     channel.subscribe((status: string) => {
@@ -745,6 +831,12 @@ export default function DailyActivityMonitoringTab({
                             <Library size={14} className="text-indigo-600" />
                           ) : act?.mode === 'review' ? (
                             <BookOpen size={14} className="text-amber-600" />
+                          ) : act?.mode === 'video' ? (
+                            <PlaySquare size={14} className="text-rose-600" />
+                          ) : act?.mode === 'homework' ? (
+                            <BookOpen size={14} className="text-amber-600" />
+                          ) : act?.mode === 'test' ? (
+                            <FileCheck size={14} className="text-violet-600" />
                           ) : (
                             <Laptop size={14} className="text-slate-500" />
                           )}
@@ -753,8 +845,12 @@ export default function DailyActivityMonitoringTab({
                               ? '라이브러리'
                               : act?.mode === 'review'
                               ? '복습(Review)'
+                              : act?.mode === 'video'
+                              ? '영상강의 시청'
                               : act?.mode === 'homework'
                               ? '숙제'
+                              : act?.mode === 'test'
+                              ? '시험(Test)'
                               : '대시보드'}
                           </span>
                           {act?.sub_detail && (

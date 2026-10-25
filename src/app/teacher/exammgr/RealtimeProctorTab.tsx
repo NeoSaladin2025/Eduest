@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Users, 
   Search, 
@@ -34,6 +34,7 @@ interface Student {
   grade: string;
   test_status?: 'IDLE' | 'TESTING' | 'AWAY' | 'PAUSED' | 'FINISHED';
   test_remaining_sec?: number;
+  test_duration_min?: number;
   updated_at?: string;
   last_away_at?: string;
   current_exam_title?: string;
@@ -45,9 +46,10 @@ interface Student {
 
 interface RealtimeProctorTabProps {
   allStudents: Student[];
+  initialStudentId?: string;
 }
 
-export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabProps) {
+export default function RealtimeProctorTab({ allStudents, initialStudentId }: RealtimeProctorTabProps) {
   // 🌟 [세션 영구 보존] 모니터링 활성화 여부
   const [isMonitoring, setIsMonitoring] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -68,6 +70,14 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
     }
     return [];
   });
+
+  // 🌟 [일상 모니터링에서 넘어온 대상 학생 자동 등록 & 모니터링 활성화]
+  useEffect(() => {
+    if (initialStudentId) {
+      setSelectedStudentIds(prev => prev.includes(initialStudentId) ? prev : [...prev, initialStudentId]);
+      setIsMonitoring(true);
+    }
+  }, [initialStudentId]);
 
   const [gradeFilter, setGradeFilter] = useState('ALL');
   const [searchName, setSearchName] = useState('');
@@ -146,7 +156,7 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
     const fetchStudentsData = async () => {
       const { data } = await supabase
         .from('students')
-        .select('id, name, grade, test_status, test_remaining_sec, updated_at, last_away_at');
+        .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, current_exam_title, current_bundle_title, current_round, updated_at, last_away_at');
       if (data) {
         const map: Record<string, Student> = {};
         data.forEach((s: any) => {
@@ -156,6 +166,10 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
             grade: s.grade,
             test_status: s.test_status || 'IDLE',
             test_remaining_sec: s.test_remaining_sec || 0,
+            test_duration_min: s.test_duration_min,
+            current_exam_title: s.current_exam_title,
+            current_bundle_title: s.current_bundle_title,
+            current_round: s.current_round,
             updated_at: s.updated_at,
             last_away_at: s.last_away_at,
           };
@@ -199,9 +213,9 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
               ...existing,
               test_status: p.test_status,
               test_remaining_sec: p.test_remaining_sec,
-              current_exam_title: p.exam_title,
-              current_bundle_title: p.bundle_title,
-              current_round: p.round,
+              current_exam_title: p.exam_title || existing.current_exam_title,
+              current_bundle_title: p.bundle_title || existing.current_bundle_title,
+              current_round: p.round || existing.current_round,
               current_question_idx: p.question_idx,
               total_questions: p.total_questions,
               updated_at: p.updated_at,
@@ -233,6 +247,10 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
               ...existing,
               test_status: student.test_status,
               test_remaining_sec: student.test_remaining_sec,
+              test_duration_min: student.test_duration_min ?? existing.test_duration_min,
+              current_exam_title: student.current_exam_title ?? existing.current_exam_title,
+              current_bundle_title: student.current_bundle_title ?? existing.current_bundle_title,
+              current_round: student.current_round ?? existing.current_round,
               last_away_at: student.last_away_at,
               updated_at: student.updated_at,
             },
@@ -392,17 +410,31 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   };
 
+  // 🌟 [자동 등록] 시험을 시작한 학생(TESTING 또는 AWAY)은 수동 선택 여부와 무관하게 모니터링 목록에 실시간 자동 포함!
+  const activeTestingIds = useMemo(() => {
+    return Object.keys(liveStudentsMap).filter(id => {
+      const st = liveStudentsMap[id];
+      return st && (st.test_status === 'TESTING' || st.test_status === 'AWAY');
+    });
+  }, [liveStudentsMap]);
+
+  // 최종 모니터링 대상 ID 목록: 선생님이 수동 선택한 학생 + 실시간 시험 응시/이탈 중인 학생
+  const effectiveMonitoringIds = useMemo(() => {
+    const set = new Set(selectedStudentIds);
+    activeTestingIds.forEach(id => set.add(id));
+    return Array.from(set);
+  }, [selectedStudentIds, activeTestingIds]);
+
   // 모니터링 대상 학생 객체 배열
-  const monitoringStudents: Student[] = selectedStudentIds
+  const monitoringStudents: Student[] = effectiveMonitoringIds
     .map(id => liveStudentsMap[id] || allStudents.find(s => s.id === id))
     .filter(Boolean) as Student[];
 
-  // 🌟 실제 시험 정보가 있는 학생만 TESTING으로 인정하는 방어 로직 적용
   const counts = {
     total: monitoringStudents.length,
-    testing: monitoringStudents.filter(s => s.test_status === 'TESTING' && Boolean(s.current_exam_title || s.current_bundle_title)).length,
+    testing: monitoringStudents.filter(s => s.test_status === 'TESTING').length,
     away: monitoringStudents.filter(s => s.test_status === 'AWAY').length,
-    idle: monitoringStudents.filter(s => !s.test_status || s.test_status === 'IDLE' || (s.test_status === 'TESTING' && !s.current_exam_title && !s.current_bundle_title)).length,
+    idle: monitoringStudents.filter(s => !s.test_status || s.test_status === 'IDLE' || s.test_status === 'PAUSED').length,
     finished: monitoringStudents.filter(s => s.test_status === 'FINISHED').length,
   };
 
@@ -488,6 +520,29 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
       ───────────────────────────────────────────────────────────── */}
       {!isMonitoring ? (
         <div className="bg-white rounded-3xl border border-slate-200 p-8 space-y-6 shadow-sm">
+          {/* 🌟 현재 시험 응시 중인 학생이 있을 경우 즉각 모니터링 알림 배너 */}
+          {activeTestingIds.length > 0 && (
+            <div className="bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 p-4 rounded-2xl text-white flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg shadow-violet-500/20">
+              <div className="flex items-center gap-3">
+                <Sparkles size={20} className="text-amber-300 animate-bounce" />
+                <div>
+                  <p className="text-sm font-black">
+                    현재 {activeTestingIds.length}명의 학생이 시험에 응시 중입니다!
+                  </p>
+                  <p className="text-[11px] text-violet-200">
+                    실시간 시험 모니터링 화면으로 바로 진입하여 학생들의 진행 상태를 확인하세요.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsMonitoring(true)}
+                className="px-5 py-2.5 bg-white text-violet-700 hover:bg-violet-50 rounded-xl text-xs font-black transition-all shadow-sm shrink-0 cursor-pointer"
+              >
+                실시간 모니터링 바로가기 →
+              </button>
+            </div>
+          )}
+
           <div className="space-y-1">
             <h3 className="text-lg font-black text-slate-800">
               Step 1. 모니터링할 학생을 선택하세요
@@ -703,11 +758,8 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
             {monitoringStudents.map(student => {
               const live = liveStudentsMap[student.id] || student;
               const status = live.test_status || 'IDLE';
-              
-              // 🌟 [핵심 방어 로직] 실제 시험 정보(current_exam_title)가 없으면 TESTING이더라도 시험 전(대기)으로 안전 처리!
-              const hasActiveExam = Boolean(live.current_exam_title || live.current_bundle_title);
               const isAway = status === 'AWAY';
-              const isTesting = status === 'TESTING' && hasActiveExam;
+              const isTesting = status === 'TESTING';
               const isFinished = status === 'FINISHED';
               const isTreasure = Boolean(live.current_exam_title?.includes('보물') || live.current_exam_title?.includes('보물회수') || (live as any).is_treasure_hunt);
               const remainingSec = getCalculatedRemainingTime(live);
@@ -787,8 +839,8 @@ export default function RealtimeProctorTab({ allStudents }: RealtimeProctorTabPr
                         <FileCheck size={14} className="text-violet-600 shrink-0" />
                         <span className="truncate">
                           {live.current_bundle_title 
-                            ? `[${live.current_bundle_title}]` 
-                            : live.current_exam_title || '배정 시험지 대기 중'}
+                            ? `[${live.current_bundle_title}] ${live.current_exam_title || ''}` 
+                            : live.current_exam_title || (isTesting ? '시험 진행 중' : '배정 시험지 대기 중')}
                         </span>
                       </div>
 

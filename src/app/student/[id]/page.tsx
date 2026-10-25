@@ -192,13 +192,13 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   useEffect(() => {
     const isTestActive = menuConfig.test || menuConfig.test2;
     if (mode === 'test' && !isTestActive) {
-      const preferredOrder: ('review' | 'homework' | 'library')[] = ['review', 'homework', 'library'];
+      const preferredOrder: ('review' | 'homework' | 'library' | 'video')[] = ['review', 'homework', 'library', 'video'];
       const nextAvailable = preferredOrder.find(m => menuConfig[m]);
       if (nextAvailable) {
         setMode(nextAvailable);
       }
     } else if (mode !== 'test' && !menuConfig[mode]) {
-      const preferredOrder: ('review' | 'homework' | 'test' | 'library')[] = ['review', 'homework', 'test', 'library'];
+      const preferredOrder: ('review' | 'homework' | 'test' | 'library' | 'video')[] = ['review', 'homework', 'test', 'library', 'video'];
       const nextAvailable = preferredOrder.find(m => m === 'test' ? isTestActive : menuConfig[m]);
       if (nextAvailable) {
         setMode(nextAvailable);
@@ -209,6 +209,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   // 📡 [실시간 모니터링 센터] 일상 학습 활동 및 딴짓(자리 이탈) 실시간 추적 트래커
   const proctorChannelRef = useRef<any>(null);
   const debounceTimerRef = useRef<any>(null);
+  const blurCheckTimerRef = useRef<any>(null);
   const enteredAtRef = useRef<number>(Date.now());
   const isAwayRef = useRef<boolean>(false);
   const awayStartedAtRef = useRef<number | undefined>(undefined);
@@ -216,8 +217,15 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const computeCurrentLocation = useCallback(() => {
     if (mode === 'test') {
       return {
-        title: '테스트 응시 중',
-        subDetail: undefined,
+        title: '시험(Test) > 시험지 목록 탐색 중',
+        subDetail: '응시 대기',
+      };
+    }
+
+    if (mode === 'video') {
+      return {
+        title: '유용한 영상강의 시청 중',
+        subDetail: '동영상 학습',
       };
     }
 
@@ -341,10 +349,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       if (mode === 'test') return;
 
       if (document.hidden) {
+        if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
         isAwayRef.current = true;
         awayStartedAtRef.current = Date.now();
         sendActivityBroadcast(true, true);
       } else {
+        if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
         isAwayRef.current = false;
         awayStartedAtRef.current = undefined;
         sendActivityBroadcast(true, false);
@@ -353,13 +363,31 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
     const handleBlur = () => {
       if (mode === 'test') return;
-      isAwayRef.current = true;
-      if (!awayStartedAtRef.current) awayStartedAtRef.current = Date.now();
-      sendActivityBroadcast(true, true);
+      
+      // 🌟 [중요] 동영상(YouTube iframe / 내장 플레이어) 클릭 시 발생하는 window.blur 방어
+      // iframe으로 포커스가 넘어가더라도 학생은 동영상을 학습 중인 정상 상태임!
+      if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
+      blurCheckTimerRef.current = setTimeout(() => {
+        // 1) activeElement가 IFRAME인 경우 (유튜브/강의 플레이어 조작 중)
+        if (typeof document !== 'undefined' && document.activeElement && document.activeElement.tagName === 'IFRAME') {
+          return;
+        }
+        // 2) 영상 모드(video)이면서 탭이 여전히 보이는(visible) 경우
+        if (typeof document !== 'undefined' && !document.hidden && mode === 'video') {
+          return;
+        }
+        // 3) 실제 브라우저 탭/창을 벗어난 경우에만 자리 이탈로 판정
+        if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
+          isAwayRef.current = true;
+          if (!awayStartedAtRef.current) awayStartedAtRef.current = Date.now();
+          sendActivityBroadcast(true, true);
+        }
+      }, 150);
     };
 
     const handleFocus = () => {
       if (mode === 'test') return;
+      if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
       isAwayRef.current = false;
       awayStartedAtRef.current = undefined;
       sendActivityBroadcast(true, false);
@@ -396,16 +424,24 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('beforeunload', handleBeforeUnload);
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
       supabase.removeChannel(channel);
     };
   }, [student?.id, mode, sendActivityBroadcast]);
 
-  // 위치/모드/문항 변경 시 5초 디바운스 트리거
+  // 🌟 [실시간 메뉴 이동 동기화] 모드(Review -> Test -> Video 등) 변경 시 선생님 화면에 즉시 알림
+  useEffect(() => {
+    if (student?.id) {
+      sendActivityBroadcast(true);
+    }
+  }, [student?.id, mode, sendActivityBroadcast]);
+
+  // 위치/세부문항 변경 시 5초 디바운스 트리거 (mode === 'test' 시에는 시험 뷰 자체의 실시간 브로드캐스트가 담당)
   useEffect(() => {
     if (student?.id && mode !== 'test') {
       sendActivityBroadcast(false);
     }
-  }, [student?.id, mode, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
+  }, [student?.id, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
 
   // 학생 복습 데이터 로드 (Local Cache -> Cloud DB 실시간 동기화)
   useEffect(() => {

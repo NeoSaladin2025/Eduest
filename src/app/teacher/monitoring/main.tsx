@@ -23,6 +23,7 @@ interface Student {
 
 export default function MonitoringCenterMain() {
   const [activeSubTab, setActiveSubTab] = useState<'daily' | 'test'>('daily');
+  const [targetStudentId, setTargetStudentId] = useState<string | undefined>(undefined);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -108,12 +109,18 @@ export default function MonitoringCenterMain() {
             {activeSubTab === 'daily' && (
               <DailyActivityMonitoringTab
                 allStudents={students}
-                onSwitchToExamProctor={() => setActiveSubTab('test')}
+                onSwitchToExamProctor={(studentId) => {
+                  setTargetStudentId(studentId);
+                  setActiveSubTab('test');
+                }}
               />
             )}
 
             {activeSubTab === 'test' && (
-              <RealtimeProctorTab allStudents={students} />
+              <RealtimeProctorTab 
+                allStudents={students} 
+                initialStudentId={targetStudentId}
+              />
             )}
           </>
         )}

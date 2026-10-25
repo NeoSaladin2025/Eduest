@@ -535,6 +535,8 @@ export default function StudentTest2View({
               .update({
                 test_status: 'IDLE',
                 test_remaining_sec: 0,
+                current_exam_title: null,
+                current_bundle_title: null,
                 updated_at: new Date().toISOString(),
               })
               .eq('id', studentId)
@@ -590,6 +592,9 @@ export default function StudentTest2View({
         .update({
           test_status: status,
           test_remaining_sec: curTime,
+          current_exam_title: currentExam.title,
+          current_bundle_title: currentBundle?.title || null,
+          current_round: currentRound,
           last_away_at: status === 'AWAY' ? new Date().toISOString() : undefined,
           updated_at: new Date().toISOString(),
         })
@@ -612,6 +617,12 @@ export default function StudentTest2View({
         if (eventPayload?.payload?.studentId === studentId) {
           setIsLocked(false);
           setIsPaused(false);
+        }
+      })
+      .on('broadcast', { event: 'ping_students' }, () => {
+        // 선생님 모니터링 화면에서 핑 요청 시 현재 시험 응시 상태 즉시 회신
+        if (viewMode === 'taking' && currentExam) {
+          broadcastProctorStatus(isLocked ? 'AWAY' : 'TESTING');
         }
       })
       .on('postgres_changes', {
