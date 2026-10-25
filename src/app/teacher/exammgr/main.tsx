@@ -41,7 +41,8 @@ import {
   Bell,
   Star,
   BarChart3,
-  SlidersHorizontal
+  SlidersHorizontal,
+  RefreshCw
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -434,6 +435,76 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   useEffect(() => {
     loadInitialData();
+  }, []);
+
+  // 🔄 [신규] 특정 학생(또는 전체) 응시 현황 최신화 상태
+  const [refreshingStudent, setRefreshingStudent] = useState(false);
+  const [refreshSuccessMessage, setRefreshSuccessMessage] = useState<string | null>(null);
+
+  const handleRefreshStudentData = async (targetStudentId?: string, silent = false) => {
+    try {
+      if (!silent) setRefreshingStudent(true);
+
+      // 1) 전체 학생 제출 기록 최신화
+      const { data: subData } = await supabase
+        .from('exam_library')
+        .select('file_data')
+        .eq('drive_id', 'test2_student_submissions_data')
+        .maybeSingle();
+
+      if (subData?.file_data) {
+        try {
+          const parsed = JSON.parse(subData.file_data);
+          setAllSubmissions(Array.isArray(parsed.submissions) ? parsed.submissions : []);
+        } catch (e) {
+          console.error('Failed to parse submissions during refresh:', e);
+        }
+      }
+
+      // 2) 시험지 목록 최신화 (새로 배정된 오답/보물회수 시험지가 있을 수 있으므로)
+      const examRes = await fetch('/api/test2/exam', { cache: 'no-store' });
+      const examData = await examRes.json();
+      if (examData.success && Array.isArray(examData.exams)) {
+        setExams(examData.exams);
+      }
+
+      if (!silent) {
+        const studentObj = students.find((s) => s.id === targetStudentId);
+        const name = studentObj ? studentObj.name : '학생';
+        setRefreshSuccessMessage(`${name} 최신화 완료!`);
+        setTimeout(() => setRefreshSuccessMessage(null), 2000);
+      }
+    } catch (err) {
+      console.error('Error refreshing student data:', err);
+    } finally {
+      if (!silent) {
+        setTimeout(() => setRefreshingStudent(false), 300);
+      }
+    }
+  };
+
+  // 📡 실시간 학생 응시 완료 자동 감지 및 스마트 동기화
+  useEffect(() => {
+    const channel = supabase.channel('exam_manager_realtime_sync');
+
+    // 1) 학생 시험 제출 이벤트 수신
+    channel.on('broadcast', { event: 'exam_submitted' }, (payload: any) => {
+      handleRefreshStudentData(payload?.payload?.student_id, true);
+    });
+
+    // 2) 모니터링 방 시험 상태 완료 이벤트 수신
+    channel.on('broadcast', { event: 'proctor_sync' }, (payload: any) => {
+      const p = payload?.payload;
+      if (p?.test_status === 'FINISHED') {
+        handleRefreshStudentData(p?.student_id, true);
+      }
+    });
+
+    channel.subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   // 2. 시험 DB 데이터 로드 (학년 필터 적용)
@@ -1876,6 +1947,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           assigned_student_ids: [student.id],
           is_wrong_review: true,
           is_treasure_hunt: treasureEnabled,
+          is_twin_variant: wrongExamMode === 'twin',
+          wrong_exam_mode: wrongExamMode,
           treasure_config: treasureConfigPayload,
           parent_exam_id: exam.id,
           remind_popup: wrongExamRemindPopup,
@@ -2426,6 +2499,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </button>
                       );
                     })}
+
+                  {selectedStudentFilterId !== 'ALL' && (
+                    <button
+                      type="button"
+                      onClick={() => handleRefreshStudentData(selectedStudentFilterId)}
+                      disabled={refreshingStudent}
+                      className="ml-auto px-2.5 py-1 rounded-lg text-xs font-black bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-2xs active:scale-95"
+                      title="선택된 학생의 최신 응시 상태를 동기화합니다"
+                    >
+                      <RefreshCw size={12} className={refreshingStudent ? 'animate-spin text-indigo-600' : 'text-indigo-600'} />
+                      <span>{refreshingStudent ? '동기화 중...' : '최신화'}</span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -2702,6 +2788,22 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       오답 클리닉 완수: <strong className="font-black text-rose-900">{selectedStudentStats.wrongCompletionRate}%</strong>
                     </div>
                   )}
+
+                  {/* 🔄 [신규] 특정 학생 응시현황 최신화 버튼 */}
+                  <button
+                    type="button"
+                    onClick={() => handleRefreshStudentData(selectedStudentStats.student.id)}
+                    disabled={refreshingStudent}
+                    className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white text-xs font-black flex items-center gap-1.5 transition-all shadow-sm hover:shadow active:scale-95 cursor-pointer ml-auto shrink-0"
+                    title={`${selectedStudentStats.student.name} 학생의 최근 제출 답안 및 점수를 즉시 다시 불러옵니다`}
+                  >
+                    <RefreshCw size={13} className={refreshingStudent ? 'animate-spin' : ''} />
+                    <span>
+                      {refreshingStudent
+                        ? '동기화 중...'
+                        : refreshSuccessMessage || `${selectedStudentStats.student.name} 최신화`}
+                    </span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -2931,6 +3033,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         const roundNum = exam.wrong_round || parsed.currentRound;
                         const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
                         const studentDisplay = exam.target_student_name || parsed.studentName;
+                        const isTwinVariant =
+                          exam.is_twin_variant !== undefined
+                            ? Boolean(exam.is_twin_variant)
+                            : (Array.isArray(exam.questions) && exam.questions.some((q: any) => q.is_twin)) ||
+                              (/^\[[^\]]*쌍둥이/i.test(exam.title) && parsed.isTwin);
 
                         return (
                           <div>
@@ -2941,13 +3048,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 border border-amber-400/40 text-[10px] font-black flex items-center gap-1 shadow-2xs">
                                     <Sparkles size={11} className="fill-amber-500 text-amber-500" />
                                     <span>💎 보물회수 {roundNum > 0 ? `${roundNum}회차` : ''}</span>
-                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                    <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                   </span>
                                 ) : (
                                   <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black flex items-center gap-1 shadow-2xs">
                                     <RotateCcw size={10} />
                                     <span>오답 {roundNum > 0 ? `${roundNum}회차` : '클리닉'}</span>
-                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                    <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                   </span>
                                 )}
 

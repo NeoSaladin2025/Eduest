@@ -2026,6 +2026,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                               const parsed = parseExamRoundAndBaseTitle(exam.title);
                               const isTreasure = Boolean(exam.is_treasure_hunt || parsed.isTreasure);
                               const roundNum = exam.wrong_round || parsed.currentRound;
+                              const isTwinVariant =
+                                exam.is_twin_variant !== undefined
+                                  ? Boolean(exam.is_twin_variant)
+                                  : (Array.isArray(exam.questions) && exam.questions.some((q: any) => q.is_twin)) ||
+                                    (/^\[[^\]]*쌍둥이/i.test(exam.title) && parsed.isTwin);
 
                               if (!(isTreasure || exam.is_wrong_review || roundNum > 0)) return null;
 
@@ -2035,13 +2040,13 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-950 border border-amber-300">
                                       <Sparkles size={11} className="fill-amber-600 text-amber-600" />
                                       <span>보물회수 {roundNum > 0 ? `${roundNum}회차` : ''}</span>
-                                      {parsed.isTwin && <span className="opacity-80">• 쌍둥이(변형)</span>}
+                                      <span className="opacity-80 font-bold">• {isTwinVariant ? '쌍둥이(변형)' : '원본'}</span>
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-950 border border-rose-300">
                                       <RotateCcw size={10} />
                                       <span>오답 {roundNum > 0 ? `${roundNum}회차` : '클리닉'}</span>
-                                      {parsed.isTwin && <span className="opacity-80">• 쌍둥이(변형)</span>}
+                                      <span className="opacity-80 font-bold">• {isTwinVariant ? '쌍둥이(변형)' : '원본'}</span>
                                     </span>
                                   )}
                                 </div>

@@ -71,6 +71,8 @@ export interface ExamPaper {
   filter_chip_ids?: string[];
   wrong_round?: number;
   base_exam_title?: string;
+  is_twin_variant?: boolean;
+  wrong_exam_mode?: 'twin' | 'original';
   target_student_name?: string;
   target_student_id?: string;
   created_at: string;

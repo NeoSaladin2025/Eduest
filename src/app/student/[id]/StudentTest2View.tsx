@@ -1164,6 +1164,22 @@ export default function StudentTest2View({
         // 모니터링 종료 통지
         broadcastProctorStatus('FINISHED', 0);
 
+        // 📡 실시간 시험 제출 알림 브로드캐스트 (선생님 시험 관리 화면 즉시 자동 동기화)
+        if (channelRef.current) {
+          channelRef.current.send({
+            type: 'broadcast',
+            event: 'exam_submitted',
+            payload: {
+              student_id: studentId,
+              student_name: studentName,
+              exam_id: currentExam.id,
+              exam_title: currentExam.title,
+              score: data.submission?.score,
+              timestamp: Date.now(),
+            },
+          });
+        }
+
         // 목록 갱신
         loadAssignedData();
         setViewMode('result');
@@ -1757,6 +1773,11 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound;
                           const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
+                          const isTwinVariant =
+                            exam.is_twin_variant !== undefined
+                              ? Boolean(exam.is_twin_variant)
+                              : (Array.isArray(exam.questions) && exam.questions.some((q: any) => q.is_twin)) ||
+                                (/^\[[^\]]*쌍둥이/i.test(exam.title) && parsed.isTwin);
 
                           return (
                             <div>
@@ -1765,7 +1786,7 @@ export default function StudentTest2View({
                                   <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
                                     <RotateCcw size={10} />
                                     <span>오답 {roundNum}회차</span>
-                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                    <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                   </span>
                                 </div>
                               )}
@@ -1882,6 +1903,11 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound;
                           const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
+                          const isTwinVariant =
+                            exam.is_twin_variant !== undefined
+                              ? Boolean(exam.is_twin_variant)
+                              : (Array.isArray(exam.questions) && exam.questions.some((q: any) => q.is_twin)) ||
+                                (/^\[[^\]]*쌍둥이/i.test(exam.title) && parsed.isTwin);
 
                           return (
                             <div>
@@ -1890,7 +1916,7 @@ export default function StudentTest2View({
                                   <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
                                     <Sparkles size={10} className="fill-amber-300 text-amber-300" />
                                     <span>💎 보물회수 {roundNum}회차</span>
-                                    {parsed.isTwin && <span className="opacity-75">• 변형</span>}
+                                    <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                   </span>
                                 </div>
                               )}
