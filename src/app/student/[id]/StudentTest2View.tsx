@@ -784,7 +784,22 @@ export default function StudentTest2View({
             const savedAnswers = localStorage.getItem(`test2_answers_${studentId}_${examId}`);
             if (savedAnswers) {
               try {
-                setUserAnswers(JSON.parse(savedAnswers));
+                const parsed = JSON.parse(savedAnswers);
+                setUserAnswers(parsed);
+                // 🌟 [자동 마이그레이션] 로컬스토리지에 있던 기존 답안을 서버로 즉시 자동 동기화!
+                fetch('/api/test2/temp-progress', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    examId,
+                    studentId,
+                    studentName: studentName || '',
+                    answers: parsed,
+                    currentQuestionIndex: 0,
+                    totalQuestions: data.exam?.questions?.length || 0,
+                    updatedBy: 'student',
+                  }),
+                }).catch(() => {});
               } catch {
                 setUserAnswers({});
               }
@@ -891,6 +906,27 @@ export default function StudentTest2View({
     return () => clearInterval(syncInterval);
   }, [viewMode, currentExam, isLocked, isPaused, timeLeft, broadcastProctorStatus]);
 
+  // 💾 서버 임시 답안 실시간 동기화 (선생님이 실시간 모니터링할 수 있도록 백그라운드 전송)
+  const syncTempProgressToServer = useCallback((answersToSync: Record<string, any>) => {
+    if (!currentExam || !studentId) return;
+    try {
+      fetch('/api/test2/temp-progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          examId: currentExam.id,
+          studentId,
+          studentName: studentName || '',
+          answers: answersToSync,
+          currentQuestionIndex,
+          totalQuestions: currentExam.questions?.length || 0,
+          timeLeft,
+          updatedBy: 'student',
+        }),
+      }).catch(() => {});
+    } catch (e) {}
+  }, [currentExam, studentId, studentName, currentQuestionIndex, timeLeft]);
+
   // 4. 답안 변경 처리 및 문항 소요시간 자동 체크 (정답 입력 기준)
   const handleAnswerSelect = (questionId: string, answerValue: string) => {
     if (isLocked) return;
@@ -900,6 +936,7 @@ export default function StudentTest2View({
       const next = { ...prev, [questionId]: answerValue };
       if (currentExam) {
         localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(next));
+        syncTempProgressToServer(next);
       }
       return next;
     });
@@ -944,6 +981,7 @@ export default function StudentTest2View({
       const next = { ...prev, [questionId]: subMap };
       if (currentExam) {
         localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(next));
+        syncTempProgressToServer(next);
       }
       return next;
     });
@@ -1009,6 +1047,7 @@ export default function StudentTest2View({
         const updated = { ...prev, [qId]: singleVal };
         if (currentExam) {
           localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(updated));
+          syncTempProgressToServer(updated);
         }
         return updated;
       });
@@ -1221,6 +1260,7 @@ export default function StudentTest2View({
         // 로컬 임시 데이터 정리
         localStorage.removeItem(`test2_answers_${studentId}_${currentExam.id}`);
         localStorage.removeItem(`test2_qtimes_${studentId}_${currentExam.id}`);
+        fetch(`/api/test2/temp-progress?examId=${currentExam.id}&studentId=${studentId}`, { method: 'DELETE' }).catch(() => {});
         localStorage.removeItem(`test2_time_${studentId}_${currentExam.id}`);
 
         // 모니터링 종료 통지
@@ -3297,6 +3337,7 @@ export default function StudentTest2View({
           setDescriptiveSubmitModes(updatedModes);
           if (currentExam) {
             localStorage.setItem(`test2_answers_${studentId}_${currentExam.id}`, JSON.stringify(updatedAnswers));
+            syncTempProgressToServer(updatedAnswers);
           }
           if (andSubmit) {
             setShowSubmitConfirm(true);

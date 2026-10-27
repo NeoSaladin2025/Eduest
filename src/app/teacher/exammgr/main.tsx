@@ -55,6 +55,7 @@ import RealtimeProctorTab from './RealtimeProctorTab';
 import DescriptiveGradingModal from './DescriptiveGradingModal';
 import QuestionDiffModal from './QuestionDiffModal';
 import ExamPrintModal from './ExamPrintModal';
+import LiveExamMonitoringModal from './LiveExamMonitoringModal';
 import TeacherBatchGradingModal from './TeacherBatchGradingModal';
 import FilterChipBadge from './FilterChipBadge';
 import FilterChipStudioModal from './FilterChipStudioModal';
@@ -259,6 +260,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 응시 결과 현황 모달
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
+  const [tempProgressMap, setTempProgressMap] = useState<Record<string, any>>({});
+  const [liveMonitoringStudent, setLiveMonitoringStudent] = useState<{ student: any; progress?: any } | null>(null);
   const [examSubmissions, setExamSubmissions] = useState<any[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
   const [batchGradingExam, setBatchGradingExam] = useState<ExamPaper | null>(null);
@@ -1732,6 +1735,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const handleOpenResultsModal = async (exam: ExamPaper) => {
     setResultsModalExam(exam);
     setLoadingResults(true);
+
+    // 🌟 실시간 임시 풀이 진행 데이터 로드
+    fetch(`/api/test2/temp-progress?examId=${exam.id}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.progressMap) {
+          setTempProgressMap(d.progressMap);
+        } else {
+          setTempProgressMap({});
+        }
+      })
+      .catch(() => setTempProgressMap({}));
     try {
       const { data } = await supabase
         .from('exam_library')
@@ -5333,6 +5348,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     {(resultsModalExam.assigned_student_ids || []).map(studentId => {
                       const st = students.find(s => s.id === studentId);
                       const sub = examSubmissions.find(s => s.student_id === studentId);
+                      const tempProg = tempProgressMap[studentId];
                       return (
                         <tr key={studentId} className="hover:bg-slate-50/80">
                           <td className="p-3">
@@ -5360,6 +5376,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                 >
                                   <CheckSquare size={12} />
                                   <span>선생 채점</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (st && resultsModalExam) {
+                                      setLiveMonitoringStudent({ student: st, progress: tempProg });
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                  title="현재 이 학생의 실시간 풀이 답안, O/X 가채점 현황 및 선생님 수동 입력"
+                                >
+                                  <Eye size={12} />
+                                  <span>현재상황 확인</span>
                                 </button>
                                 {sub && (
                                   <>
@@ -5390,6 +5419,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             {sub ? (
                               <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-[11px] font-bold">
                                 제출 완료
+                              </span>
+                            ) : tempProg && tempProg.answered_count && tempProg.answered_count > 0 ? (
+                              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded text-[11px] font-bold">
+                                풀이 중 ({tempProg.answered_count}/{resultsModalExam.questions.length})
                               </span>
                             ) : (
                               <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[11px] font-bold">
@@ -5425,6 +5458,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           </div>
         </div>
       )}
+
+      {/* 🌟 4-9. 실시간 풀이 모니터링 & 수동 입력 모달 */}
+      <LiveExamMonitoringModal
+        isOpen={!!liveMonitoringStudent}
+        onClose={() => setLiveMonitoringStudent(null)}
+        exam={resultsModalExam}
+        student={liveMonitoringStudent?.student || null}
+        initialProgress={liveMonitoringStudent?.progress || null}
+        onSuccessSubmit={() => {
+          if (resultsModalExam) {
+            handleOpenResultsModal(resultsModalExam);
+          }
+        }}
+      />
 
       {/* 🌟 5-0. 선생 일괄 채점 모달 */}
       <TeacherBatchGradingModal
