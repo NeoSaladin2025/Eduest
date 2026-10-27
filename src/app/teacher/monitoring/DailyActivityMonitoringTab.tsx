@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { StudentAwayLog } from '@/app/api/monitoring/away-logs/route';
+import LiveExamMonitoringModal from '@/app/teacher/exammgr/LiveExamMonitoringModal';
 
 export interface StudentActivity {
   student_id: string;
@@ -48,6 +49,7 @@ export interface StudentActivity {
   entered_at: number;
   updated_at: string;
   // 시험 진행 중일 경우
+  exam_id?: string;
   exam_title?: string;
   bundle_title?: string;
   round?: number;
@@ -133,6 +135,27 @@ export default function DailyActivityMonitoringTab({
   const [awayLogs, setAwayLogs] = useState<StudentAwayLog[]>([]);
   const [selectedStudentForLogs, setSelectedStudentForLogs] = useState<Student | null>(null);
   const [logsDateTab, setLogsDateTab] = useState<'today' | 'all'>('today');
+
+  // 🌟 [사용자 요청] 학생별 9분 자동로그아웃 해제(OFF) 학생 ID 세트
+  const [disabledAutoLogoutIds, setDisabledAutoLogoutIds] = useState<Set<string>>(new Set());
+
+  // 🌟 [사용자 요청] 무제한 시험지 실시간 모니터링 모달 상태
+  const [liveModalExam, setLiveModalExam] = useState<any>(null);
+  const [liveModalStudent, setLiveModalStudent] = useState<any>(null);
+  const [liveModalOpen, setLiveModalOpen] = useState(false);
+  const [liveModalLoading, setLiveModalLoading] = useState(false);
+
+  // 9분 자동로그아웃 설정 불러오기
+  useEffect(() => {
+    fetch('/api/student/session-guard-config')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.success && Array.isArray(data.disabledStudentIds)) {
+          setDisabledAutoLogoutIds(new Set(data.disabledStudentIds));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchAwayLogs = useCallback(async () => {
     try {
@@ -295,7 +318,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       const [studentsRes, proctorRes] = await Promise.all([
         supabase
           .from('students')
-          .select('id, name, grade, test_status, test_remaining_sec, updated_at, last_away_at')
+          .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at')
           .in('test_status', ['TESTING', 'AWAY']),
         fetch('/api/test2/proctor-state')
           .then((r) => r.json())
@@ -325,6 +348,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
               mode: 'test',
               location_title: `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
               is_away: isAway,
+              exam_id: pState.exam_id,
               exam_title: examTitle,
               bundle_title: bundleTitle,
               round: round,
@@ -332,8 +356,8 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
               total_questions: totalQ,
               test_status: s.test_status,
               test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
-              duration_min: pState.duration_min !== undefined ? pState.duration_min : pState.test_duration_min,
-              test_duration_min: pState.test_duration_min,
+              duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
+              test_duration_min: pState.test_duration_min !== undefined ? pState.test_duration_min : s.test_duration_min,
               entered_at: Date.now(),
               updated_at: s.updated_at || new Date().toISOString(),
             };
@@ -417,6 +441,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             mode: 'test',
             location_title: `시험: ${p.bundle_title ? `[${p.bundle_title}] ` : ''}${p.exam_title || '테스트 진행 중'}`,
             is_away: isAway,
+            exam_id: p.exam_id,
             exam_title: p.exam_title,
             bundle_title: p.bundle_title,
             round: p.round,
@@ -455,6 +480,8 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
               is_away: isAway,
               test_status: student.test_status,
               test_remaining_sec: student.test_remaining_sec ?? existing?.test_remaining_sec,
+              duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.duration_min,
+              test_duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.test_duration_min,
               entered_at: existing?.entered_at || Date.now(),
               updated_at: student.updated_at || new Date().toISOString(),
             },
@@ -523,6 +550,86 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     fetchActiveTestingStudents();
   };
 
+  // 🌟 [사용자 요청] 9분 자동로그아웃 개별 학생 토글 핸들러
+  const handleToggleAutoLogout = async (studentId: string) => {
+    const isCurrentlyDisabled = disabledAutoLogoutIds.has(studentId);
+    const nextDisabled = !isCurrentlyDisabled;
+
+    setDisabledAutoLogoutIds(prev => {
+      const next = new Set(prev);
+      if (nextDisabled) next.add(studentId);
+      else next.delete(studentId);
+      return next;
+    });
+
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'toggle_student_session_guard',
+        payload: {
+          student_id: studentId,
+          disabled: nextDisabled,
+        },
+      });
+    }
+
+    await fetch('/api/student/session-guard-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId,
+        disabled: nextDisabled,
+      }),
+    }).catch(() => {});
+  };
+
+  // 🌟 [사용자 요청] 9분 자동로그아웃 전체 일괄 토글 핸들러
+  const handleBatchToggleAutoLogout = async (disableAll: boolean) => {
+    const allIds = allStudents.map(s => s.id);
+    setDisabledAutoLogoutIds(disableAll ? new Set(allIds) : new Set());
+
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'toggle_student_session_guard',
+        payload: {
+          action: disableAll ? 'DISABLE_ALL' : 'ENABLE_ALL',
+        },
+      });
+    }
+
+    await fetch('/api/student/session-guard-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: disableAll ? 'DISABLE_ALL' : 'ENABLE_ALL',
+        allStudentIds: allIds,
+      }),
+    }).catch(() => {});
+  };
+
+  // 🌟 [사용자 요청] 무제한 시험지 실시간 가채점 모달 열기 핸들러
+  const handleOpenLiveMonitoring = async (student: Student, act: StudentActivity) => {
+    if (!act.exam_id) return;
+    setLiveModalLoading(true);
+    try {
+      const res = await fetch(`/api/test2/exam?examId=${act.exam_id}`);
+      const data = await res.json();
+      if (data?.exam) {
+        setLiveModalExam(data.exam);
+        setLiveModalStudent({ id: student.id, name: student.name, grade: student.grade });
+        setLiveModalOpen(true);
+      } else {
+        alert(data.error || '시험지 정보를 불러올 수 없습니다.');
+      }
+    } catch (err) {
+      console.error('Failed to load exam for live monitoring:', err);
+      alert('시험지 로드 중 오류가 발생했습니다.');
+    } finally {
+      setLiveModalLoading(false);
+    }
+  };
+
   // 모달 열기 핸들러
   const handleOpenSelectModal = () => {
     setModalSelectedIds([...selectedStudentIds]);
@@ -587,12 +694,15 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
 
       const lastUpdatedMs = act.updated_at ? new Date(act.updated_at).getTime() : 0;
       const isStale = currentTime - lastUpdatedMs > 15 * 60 * 1000;
+      const isUnlimited =
+        (act.duration_min !== undefined && act.duration_min <= 0) ||
+        (act.test_duration_min !== undefined && act.test_duration_min <= 0);
 
       if (isStale) {
         offlineCount++;
       } else if (act.is_away) {
         awayCount++;
-      } else if (act.mode === 'test' || act.test_status === 'TESTING') {
+      } else if ((act.mode === 'test' || act.test_status === 'TESTING') && !isUnlimited) {
         testingCount++;
       } else {
         onlineCount++;
@@ -618,10 +728,15 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       const act = liveMap[st.id];
       const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
       const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
+      const isUnlimited =
+        (act?.duration_min !== undefined && act.duration_min <= 0) ||
+        (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
+      const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale && !act?.is_away;
+      const isOnline = act && !act.is_away && !isTesting && !isStale;
 
       if (statusFilter === 'AWAY') return act?.is_away && !isStale;
-      if (statusFilter === 'TESTING') return (act?.mode === 'test' || act?.test_status === 'TESTING') && !isStale && !act?.is_away;
-      if (statusFilter === 'ONLINE') return act && !act.is_away && act.mode !== 'test' && !isStale;
+      if (statusFilter === 'TESTING') return isTesting;
+      if (statusFilter === 'ONLINE') return isOnline;
       if (statusFilter === 'OFFLINE') return isStale;
 
       return true;
@@ -837,16 +952,35 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           ))}
         </div>
 
-        {/* 이름 검색창 */}
-        <div className="relative w-full md:w-64">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-          <input
-            type="text"
-            placeholder="학생 이름 검색..."
-            value={searchName}
-            onChange={(e) => setSearchName(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:outline-none focus:border-indigo-500 transition-all"
-          />
+        {/* ⚡ 9분 자동로그아웃 일괄 제어 & 이름 검색창 */}
+        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+          <button
+            onClick={() => handleBatchToggleAutoLogout(disabledAutoLogoutIds.size < targetStudents.length)}
+            className={`px-3 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 border cursor-pointer shrink-0 ${
+              disabledAutoLogoutIds.size > 0
+                ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 shadow-2xs'
+                : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+            }`}
+            title="모든 학생의 9분 자동로그아웃을 일괄 해제(자율 학습 모드)하거나 보호 모드를 적용합니다."
+          >
+            <Clock size={13} className={disabledAutoLogoutIds.size > 0 ? 'text-amber-600' : 'text-slate-400'} />
+            <span>
+              {disabledAutoLogoutIds.size > 0
+                ? `9분 해제 (${disabledAutoLogoutIds.size}명) ➔ 전체 ON`
+                : '⚡ 전체 9분 OFF (자율)'}
+            </span>
+          </button>
+
+          <div className="relative w-full md:w-56">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+            <input
+              type="text"
+              placeholder="학생 이름 검색..."
+              value={searchName}
+              onChange={(e) => setSearchName(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:outline-none focus:border-indigo-500 transition-all"
+            />
+          </div>
         </div>
       </div>
 
@@ -888,7 +1022,10 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
             const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
             const isAway = act?.is_away && !isStale;
-            const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isStale;
+            const isUnlimited =
+              (act?.duration_min !== undefined && act.duration_min <= 0) ||
+              (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
+            const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale;
             const isOnline = act && !isAway && !isTesting && !isStale;
 
             // 머문 시간 (로컬 타이머 연산: ms)
@@ -912,11 +1049,37 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                 {/* 상단: 학생 기본 정보 & 상태 뱃지 & ❌ 개별 제외 버튼 */}
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-base font-black text-slate-900">{st.name}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600">
                         {st.grade}
                       </span>
+                      {/* ⚡ 9분 자동로그아웃 개별 토글 스위치 */}
+                      <button
+                        onClick={() => handleToggleAutoLogout(st.id)}
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black transition-all flex items-center gap-1 cursor-pointer border ${
+                          disabledAutoLogoutIds.has(st.id)
+                            ? 'bg-amber-100/90 text-amber-900 border-amber-300 hover:bg-amber-200 shadow-2xs'
+                            : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                        }`}
+                        title={
+                          disabledAutoLogoutIds.has(st.id)
+                            ? '9분 자동로그아웃 해제됨 (자율/필기 모드). 클릭 시 9분 보호 켜기'
+                            : '9분 무입력 시 자동로그아웃 작동 중. 클릭 시 9분 터치 경고 해제'
+                        }
+                      >
+                        {disabledAutoLogoutIds.has(st.id) ? (
+                          <>
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                            9분 OFF
+                          </>
+                        ) : (
+                          <>
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                            9분 ON
+                          </>
+                        )}
+                      </button>
                       {/* 📋 딴짓 이탈 기록 모달 열기 버튼 */}
                       <button
                         onClick={() => {
@@ -945,7 +1108,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                       ) : isOnline ? (
                         <span className="flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">
                           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                          학습 중
+                          {isUnlimited ? '자율 풀이 중' : '학습 중'}
                         </span>
                       ) : (
                         <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-500">
@@ -1021,7 +1184,17 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                       <div className="space-y-1.5">
                         {/* 메뉴 구분 아이콘 */}
                         <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
-                          {act?.mode === 'library' ? (
+                          {isUnlimited ? (
+                            <>
+                              <FileCheck size={14} className="text-emerald-600" />
+                              <span className="font-black text-emerald-800">자율 시험 (무제한)</span>
+                              {act?.round && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
+                                  {act.round}차
+                                </span>
+                              )}
+                            </>
+                          ) : act?.mode === 'library' ? (
                             <Library size={14} className="text-indigo-600" />
                           ) : act?.mode === 'review' ? (
                             <BookOpen size={14} className="text-amber-600" />
@@ -1030,24 +1203,26 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                           ) : act?.mode === 'homework' ? (
                             <BookOpen size={14} className="text-amber-600" />
                           ) : act?.mode === 'test' ? (
-                            <FileCheck size={14} className="text-violet-600" />
+                            <FileCheck size={14} className="text-emerald-600" />
                           ) : (
                             <Laptop size={14} className="text-slate-500" />
                           )}
-                          <span className="font-black text-slate-700">
-                            {act?.mode === 'library'
-                              ? '라이브러리'
-                              : act?.mode === 'review'
-                              ? '복습(Review)'
-                              : act?.mode === 'video'
-                              ? '영상강의 시청'
-                              : act?.mode === 'homework'
-                              ? '숙제'
-                              : act?.mode === 'test'
-                              ? '시험(Test)'
-                              : '대시보드'}
-                          </span>
-                          {act?.sub_detail && (
+                          {!isUnlimited && (
+                            <span className="font-black text-slate-700">
+                              {act?.mode === 'library'
+                                ? '라이브러리'
+                                : act?.mode === 'review'
+                                ? '복습(Review)'
+                                : act?.mode === 'video'
+                                ? '영상강의 시청'
+                                : act?.mode === 'homework'
+                                ? '숙제'
+                                : act?.mode === 'test'
+                                ? '자율 시험(무제한)'
+                                : '대시보드'}
+                            </span>
+                          )}
+                          {act?.sub_detail && !isUnlimited && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 font-bold">
                               {act.sub_detail}
                             </span>
@@ -1056,8 +1231,29 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
 
                         {/* 구체적인 문제/단원 위치 */}
                         <p className="text-xs md:text-[13px] font-black text-slate-900 line-clamp-2 leading-snug">
-                          {act?.location_title || '메뉴 탐색 중...'}
+                          {isUnlimited && act?.exam_title
+                            ? `${act.bundle_title ? `[${act.bundle_title}] ` : ''}${act.exam_title}`
+                            : act?.location_title || '메뉴 탐색 중...'}
                         </p>
+
+                        {/* 🌟 [사용자 요청] 무제한 시험지 실시간 진행률 & 현재상황 확인 버튼 */}
+                        {isUnlimited && (
+                          <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700 pt-0.5">
+                            <span>
+                              진행: 문항 {act?.question_idx || 1} / {act?.total_questions || '?'}
+                            </span>
+                            {act?.exam_id && (
+                              <button
+                                onClick={() => handleOpenLiveMonitoring(st, act)}
+                                disabled={liveModalLoading}
+                                className="px-2 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-900 rounded-md text-[10px] font-black transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                title="현재까지 푼 답안 및 실시간 가채점 점수 확인"
+                              >
+                                <span>현재상황 확인 🔍</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-center py-2 text-xs font-bold text-slate-400">
@@ -1227,7 +1423,10 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                 const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
                 const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
                 const isAway = act?.is_away && !isStale;
-                const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isStale;
+                const isUnlimited =
+                  (act?.duration_min !== undefined && act.duration_min <= 0) ||
+                  (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
+                const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale;
                 const isOnline = act && !isAway && !isTesting && !isStale;
 
                 return (
@@ -1538,6 +1737,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           </div>
         );
       })()}
+
+      {/* 🌟 [사용자 요청] 무제한 시험지 실시간 가채점 및 답안 모니터링 모달 */}
+      <LiveExamMonitoringModal
+        isOpen={liveModalOpen}
+        onClose={() => setLiveModalOpen(false)}
+        exam={liveModalExam}
+        student={liveModalStudent}
+      />
 
     </div>
   );

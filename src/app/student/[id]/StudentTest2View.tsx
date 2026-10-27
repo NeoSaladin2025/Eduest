@@ -735,8 +735,14 @@ export default function StudentTest2View({
   const handleStartExam = async (examId: string, bundle?: ExamBundle | null, roundNum = 1, forceNewRound = false) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/test2/student-exams?studentId=${studentId}&examId=${examId}`);
+      // 🌟 [기기 간 이어풀기] 시험지 정보와 서버 임시저장 진행 상태를 병렬로 즉시 로드!
+      const [res, tempRes] = await Promise.all([
+        fetch(`/api/test2/student-exams?studentId=${studentId}&examId=${examId}`),
+        fetch(`/api/test2/temp-progress?examId=${examId}&studentId=${studentId}`).catch(() => null),
+      ]);
       const data = await res.json();
+      const tempData = tempRes ? await tempRes.json().catch(() => null) : null;
+      const serverProgress = tempData?.progress;
 
       if (data.success && data.exam) {
         const isTreasureExam = Boolean(data.exam.is_treasure_hunt || data.exam.treasure_config?.enabled || data.exam.title?.includes('보물'));
@@ -779,32 +785,68 @@ export default function StudentTest2View({
             localStorage.removeItem(`test2_qtimes_${studentId}_${examId}`);
             setUserAnswers({});
             setQuestionSpentTimes({});
+            // 서버에 있던 이전 회차 임시 저장 레코드도 정리
+            fetch('/api/test2/temp-progress', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ examId, studentId }),
+            }).catch(() => {});
           } else {
-            // 로컬 임시 저장 답안 복원
+            // 🌟 [기기 간 이어 풀기 & 자동 복원]
+            // 1) 로컬 답안 확인
             const savedAnswers = localStorage.getItem(`test2_answers_${studentId}_${examId}`);
+            let parsedLocal: Record<string, any> | null = null;
             if (savedAnswers) {
-              try {
-                const parsed = JSON.parse(savedAnswers);
-                setUserAnswers(parsed);
-                // 🌟 [자동 마이그레이션] 로컬스토리지에 있던 기존 답안을 서버로 즉시 자동 동기화!
-                fetch('/api/test2/temp-progress', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    examId,
-                    studentId,
-                    studentName: studentName || '',
-                    answers: parsed,
-                    currentQuestionIndex: 0,
-                    totalQuestions: data.exam?.questions?.length || 0,
-                    updatedBy: 'student',
-                  }),
-                }).catch(() => {});
-              } catch {
-                setUserAnswers({});
+              try { parsedLocal = JSON.parse(savedAnswers); } catch {}
+            }
+
+            // 2) 서버 답안 확인
+            const serverAnswers = serverProgress?.answers && typeof serverProgress.answers === 'object' ? serverProgress.answers : null;
+
+            // 3) 최적의 답안 결정 (다른 기기에서 접속 시 로컬이 비어있어도 서버 답안으로 100% 복원!)
+            let finalAnswers: Record<string, any> = {};
+            if (serverAnswers && Object.keys(serverAnswers).length > 0) {
+              if (!parsedLocal || Object.keys(parsedLocal).length === 0) {
+                // 📱 다른 기기에서 접속한 경우: 서버 답안으로 완벽 복원
+                finalAnswers = serverAnswers;
+              } else {
+                // 양쪽 기기에 답안이 있을 경우: 스마트 병합 (서버 우선 최신 반영)
+                finalAnswers = { ...parsedLocal, ...serverAnswers };
               }
-            } else {
-              setUserAnswers({});
+            } else if (parsedLocal) {
+              finalAnswers = parsedLocal;
+            }
+
+            setUserAnswers(finalAnswers);
+
+            // 로컬스토리지에도 즉시 캐싱하여 다음 오프라인/새로고침 대비
+            if (Object.keys(finalAnswers).length > 0) {
+              try {
+                localStorage.setItem(`test2_answers_${studentId}_${examId}`, JSON.stringify(finalAnswers));
+              } catch {}
+            }
+
+            // 서버에 최신 상태 마이그레이션 및 동기화
+            if (Object.keys(finalAnswers).length > 0) {
+              fetch('/api/test2/temp-progress', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  examId,
+                  studentId,
+                  studentName: studentName || '',
+                  answers: finalAnswers,
+                  currentQuestionIndex: serverProgress?.current_question_idx || 0,
+                  totalQuestions: data.exam?.questions?.length || 0,
+                  updatedBy: 'student',
+                }),
+              }).catch(() => {});
+            }
+
+            // 문제 위치 복원
+            if (typeof serverProgress?.current_question_idx === 'number' && serverProgress.current_question_idx >= 0) {
+              const validIdx = Math.min(serverProgress.current_question_idx, (data.exam?.questions?.length || 1) - 1);
+              setCurrentQuestionIndex(validIdx);
             }
 
             // 문항별 소요시간 복원
@@ -821,10 +863,19 @@ export default function StudentTest2View({
           }
 
           // 남은 시간 복원 또는 기본 설정 (분 -> 초)
-          const savedTime = forceNewRound ? null : localStorage.getItem(`test2_time_${studentId}_${examId}`);
           const isUnlimited = typeof data.exam.duration_min === 'number' && data.exam.duration_min <= 0;
           const initialDurationSec = isUnlimited ? 0 : (data.exam.duration_min || 60) * 60;
-          const initialTime = savedTime ? parseInt(savedTime, 10) : initialDurationSec;
+          let initialTime = initialDurationSec;
+
+          if (!forceNewRound) {
+            const savedTime = localStorage.getItem(`test2_time_${studentId}_${examId}`);
+            if (savedTime) {
+              initialTime = parseInt(savedTime, 10);
+            } else if (typeof serverProgress?.time_left === 'number' && serverProgress.time_left > 0) {
+              // 📱 다른 기기에서 접속했을 때 서버에 남아있던 제한시간으로 복원!
+              initialTime = serverProgress.time_left;
+            }
+          }
           setTimeLeft(initialTime);
 
           setIsLocked(false);

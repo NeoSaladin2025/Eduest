@@ -123,13 +123,16 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [pwdError, setPwdError] = useState(false);
   const [pwdErrorMsg, setPwdErrorMsg] = useState('');
 
+  // 🌟 [사용자 요청] 선생님의 9분 무입력 자동로그아웃 개별/일괄 제어 상태 (true이면 9분 무입력 타이머 정지)
+  const [isAutoLogoutDisabled, setIsAutoLogoutDisabled] = useState(false);
+
   // 🛡️ 10분 무입력 자동 로그아웃 및 1계정 1로그인(단일 세션) 실시간 감지
-  // 🌟 [시험 & 인강 집중 모드] 시험(test) 및 영상강의(video) 학습 중에는 10분 무입력 자동 로그아웃을 정지하여 화면 가림/잠금 방지!
+  // 🌟 [시험 & 인강 & 선생님 자율설정 집중 모드]
   const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
     studentId: student?.id,
     studentName: student?.name,
     enabled: !!student?.id && (!student?.has_password && !student?.password || pwdVerified),
-    pauseInactivityTimeout: mode === 'test' || mode === 'video',
+    pauseInactivityTimeout: mode === 'test' || mode === 'video' || isAutoLogoutDisabled,
     onLogout: () => {
       setPwdVerified(false);
     },
@@ -189,6 +192,43 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 해제 여부 설정 동기화
+  useEffect(() => {
+    if (!student?.id) return;
+
+    fetch(`/api/student/session-guard-config?studentId=${student.id}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data?.success) {
+          setIsAutoLogoutDisabled(Boolean(data.isDisabled));
+        }
+      })
+      .catch(err => console.error('Session guard config fetch error:', err));
+
+    const channel = supabase
+      .channel('student_session_guard_realtime')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'exam_library',
+        filter: 'drive_id=eq.student_session_guard_config_data',
+      }, (payload: any) => {
+        if (payload?.new?.file_data && student?.id) {
+          try {
+            const parsed = JSON.parse(payload.new.file_data);
+            if (Array.isArray(parsed.disabled_student_ids)) {
+              setIsAutoLogoutDisabled(parsed.disabled_student_ids.includes(student.id));
+            }
+          } catch (e) {}
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [student?.id]);
 
   // 현재 모드가 관리자에 의해 비활성화된 경우, 남아있는 활성 메뉴 중 첫 번째로 자동 이동
   useEffect(() => {
@@ -338,6 +378,19 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신
     channel.on('broadcast', { event: 'ping_students' }, () => {
       sendActivityBroadcast(true);
+    });
+
+    // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 실시간 토글 브로드캐스트 수신
+    channel.on('broadcast', { event: 'toggle_student_session_guard' }, (payload: any) => {
+      const p = payload?.payload;
+      if (!p) return;
+      if (p.action === 'DISABLE_ALL') {
+        setIsAutoLogoutDisabled(true);
+      } else if (p.action === 'ENABLE_ALL') {
+        setIsAutoLogoutDisabled(false);
+      } else if (p.student_id === student?.id) {
+        setIsAutoLogoutDisabled(Boolean(p.disabled));
+      }
     });
 
     channel.subscribe((status: string) => {
