@@ -14,8 +14,10 @@ import {
   Users,
   ArrowUpRight,
   Sparkles,
-  FileCheck
+  FileCheck,
+  Target
 } from 'lucide-react';
+import PrecisionSyncModal from './PrecisionSyncModal';
 import Link from 'next/link';
 
 /** 브라우저→GAS 직접 호출은 CORS 차단 → 서버 프록시 (`GAS_LIBRARY_WEBAPP_URL`로 타깃 덮어쓰기 가능) */
@@ -31,6 +33,7 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
   const [syncMessage, setSyncMessage] = useState('');
   const [selectedGrade, setSelectedGrade] = useState<string>('ALL');
   const [isIncremental, setIsIncremental] = useState<boolean>(true);
+  const [isPrecisionModalOpen, setIsPrecisionModalOpen] = useState(false);
   
   // 🔥 [핵심] 하이드레이션 에러 방지를 위한 마운트 상태
   const [isMounted, setIsMounted] = useState(false);
@@ -193,17 +196,31 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
               </div>
             </div>
 
-            <button 
-              onClick={handleSyncLibrary}
-              disabled={syncStatus === 'loading'}
-              className="w-full py-4 md:py-5 bg-slate-900 hover:bg-black text-white rounded-[24px] font-black text-base md:text-lg flex items-center justify-center gap-3 transition-all active:scale-95 disabled:bg-slate-300 shadow-xl"
-            >
-              {syncStatus === 'loading' ? (
-                <>동기화 중... <Loader2 className="animate-spin" size={20} /></>
-              ) : (
-                <>{selectedGrade === 'ALL' ? '전체' : selectedGrade} 동기화 실행 <ChevronRight size={20} /></>
-              )}
-            </button>
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => setIsPrecisionModalOpen(true)}
+                className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-[22px] font-black text-sm md:text-base flex items-center justify-center gap-2.5 transition-all active:scale-95 shadow-lg shadow-indigo-200 group"
+              >
+                <Target size={18} className="text-violet-200 group-hover:rotate-45 transition-transform duration-300" />
+                <span>특정 파일 세밀수정 (1초 즉시 교체)</span>
+                <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-black uppercase tracking-wider">
+                  Precision
+                </span>
+              </button>
+
+              <button 
+                onClick={handleSyncLibrary}
+                disabled={syncStatus === 'loading'}
+                className="w-full py-3.5 bg-slate-900 hover:bg-black text-white rounded-[22px] font-black text-sm md:text-base flex items-center justify-center gap-2.5 transition-all active:scale-95 disabled:bg-slate-300 shadow-md"
+              >
+                {syncStatus === 'loading' ? (
+                  <>동기화 중... <Loader2 className="animate-spin" size={18} /></>
+                ) : (
+                  <>{selectedGrade === 'ALL' ? '전체' : selectedGrade} 라이브러리 전체 동기화 <ChevronRight size={18} /></>
+                )}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -274,6 +291,16 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
             </div>
           </div>
       </div>
+
+      {/* 🎯 세밀수정 모달 */}
+      <PrecisionSyncModal
+        isOpen={isPrecisionModalOpen}
+        onClose={() => setIsPrecisionModalOpen(false)}
+        onSuccess={(msg) => {
+          setSyncStatus('success');
+          setSyncMessage(msg);
+        }}
+      />
     </div>
   );
 }

@@ -22,7 +22,9 @@ import {
   AlertTriangle,
   Type,
   ArrowUpDown,
-  BookOpen
+  BookOpen,
+  Users,
+  User
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
@@ -259,30 +261,88 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     }
   }, []);
 
+  // 👥 배정 학생 목록 및 다중 선택 상태 (학생별 맞춤 인쇄)
+  const assignedStudents = useMemo(() => {
+    if (!exam || !Array.isArray(exam.assigned_student_ids) || !Array.isArray(students)) return [];
+    return students.filter(s => exam.assigned_student_ids.includes(s.id));
+  }, [exam, students]);
+
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+
   // 🎓 배정 학생 성명 및 반 자동 초기화 (exam 또는 students prop 변경 시)
   useEffect(() => {
     if (!exam) return;
-    let resolvedName = exam.target_student_name || '';
+    let resolvedName = '';
     let resolvedClass = exam.grade || '';
 
-    if (!resolvedName && exam.assigned_student_ids && exam.assigned_student_ids.length === 1 && students) {
-      const singleStudent = students.find(s => s.id === exam.assigned_student_ids[0]);
-      if (singleStudent) {
-        resolvedName = singleStudent.name;
-        resolvedClass = singleStudent.grade || exam.grade || '';
-      }
-    }
-
-    if (!resolvedName) {
+    // 1. 배정된 학생이 있는 경우 (최우선 순위: 첫 번째 배정 학생 자동 선택)
+    if (assignedStudents.length > 0) {
+      setSelectedStudentIds([assignedStudents[0].id]);
+      resolvedName = assignedStudents[0].name;
+      resolvedClass = assignedStudents[0].grade || exam.grade || '';
+    } else if (exam.target_student_name) {
+      // 2. 1인 지정 시험지인 경우
+      resolvedName = exam.target_student_name;
+    } else {
+      // 3. 배정 학생이 없는 경우: 제목 단어('원본문제', '교과서' 등) 오인 방어
       const parsed = parseExamRoundAndBaseTitle(exam.title);
       if (parsed.studentName) {
-        resolvedName = parsed.studentName;
+        const cleanCandidate = parsed.studentName.trim();
+        const isBlacklisted = /^(원본|원본문제|교과서|문제|정답|해설|풀이|기출|모의평가|특강|수업|과제|중1|중2|중3|고1|고2|고3|[A-Za-z0-9]+)$/.test(cleanCandidate)
+          || cleanCandidate.includes('문제')
+          || cleanCandidate.includes('교과서')
+          || cleanCandidate.includes('동아');
+        if (!isBlacklisted) {
+          resolvedName = cleanCandidate;
+        }
       }
     }
 
     setCustomStudentName(resolvedName);
     setCustomClassName(resolvedClass);
-  }, [exam, students]);
+  }, [exam, students, assignedStudents]);
+
+  // 학생 선택 토글 핸들러
+  const handleToggleStudentSelect = (studentId: string) => {
+    setSelectedStudentIds(prev => {
+      let next: string[];
+      if (prev.includes(studentId)) {
+        next = prev.filter(id => id !== studentId);
+      } else {
+        next = [...prev, studentId];
+      }
+
+      if (next.length === 1) {
+        const target = assignedStudents.find(s => s.id === next[0]);
+        if (target) {
+          setCustomStudentName(target.name);
+          setCustomClassName(target.grade || exam?.grade || '');
+        }
+      } else if (next.length === 0) {
+        setCustomStudentName('');
+      } else if (next.length > 1) {
+        const firstSelected = assignedStudents.find(s => s.id === next[0]);
+        if (firstSelected) {
+          setCustomStudentName(firstSelected.name);
+          setCustomClassName(firstSelected.grade || exam?.grade || '');
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectAllStudents = () => {
+    if (selectedStudentIds.length === assignedStudents.length) {
+      setSelectedStudentIds([]);
+      setCustomStudentName('');
+    } else {
+      setSelectedStudentIds(assignedStudents.map(s => s.id));
+      if (assignedStudents.length > 0) {
+        setCustomStudentName(assignedStudents[0].name);
+        setCustomClassName(assignedStudents[0].grade || exam?.grade || '');
+      }
+    }
+  };
 
   // 🔄 설정 변경 헬퍼 및 localStorage 동기화
   const handleDuplexBindingChange = (binding: DuplexBindingType) => {
@@ -812,6 +872,43 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
       // 4. 모달의 fixed/overflow 제약이 전혀 없는 깨끗한 A4 인쇄 HTML 주입
       doc.open();
+      // 다중 학생 일괄 인쇄용 HTML 조합
+      let printContentHtml = '';
+
+      if (selectedStudentIds.length > 1) {
+        const selectedStudents = assignedStudents.filter(s => selectedStudentIds.includes(s.id));
+        const setsHtml = selectedStudents.map((st, sIdx) => {
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = printArea.innerHTML;
+
+          const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
+          nameCells.forEach(cell => {
+            cell.textContent = st.name;
+          });
+
+          const classCells = tempDiv.querySelectorAll('[data-field="class-name"]');
+          classCells.forEach(cell => {
+            cell.textContent = st.grade || exam.grade || '';
+          });
+
+          // 학생 세트 구분: 마지막 페이지에 page-break-after 강제
+          const sheets = tempDiv.querySelectorAll('.a4-print-sheet');
+          if (sheets.length > 0 && sIdx < selectedStudents.length - 1) {
+            const lastSheet = sheets[sheets.length - 1];
+            if (lastSheet instanceof HTMLElement) {
+              lastSheet.style.pageBreakAfter = 'always';
+              lastSheet.style.breakAfter = 'page';
+            }
+          }
+
+          return tempDiv.innerHTML;
+        });
+
+        printContentHtml = setsHtml.join('\n');
+      } else {
+        printContentHtml = printArea.innerHTML;
+      }
+
       doc.write(`
         <!DOCTYPE html>
         <html>
@@ -886,7 +983,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
           </head>
           <body>
             <div id="eduest-print-area">
-              ${printArea.innerHTML}
+              ${printContentHtml}
             </div>
           </body>
         </html>
@@ -1089,7 +1186,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             ) : (
               <>
                 <Printer size={16} />
+                {selectedStudentIds.length > 1 ? (
+                <span>학생 {selectedStudentIds.length}명 일괄 인쇄 (총 {selectedStudentIds.length * totalPages}쪽)</span>
+              ) : (
                 <span>인쇄하기 (PDF 저장)</span>
+              )}
               </>
             )}
           </button>
@@ -1111,6 +1212,54 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         {/* 좌측 사이드바: 레이아웃 & 옵션 패널 (no-print) */}
         <aside className="no-print w-84 bg-slate-900/90 border-r border-slate-800 p-5 overflow-y-auto space-y-5 shrink-0 text-slate-200">
           
+          {/* 👥 0. 배정 학생 인쇄 대상 선택기 (assignedStudents가 있을 때) */}
+          {assignedStudents.length > 0 && (
+            <div className="p-3.5 bg-violet-950/40 border border-violet-500/30 rounded-2xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-black text-violet-300 flex items-center gap-1.5">
+                  <Users size={14} className="text-violet-400" />
+                  <span>배정 학생 인쇄 대상 ({assignedStudents.length}명)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={handleToggleSelectAllStudents}
+                  className="text-[10px] font-black text-violet-400 hover:text-violet-200 underline decoration-violet-500/50 cursor-pointer"
+                >
+                  {selectedStudentIds.length === assignedStudents.length ? '선택 해제' : '전체 선택'}
+                </button>
+              </div>
+
+              {/* 학생 알약 버튼 목록 */}
+              <div className="flex flex-wrap gap-1.5">
+                {assignedStudents.map((st) => {
+                  const isSelected = selectedStudentIds.includes(st.id);
+                  return (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => handleToggleStudentSelect(st.id)}
+                      className={`px-2.5 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
+                        isSelected
+                          ? 'bg-violet-600 text-white shadow-sm shadow-violet-500/30 border border-violet-400'
+                          : 'bg-slate-800/80 text-slate-400 border border-slate-700 hover:bg-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      {isSelected ? <Check size={12} className="text-white" /> : <User size={12} className="text-slate-500" />}
+                      <span>{st.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 다중 선택 안내 */}
+              {selectedStudentIds.length > 1 && (
+                <p className="text-[11px] font-bold text-violet-300/90 bg-violet-900/30 px-2.5 py-1.5 rounded-lg border border-violet-500/20 leading-tight">
+                  ✨ <strong>{selectedStudentIds.length}명 일괄 인쇄:</strong> 각 학생의 이름이 적힌 시험지(총 {selectedStudentIds.length * totalPages}쪽)가 순서대로 연속 인쇄됩니다.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* 1. 페이지당 문항 수 선택 */}
           <div className="space-y-2">
             <label className="text-xs font-black text-slate-300 flex items-center gap-1.5">
