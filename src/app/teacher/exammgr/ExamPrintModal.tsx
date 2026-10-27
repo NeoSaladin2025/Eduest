@@ -49,6 +49,7 @@ export type AnswerFontSizeType = 'small' | 'medium' | 'large';
 export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
 export type TitleFontSizeType = 'small' | 'medium' | 'large';
 export type HeaderDensityType = 'compact' | 'normal';
+export type MarginPresetType = 'ultracompact' | 'compact' | 'normal' | 'custom';
 
 const DEFAULT_CHIPS = ['모의평가', '단원평가', '주간테스트', '과제물', '중간고사 대비'];
 
@@ -56,7 +57,49 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   // 레이아웃 & 옵션 상태
   const [questionsPerPage, setQuestionsPerPage] = useState<QuestionsPerPageType>(4);
   const [columns, setColumns] = useState<1 | 2>(2);
-  const [marginSize, setMarginSize] = useState<'compact' | 'normal'>('normal');
+  
+  // 📏 여백 설정 상태 (초밀착 5mm★ / 좁게 8mm / 보통 12mm / 직접 설정)
+  const [marginPreset, setMarginPreset] = useState<MarginPresetType>('normal');
+  const [customMarginTB, setCustomMarginTB] = useState<number>(8); // mm (상하 여백)
+  const [customMarginLR, setCustomMarginLR] = useState<number>(8); // mm (좌우 여백)
+  const [columnGapSize, setColumnGapSize] = useState<'slim' | 'normal'>('normal'); // 2단 가운데 간격 (슬림 8px vs 보통 16px)
+  const [enableBindingGutter, setEnableBindingGutter] = useState<boolean>(false); // 제본용 안쪽 여백 보정 (+3mm)
+
+  // 📐 실제 적용되는 여백 (mm 단위 및 CSS 스타일)
+  const resolvedMargins = useMemo(() => {
+    let topBottom = 12;
+    let leftRight = 15;
+
+    if (marginPreset === 'ultracompact') {
+      topBottom = 5;
+      leftRight = 6;
+    } else if (marginPreset === 'compact') {
+      topBottom = 8;
+      leftRight = 10;
+    } else if (marginPreset === 'normal') {
+      topBottom = 12;
+      leftRight = 15;
+    } else {
+      topBottom = Math.max(3, Math.min(25, Number(customMarginTB) || 8));
+      leftRight = Math.max(3, Math.min(25, Number(customMarginLR) || 8));
+    }
+
+    const gutterAdd = enableBindingGutter ? 3 : 0;
+    const finalLeft = leftRight + gutterAdd;
+    const finalRight = leftRight;
+
+    return {
+      topBottom,
+      leftRight,
+      finalLeft,
+      finalRight,
+      cssPadding: `${topBottom}mm ${finalRight}mm ${topBottom}mm ${finalLeft}mm`,
+      compactLabel: `${topBottom}mm / ${leftRight}mm`,
+      isUltra: marginPreset === 'ultracompact' || (marginPreset === 'custom' && (topBottom <= 6 || leftRight <= 6)),
+      isCompact: marginPreset === 'compact' || (marginPreset === 'custom' && (topBottom <= 8 || leftRight <= 10)),
+    };
+  }, [marginPreset, customMarginTB, customMarginLR, enableBindingGutter]);
+
   const [showHeaderInfo, setShowHeaderInfo] = useState(true);
   const [showPoints, setShowPoints] = useState(true);
   const [includeAnswerKey, setIncludeAnswerKey] = useState(true);
@@ -152,9 +195,35 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         }
       }
 
-      const savedMargin = localStorage.getItem('eduest_print_margin');
-      if (savedMargin === 'compact' || savedMargin === 'normal') {
-        setMarginSize(savedMargin);
+      // 인쇄 여백 및 간격 설정 복원
+      const savedPreset = localStorage.getItem('eduest_print_margin_preset');
+      const savedOldMargin = localStorage.getItem('eduest_print_margin');
+      if (savedPreset === 'ultracompact' || savedPreset === 'compact' || savedPreset === 'normal' || savedPreset === 'custom') {
+        setMarginPreset(savedPreset);
+      } else if (savedOldMargin === 'compact' || savedOldMargin === 'normal') {
+        setMarginPreset(savedOldMargin);
+      }
+
+      const savedTB = localStorage.getItem('eduest_print_margin_tb');
+      if (savedTB) {
+        const num = Number(savedTB);
+        if (!isNaN(num) && num >= 3 && num <= 25) setCustomMarginTB(num);
+      }
+
+      const savedLR = localStorage.getItem('eduest_print_margin_lr');
+      if (savedLR) {
+        const num = Number(savedLR);
+        if (!isNaN(num) && num >= 3 && num <= 25) setCustomMarginLR(num);
+      }
+
+      const savedGap = localStorage.getItem('eduest_print_column_gap');
+      if (savedGap === 'slim' || savedGap === 'normal') {
+        setColumnGapSize(savedGap);
+      }
+
+      const savedGutter = localStorage.getItem('eduest_print_binding_gutter');
+      if (savedGutter !== null) {
+        setEnableBindingGutter(savedGutter === 'true');
       }
 
       const savedHeaderInfo = localStorage.getItem('eduest_print_show_header');
@@ -477,9 +546,35 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     localStorage.setItem('eduest_print_columns', String(cols));
   };
 
-  const handleMarginChange = (margin: 'compact' | 'normal') => {
-    setMarginSize(margin);
-    localStorage.setItem('eduest_print_margin', margin);
+  const handleMarginPresetChange = (preset: MarginPresetType) => {
+    setMarginPreset(preset);
+    localStorage.setItem('eduest_print_margin_preset', preset);
+    if (preset === 'ultracompact') {
+      setColumnGapSize('slim');
+      localStorage.setItem('eduest_print_column_gap', 'slim');
+    }
+  };
+
+  const handleCustomMarginTBChange = (val: number) => {
+    const clamped = Math.max(3, Math.min(25, val));
+    setCustomMarginTB(clamped);
+    localStorage.setItem('eduest_print_margin_tb', String(clamped));
+  };
+
+  const handleCustomMarginLRChange = (val: number) => {
+    const clamped = Math.max(3, Math.min(25, val));
+    setCustomMarginLR(clamped);
+    localStorage.setItem('eduest_print_margin_lr', String(clamped));
+  };
+
+  const handleToggleColumnGapSize = (gap: 'slim' | 'normal') => {
+    setColumnGapSize(gap);
+    localStorage.setItem('eduest_print_column_gap', gap);
+  };
+
+  const handleToggleBindingGutter = (checked: boolean) => {
+    setEnableBindingGutter(checked);
+    localStorage.setItem('eduest_print_binding_gutter', String(checked));
   };
 
   const handleToggleHeaderInfo = (checked: boolean) => {
@@ -868,7 +963,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         return;
       }
 
-      const paddingVal = marginSize === 'compact' ? '8mm 10mm' : '12mm 15mm';
+      const paddingVal = resolvedMargins.cssPadding;
 
       // 4. 모달의 fixed/overflow 제약이 전혀 없는 깨끗한 A4 인쇄 HTML 주입
       doc.open();
@@ -1092,7 +1187,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             max-height: 297mm !important;
             box-sizing: border-box !important;
             margin: 0 auto !important;
-            padding: ${marginSize === 'compact' ? '8mm 10mm' : '12mm 15mm'} !important;
+            padding: ${resolvedMargins.cssPadding} !important;
             page-break-before: auto !important;
             page-break-after: always !important;
             page-break-inside: avoid !important;
@@ -1290,60 +1385,224 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             </div>
           </div>
 
-          {/* 2. 단(Column) & 여백 레이아웃 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-black text-slate-300 flex items-center gap-1">
+          {/* 2. 단(Column) 배치 */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-black text-slate-300 flex items-center justify-between">
+              <span className="flex items-center gap-1">
                 <Columns size={12} className="text-violet-400" />
                 <span>단 배치</span>
+              </span>
+              <span className="text-[10px] text-slate-400">{columns === 2 ? '2단 분할' : '1단 전면'}</span>
+            </label>
+            <div className="grid grid-cols-2 gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
+              <button
+                type="button"
+                onClick={() => handleColumnsChange(1)}
+                className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  columns === 1 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                1단
+              </button>
+              <button
+                type="button"
+                onClick={() => handleColumnsChange(2)}
+                className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                  columns === 2 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                2단
+              </button>
+            </div>
+          </div>
+
+          {/* 3. 인쇄 여백 설정 (초밀착 5mm★ / 좁게 8mm / 보통 12mm / 직접 설정) */}
+          <div className="space-y-2 p-3 bg-slate-800/60 rounded-xl border border-slate-700/80">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-black text-slate-200 flex items-center gap-1.5">
+                <FileText size={13} className="text-violet-400" />
+                <span>인쇄 여백 (상하/좌우)</span>
               </label>
-              <div className="grid grid-cols-2 gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
-                <button
-                  type="button"
-                  onClick={() => handleColumnsChange(1)}
-                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                    columns === 1 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  1단
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleColumnsChange(2)}
-                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                    columns === 2 ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  2단
-                </button>
-              </div>
+              <span className="text-[10px] text-violet-300 font-mono font-bold bg-violet-950/60 px-2 py-0.5 rounded-md border border-violet-700/40">
+                {resolvedMargins.compactLabel}
+              </span>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-black text-slate-300 flex items-center gap-1">
-                <FileText size={12} className="text-violet-400" />
-                <span>인쇄 여백</span>
-              </label>
-              <div className="grid grid-cols-2 gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700">
-                <button
-                  type="button"
-                  onClick={() => handleMarginChange('compact')}
-                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                    marginSize === 'compact' ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  좁게
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleMarginChange('normal')}
-                  className={`py-1.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                    marginSize === 'normal' ? 'bg-violet-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  보통
-                </button>
+            {/* 4단계 프리셋 버튼 그리드 */}
+            <div className="grid grid-cols-4 gap-1 bg-slate-900/80 p-1 rounded-xl border border-slate-700">
+              <button
+                type="button"
+                onClick={() => handleMarginPresetChange('ultracompact')}
+                className={`py-1.5 px-0.5 rounded-lg text-[10px] font-black transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                  marginPreset === 'ultracompact'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+                title="여백 5mm: 문제와 글씨 크기 극대화 (추천★)"
+              >
+                <span className="leading-none">초밀착</span>
+                <span className="text-[9px] opacity-80 leading-none">5mm★</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleMarginPresetChange('compact')}
+                className={`py-1.5 px-0.5 rounded-lg text-[10px] font-black transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                  marginPreset === 'compact'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+                title="여백 8mm: 컴팩트 고밀도형"
+              >
+                <span className="leading-none">좁게</span>
+                <span className="text-[9px] opacity-80 leading-none">8mm</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleMarginPresetChange('normal')}
+                className={`py-1.5 px-0.5 rounded-lg text-[10px] font-black transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                  marginPreset === 'normal'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+                title="여백 12mm: 표준 시험지 여백"
+              >
+                <span className="leading-none">보통</span>
+                <span className="text-[9px] opacity-80 leading-none">12mm</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleMarginPresetChange('custom')}
+                className={`py-1.5 px-0.5 rounded-lg text-[10px] font-black transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                  marginPreset === 'custom'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+                title="사용자 맞춤 직접 설정"
+              >
+                <span className="leading-none">직접</span>
+                <span className="text-[9px] opacity-80 leading-none">설정</span>
+              </button>
+            </div>
+
+            {/* 직접 설정 선택 시 세부 슬라이더/인풋 아코디언 */}
+            {marginPreset === 'custom' && (
+              <div className="space-y-2.5 pt-2 pb-1 border-t border-slate-700/60 animate-in fade-in duration-150">
+                {/* 좌우 여백 */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-300">
+                    <span>좌우 여백 (너비 확대)</span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleCustomMarginLRChange(customMarginLR - 1)}
+                        disabled={customMarginLR <= 3}
+                        className="w-5 h-5 rounded bg-slate-700 hover:bg-slate-600 text-white font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono text-violet-300 w-8 text-center">{customMarginLR}mm</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCustomMarginLRChange(customMarginLR + 1)}
+                        disabled={customMarginLR >= 25}
+                        className="w-5 h-5 rounded bg-slate-700 hover:bg-slate-600 text-white font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={25}
+                    value={customMarginLR}
+                    onChange={(e) => handleCustomMarginLRChange(Number(e.target.value))}
+                    className="w-full accent-violet-500 h-1 bg-slate-700 rounded-lg cursor-pointer"
+                  />
+                </div>
+
+                {/* 상하 여백 */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-300">
+                    <span>상하 여백 (높이 확대)</span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleCustomMarginTBChange(customMarginTB - 1)}
+                        disabled={customMarginTB <= 3}
+                        className="w-5 h-5 rounded bg-slate-700 hover:bg-slate-600 text-white font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        -
+                      </button>
+                      <span className="font-mono text-violet-300 w-8 text-center">{customMarginTB}mm</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCustomMarginTBChange(customMarginTB + 1)}
+                        disabled={customMarginTB >= 25}
+                        className="w-5 h-5 rounded bg-slate-700 hover:bg-slate-600 text-white font-bold flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={25}
+                    value={customMarginTB}
+                    onChange={(e) => handleCustomMarginTBChange(Number(e.target.value))}
+                    className="w-full accent-violet-500 h-1 bg-slate-700 rounded-lg cursor-pointer"
+                  />
+                </div>
+
+                {/* 5mm 미만 주의 경고 */}
+                {(customMarginTB < 5 || customMarginLR < 5) && (
+                  <div className="flex items-center gap-1 text-[9px] text-amber-300 bg-amber-950/40 p-1.5 rounded-lg border border-amber-800/40">
+                    <AlertTriangle size={11} className="shrink-0" />
+                    <span>5mm 미만은 일부 프린터에서 가장자리가 잘릴 수 있습니다.</span>
+                  </div>
+                )}
               </div>
+            )}
+
+            {/* 2단 및 제본 스마트 부가 옵션 */}
+            <div className="pt-2 border-t border-slate-700/60 space-y-1.5">
+              {columns === 2 && (
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="font-bold text-slate-300">2단 가운데 간격</span>
+                  <div className="inline-flex rounded-md bg-slate-900 p-0.5 border border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleColumnGapSize('slim')}
+                      className={`px-2 py-0.5 text-[9px] font-bold rounded cursor-pointer ${
+                        columnGapSize === 'slim' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      title="단 사이를 좁혀 문제 가로폭 추가 확보"
+                    >
+                      슬림 (추천★)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleColumnGapSize('normal')}
+                      className={`px-2 py-0.5 text-[9px] font-bold rounded cursor-pointer ${
+                        columnGapSize === 'normal' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      보통
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <label className="flex items-center justify-between text-[10px] cursor-pointer pt-0.5">
+                <span className="font-bold text-slate-300">제본 여백 (+3mm 보정)</span>
+                <input
+                  type="checkbox"
+                  checked={enableBindingGutter}
+                  onChange={(e) => handleToggleBindingGutter(e.target.checked)}
+                  className="accent-violet-500 rounded cursor-pointer"
+                />
+              </label>
             </div>
           </div>
 
@@ -2129,14 +2388,15 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 <div
                   key={pageIdx}
                   className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
-                    marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
-                  } ${shouldRotate ? 'even-page-rotate' : ''} ${
+                    shouldRotate ? 'even-page-rotate' : ''
+                  } ${
                     shouldRotate && previewRotateEven ? 'rotate-180' : ''
                   }`}
                   style={{
                     width: '210mm',
                     minHeight: '297mm',
-                    boxSizing: 'border-box'
+                    boxSizing: 'border-box',
+                    padding: resolvedMargins.cssPadding,
                   }}
                 >
                   {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
@@ -2317,12 +2577,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                                 alt={`문제 ${globalQuestionNumber}번`}
                                 className={`w-full object-contain object-top ${
                                   questionsPerPage === 1
-                                    ? 'max-h-[140mm]'
+                                    ? (resolvedMargins.isUltra ? 'max-h-[160mm]' : 'max-h-[140mm]')
                                     : questionsPerPage === 2
-                                    ? 'max-h-[105mm]'
+                                    ? (resolvedMargins.isUltra ? 'max-h-[120mm]' : 'max-h-[105mm]')
                                     : questionsPerPage === 4
-                                    ? 'max-h-[85mm]'
-                                    : 'max-h-[60mm]'
+                                    ? (resolvedMargins.isUltra ? 'max-h-[96mm]' : resolvedMargins.isCompact ? 'max-h-[90mm]' : 'max-h-[85mm]')
+                                    : (resolvedMargins.isUltra ? 'max-h-[68mm]' : 'max-h-[60mm]')
                                 }`}
                               />
                             </div>
@@ -2401,8 +2661,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                         <div
                           className={`flex-1 grid ${rowGridClass} ${
                             showCenterDivider
-                              ? 'pr-4 border-r border-slate-300 print:border-slate-400'
-                              : 'pr-3'
+                              ? (columnGapSize === 'slim' ? 'pr-2 border-r border-slate-300 print:border-slate-400' : 'pr-4 border-r border-slate-300 print:border-slate-400')
+                              : (columnGapSize === 'slim' ? 'pr-1.5' : 'pr-3')
                           }`}
                         >
                           {leftItems.map(({ q, num }) => renderQuestionCard(q, num))}
@@ -2411,7 +2671,9 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                         {/* 우측 단 */}
                         <div
                           className={`flex-1 grid ${rowGridClass} ${
-                            showCenterDivider ? 'pl-4' : 'pl-3'
+                            showCenterDivider
+                              ? (columnGapSize === 'slim' ? 'pl-2' : 'pl-4')
+                              : (columnGapSize === 'slim' ? 'pl-1.5' : 'pl-3')
                           }`}
                         >
                           {rightItems.map(({ q, num }) => renderQuestionCard(q, num))}
@@ -2443,14 +2705,15 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                   <div
                     key={`ans-page-${ansPageIdx}`}
                     className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
-                      marginSize === 'compact' ? 'p-[8mm]' : 'p-[12mm]'
-                    } ${shouldRotate ? 'even-page-rotate' : ''} ${
+                      shouldRotate ? 'even-page-rotate' : ''
+                    } ${
                       shouldRotate && previewRotateEven ? 'rotate-180' : ''
                     }`}
                     style={{
                       width: '210mm',
                       minHeight: '297mm',
-                      boxSizing: 'border-box'
+                      boxSizing: 'border-box',
+                      padding: resolvedMargins.cssPadding,
                     }}
                   >
                     {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
