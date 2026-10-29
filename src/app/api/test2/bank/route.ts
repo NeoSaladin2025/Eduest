@@ -24,6 +24,7 @@ export interface TestBankItem {
   name: string;
   folder_name?: string | null;
   folder_path?: string | null;
+  folder_id?: string | null; // 원본 회차 폴더의 drive_id
   question_number?: number | null;
   display_name?: string | null;
   question_image_drive_id?: string | null;
@@ -292,6 +293,7 @@ export async function PUT(req: NextRequest) {
           name: item.name,
           folder_name: item.folder_name || null,
           folder_path: item.folder_path || null,
+          folder_id: item.folder_id || null,
           question_number: typeof item.question_number === 'number' ? item.question_number : null,
           display_name: item.display_name || null,
           question_image_drive_id: item.question_image_drive_id || null,

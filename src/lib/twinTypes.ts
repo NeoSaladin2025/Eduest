@@ -20,6 +20,7 @@ export interface TwinRoundData {
 export interface FolderTwinData {
   parent_folder_id: string; // 원본 회차 폴더 drive_id (예: 1차)
   parent_folder_name: string;
+  parent_folder_path?: string; // 원본 회차 폴더 전체 경로 (예: "중3 > 2학기 > 수학 모의평가 > 2차")
   twin_root_folder_id: string; // [쌍둥이] 폴더 drive_id
   grade: string;
   rounds: Record<string, TwinRoundData>; // { "1차": ..., "2차": ... }

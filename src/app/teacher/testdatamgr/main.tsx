@@ -44,6 +44,7 @@ export interface RawFileSelection {
   name: string;
   grade?: string;
   question_image_drive_id?: string | null;
+  folder_id?: string;
   folder_name?: string;
   folder_path?: string;
   question_number?: number | null;
@@ -267,6 +268,30 @@ export default function TestDataManagerMain() {
     }
   };
 
+  // 🌟 원천 DB 트리로부터 파일 drive_id -> 소속 회차 폴더 drive_id 및 전체 경로 매핑 생성
+  const fileToFolderMetaMap = useMemo(() => {
+    const fileToFolderId = new Map<string, string>();
+    const folderIdToPath = new Map<string, string>();
+
+    const traverse = (nodes: ExamLibraryNode[], pathAncestors: string[]) => {
+      for (const node of nodes) {
+        const currentPath = [...pathAncestors, node.name];
+        folderIdToPath.set(node.drive_id, currentPath.join(" > "));
+
+        if (node.files && node.files.length > 0) {
+          for (const file of node.files) {
+            fileToFolderId.set(file.drive_id, node.drive_id);
+          }
+        }
+        if (node.subFolders && node.subFolders.length > 0) {
+          traverse(node.subFolders, currentPath);
+        }
+      }
+    };
+    traverse(rawTree, []);
+    return { fileToFolderId, folderIdToPath };
+  }, [rawTree]);
+
   // 특정 원본 회차 폴더의 특정 문항 번호에 연결된 쌍둥이 목록 조회
   const getQuestionTwins = (folderDriveId: string, qNum: number | null): Array<{ roundName: string; item: TwinQuestionItem }> => {
     if (!twinStore || !folderDriveId || qNum === null) return [];
@@ -294,21 +319,43 @@ export default function TestDataManagerMain() {
     const qNum = item.question_number ?? parseQuestionNum(item.name);
     if (qNum === null) return [];
 
-    for (const fData of Object.values(twinStore.folders || {})) {
-      if (
-        fData.parent_folder_name === item.folder_name ||
-        (item.folder_path && item.folder_path.includes(fData.parent_folder_name))
-      ) {
-        const results: Array<{ roundName: string; item: TwinQuestionItem }> = [];
-        Object.entries(fData.rounds || {}).forEach(([rName, rData]) => {
-          const matched = rData.items?.find(it => it.question_number === qNum);
-          if (matched) results.push({ roundName: rName, item: matched });
-        });
-        if (results.length > 0) {
-          return results.sort((a, b) => parseRoundNumber(a.roundName) - parseRoundNumber(b.roundName));
+    // 1순위: 문항에 직접 저장된 folder_id 또는 트리의 파일 drive_id 매핑으로 원본 폴더 ID 찾기
+    const folderId = item.folder_id || fileToFolderMetaMap.fileToFolderId.get(item.drive_id);
+    if (folderId) {
+      return getQuestionTwins(folderId, qNum);
+    }
+
+    // 2순위 (fallback: 트리에 없는 파일 등의 예외):
+    // 단순 '1차', '2차' 단독 일치로는 절대 매칭하지 않고,
+    // 전체 폴더 경로(item.folder_path)가 일치하거나 부모 폴더(학교/단원명)까지 포함하여 정확히 일치할 때만 매칭
+    const itemPath = (item.folder_path || '').trim();
+    if (!itemPath) return [];
+
+    for (const [fId, fData] of Object.entries(twinStore.folders || {})) {
+      if (!fData.rounds) continue;
+
+      const twinPath = (fData.parent_folder_path || fileToFolderMetaMap.folderIdToPath.get(fId) || '').trim();
+      let isPathMatched = false;
+
+      if (twinPath && itemPath) {
+        const twinParts = twinPath.split(/\s*>\s*/).filter(Boolean);
+        const itemParts = itemPath.split(/\s*>\s*/).filter(Boolean);
+        if (twinParts.length >= 2 && itemParts.length >= 2) {
+          const twinLast2 = twinParts.slice(-2).join(' > ');
+          const itemLast2 = itemParts.slice(-2).join(' > ');
+          if (twinLast2 === itemLast2) {
+            isPathMatched = true;
+          }
+        } else if (twinPath === itemPath) {
+          isPathMatched = true;
         }
       }
+
+      if (isPathMatched) {
+        return getQuestionTwins(fId, qNum);
+      }
     }
+
     return [];
   };
 
@@ -471,6 +518,7 @@ export default function TestDataManagerMain() {
       name: string;
       grade: string;
       question_image_drive_id?: string | null;
+      folder_id: string;
       folder_name: string;
       folder_path: string;
       question_number: number;
@@ -497,6 +545,7 @@ export default function TestDataManagerMain() {
                 name: file.name,
                 grade: selectedGrade,
                 question_image_drive_id: file.question_image_drive_id || null,
+                folder_id: node.drive_id,
                 folder_name: node.name,
                 folder_path: currentPath.join(" > "),
                 question_number: qNum,
@@ -587,6 +636,7 @@ export default function TestDataManagerMain() {
           name: f.name,
           grade: selectedGrade,
           question_image_drive_id: f.question_image_drive_id ?? null,
+          folder_id: n.drive_id,
           folder_name: n.name,
           folder_path: currentP.join(" > "),
           question_number: qNum,
@@ -708,6 +758,7 @@ export default function TestDataManagerMain() {
             name: f.name,
             grade: selectedGrade,
             question_image_drive_id: f.question_image_drive_id,
+            folder_id: f.folder_id,
             folder_name: f.folder_name,
             folder_path: f.folder_path,
             question_number: f.question_number,
@@ -1068,6 +1119,7 @@ export default function TestDataManagerMain() {
                                   name: fileNode.name,
                                   grade: selectedGrade,
                                   question_image_drive_id: fileNode.question_image_drive_id,
+                                  folder_id: node.drive_id,
                                   folder_name: node.name,
                                   folder_path: currentPath.join(" > "),
                                   question_number: qNum,

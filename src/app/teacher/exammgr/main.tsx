@@ -1799,10 +1799,30 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     if (!qNum || isNaN(qNum)) return [];
 
     let matchedFolderData = null;
+    const qFolder = (q.folder_name || '').trim();
+    const isSimpleRound = /^\d+\s*차$/i.test(qFolder) || /^\d+\s*회$/i.test(qFolder);
+
     for (const fData of Object.values(twinStore.folders || {})) {
+      if (!fData.rounds) continue;
+
+      const twinPath = (fData.parent_folder_path || '').trim();
+
+      // 단순 "1차", "2차"처럼 1단어 회차명인 경우:
+      // twinPath(예: "수학 모의평가 > 2차")에 상위 폴더가 명시되어 있다면,
+      // q의 컨텍스트에 그 상위 폴더명이 포함되어 있는지 검증 (다른 학교/교재의 1차/2차와 오매칭 방지)
+      if (isSimpleRound && twinPath) {
+        const qContext = `${q.name || ''} ${q.display_name || ''} ${q.folder_name || ''}`;
+        const twinParts = twinPath.split(/\s*>\s*/).filter(Boolean);
+        const parentName = twinParts.length >= 2 ? twinParts[twinParts.length - 2] : '';
+        if (parentName && !qContext.includes(parentName)) {
+          continue; // 다른 상위 폴더이므로 제외
+        }
+      }
+
       if (
         fData.parent_folder_name === q.folder_name ||
         (q.folder_name && fData.parent_folder_name.includes(q.folder_name)) ||
+        (q.folder_name && fData.parent_folder_path && fData.parent_folder_path.includes(q.folder_name)) ||
         (q.name && fData.parent_folder_name.includes(q.name))
       ) {
         matchedFolderData = fData;

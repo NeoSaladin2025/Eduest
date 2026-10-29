@@ -212,6 +212,20 @@ export async function POST(req: NextRequest) {
       .eq("type", "folder");
 
     const allFolderList = allFolders || [];
+    const folderLookup = new Map<string, any>();
+    allFolderList.forEach((f) => folderLookup.set(f.drive_id, f));
+
+    // 특정 폴더의 전체 조상 경로 문자열 계산 (예: "중3 > 2학기 > 수학 모의평가 > 2차")
+    const getFolderPath = (folderId: string): string => {
+      const parts: string[] = [];
+      let curr = folderLookup.get(folderId);
+      while (curr) {
+        parts.unshift(curr.name);
+        curr = curr.parent_id ? folderLookup.get(curr.parent_id) : null;
+      }
+      return parts.join(" > ");
+    };
+
     let targetFolderMap = new Map<string, string>(); // folderId -> folderName
 
     if (Array.isArray(parentFolderIds) && parentFolderIds.length > 0) {
@@ -376,6 +390,7 @@ export async function POST(req: NextRequest) {
               store.folders[pId] = {
                 parent_folder_id: pId,
                 parent_folder_name: parentName,
+                parent_folder_path: getFolderPath(pId),
                 twin_root_folder_id: tf.id,
                 grade: grade || "고1",
                 rounds: roundsMap,
