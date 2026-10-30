@@ -13,6 +13,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { ReviewItem } from './types';
+import { parseQuestionFromHtmlClient } from '@/lib/clientQuestionParser';
 
 interface ReviewSolutionModalProps {
   items: ReviewItem[];
@@ -32,57 +33,67 @@ export default function ReviewSolutionModal({
   const [htmlContent, setHtmlContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [extractedData, setExtractedData] = useState<{ imageUrl?: string; questionHtml?: string } | null>(null);
 
   const currentItem = items[currentIndex];
+
+  const isRealUrl = (url?: string) =>
+    Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/')));
 
   useEffect(() => {
     if (!currentItem) return;
 
     let isCancelled = false;
+    const fileId = currentItem.solutionUrl || currentItem.fileId || currentItem.id;
 
-    // 만약 해설 탭이고 solutionUrl이 있을 때 HTML 로딩
-    if (activeTab === 'solution') {
-      const solutionUrl = currentItem.solutionUrl || currentItem.fileId;
-
-      if (!solutionUrl) {
-        setHtmlContent(null);
-        return;
-      }
-
-      // 이미 완전한 HTML이나 URL인 경우
-      if (solutionUrl.startsWith('http') || solutionUrl.startsWith('data:')) {
-        setHtmlContent(solutionUrl);
-        return;
-      }
-
-      setLoading(true);
-      setErrorMsg(null);
-
-      fetch(`/api/drive/library/file?fileId=${encodeURIComponent(solutionUrl)}&type=html`)
-        .then(res => res.json())
-        .then(data => {
-          if (isCancelled) return;
-          if (data.success && data.data) {
-            setHtmlContent(data.data);
-          } else {
-            // fallback: direct HTML이 아니라면
-            setErrorMsg(data.error || '해설 문서를 불러오지 못했습니다.');
-          }
-        })
-        .catch(err => {
-          if (isCancelled) return;
-          console.error('Failed to fetch solution html:', err);
-          setErrorMsg('해설 로딩 중 통신 오류가 발생했습니다.');
-        })
-        .finally(() => {
-          if (!isCancelled) setLoading(false);
-        });
+    if (!fileId) {
+      setHtmlContent(null);
+      setExtractedData(null);
+      return;
     }
+
+    // 이미 완전한 HTML이나 웹 링크인 경우
+    if (fileId.startsWith('http') || fileId.startsWith('data:')) {
+      setHtmlContent(fileId);
+      return;
+    }
+
+    setLoading(true);
+    setErrorMsg(null);
+
+    fetch(`/api/drive/library/file?fileId=${encodeURIComponent(fileId)}&type=html`)
+      .then(res => res.json())
+      .then(data => {
+        if (isCancelled) return;
+        if (data.success && data.data) {
+          const rawHtml = data.data;
+          setHtmlContent(rawHtml);
+          const parsed = parseQuestionFromHtmlClient(rawHtml, {
+            drive_id: fileId,
+            name: currentItem.name,
+            question_image_drive_id: (currentItem as any).question_image_drive_id,
+          });
+          setExtractedData({
+            imageUrl: parsed.imageUrl,
+            questionHtml: parsed.questionHtml,
+          });
+        } else {
+          setErrorMsg(data.error || '문서를 불러오지 못했습니다.');
+        }
+      })
+      .catch(err => {
+        if (isCancelled) return;
+        console.error('Failed to fetch html:', err);
+        setErrorMsg('문서 로딩 중 통신 오류가 발생했습니다.');
+      })
+      .finally(() => {
+        if (!isCancelled) setLoading(false);
+      });
 
     return () => {
       isCancelled = true;
     };
-  }, [currentItem, activeTab]);
+  }, [currentItem]);
 
   if (!currentItem) return null;
 
@@ -238,18 +249,58 @@ export default function ReviewSolutionModal({
           ) : (
             /* 문제 원본 보기 */
             <div className="w-full h-full flex items-center justify-center p-6 overflow-auto bg-slate-900/50">
-              {currentItem.problemUrl ? (
-                <img
-                  src={currentItem.problemUrl}
-                  alt={currentItem.name}
-                  className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-2xl bg-white p-3"
-                />
-              ) : (
-                <div className="text-center space-y-2 text-slate-400">
-                  <FileText size={40} className="mx-auto text-indigo-400 opacity-60" />
-                  <p className="text-sm font-bold">문제 이미지가 등록되어 있지 않습니다.</p>
-                </div>
-              )}
+              {(() => {
+                let resolvedProblemUrl = '';
+                if (isRealUrl(currentItem.problemUrl)) {
+                  resolvedProblemUrl = currentItem.problemUrl!;
+                } else if (isRealUrl(extractedData?.imageUrl)) {
+                  resolvedProblemUrl = extractedData?.imageUrl || '';
+                } else if ((currentItem as any).question_image_drive_id) {
+                  resolvedProblemUrl = `https://lh3.googleusercontent.com/d/${(currentItem as any).question_image_drive_id}`;
+                }
+
+                if (loading) {
+                  return (
+                    <div className="text-center space-y-3 py-16 text-slate-400">
+                      <Loader2 size={36} className="mx-auto text-indigo-400 animate-spin" />
+                      <p className="text-sm font-bold text-slate-300">문제 원본을 불러오는 중입니다...</p>
+                    </div>
+                  );
+                }
+
+                if (resolvedProblemUrl) {
+                  return (
+                    <img
+                      src={resolvedProblemUrl}
+                      alt={currentItem.name}
+                      className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-2xl bg-white p-3"
+                    />
+                  );
+                }
+
+                if (extractedData?.questionHtml) {
+                  return (
+                    <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-5 overflow-hidden">
+                      <iframe
+                        srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
+<script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+<style>body{font-family:system-ui,-apple-system,sans-serif;font-size:16px;line-height:1.8;padding:12px;color:#1e293b;background:#ffffff;margin:0;}</style>
+</head><body><div class="tex2jax_process">${extractedData.questionHtml}</div></body></html>`}
+                        className="w-full min-h-[350px] border-0"
+                        title="문제 지문"
+                      />
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="text-center space-y-2 text-slate-400">
+                    <FileText size={40} className="mx-auto text-indigo-400 opacity-60" />
+                    <p className="text-sm font-bold">문제 이미지가 등록되어 있지 않습니다.</p>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>

@@ -32,6 +32,7 @@ import { ReviewFolder, ReviewItem, StudentReviewData } from './types';
 import ReviewTestModal from './ReviewTestModal';
 import ReviewSolutionModal from './ReviewSolutionModal';
 import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
+import { parseQuestionFromHtmlClient } from '@/lib/clientQuestionParser';
 
 interface StudentReviewExplorerProps {
   studentId: string;
@@ -208,6 +209,89 @@ export default function StudentReviewExplorer({
         }
       })
       .catch(console.error);
+  }, [studentId, reviewData.items]);
+
+  // 🌟 [버그 수정] 라이브러리 HTML 문항(type === 'html') 누락 데이터(problemUrl, answer, question_type) 자동 보강 및 영구 저장
+  useEffect(() => {
+    const isRealUrl = (url?: string) =>
+      Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/')));
+
+    const htmlItemsToEnrich = reviewData.items.filter(
+      item => (item.type === 'html' || item.name.toLowerCase().endsWith('.html')) &&
+              (!isRealUrl(item.problemUrl) || !item.answer || !item.question_type)
+    );
+
+    if (htmlItemsToEnrich.length === 0) return;
+
+    let isCancelled = false;
+
+    Promise.allSettled(
+      htmlItemsToEnrich.map(async (item) => {
+        const fileId = item.fileId || item.solutionUrl || item.problemUrl || item.id;
+        if (!fileId) return null;
+
+        try {
+          const res = await fetch(`/api/drive/library/file?fileId=${encodeURIComponent(fileId)}&type=html`);
+          const json = await res.json();
+          if (json.success && json.data) {
+            const parsed = parseQuestionFromHtmlClient(json.data, {
+              drive_id: fileId,
+              name: item.name,
+              question_image_drive_id: (item as any).question_image_drive_id,
+            });
+            return {
+              id: item.id,
+              parsed,
+            };
+          }
+        } catch (e) {
+          console.error(`[StudentReviewExplorer] Failed to enrich html item ${item.name}:`, e);
+        }
+        return null;
+      })
+    ).then((results) => {
+      if (isCancelled) return;
+
+      const enrichmentMap: Record<string, any> = {};
+      results.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) {
+          enrichmentMap[r.value.id] = r.value.parsed;
+        }
+      });
+
+      if (Object.keys(enrichmentMap).length > 0) {
+        let hasUpdated = false;
+        const nextItems = reviewData.items.map(item => {
+          const parsed = enrichmentMap[item.id];
+          if (!parsed) return item;
+
+          hasUpdated = true;
+          return {
+            ...item,
+            problemUrl: parsed.imageUrl || item.problemUrl,
+            answer: parsed.answer || item.answer,
+            raw_answer: parsed.rawAnswer || item.raw_answer,
+            question_type: parsed.question_type || item.question_type,
+            is_descriptive: parsed.is_descriptive ?? item.is_descriptive,
+            sub_questions: parsed.sub_questions || item.sub_questions,
+          };
+        });
+
+        if (hasUpdated) {
+          const nextData = { ...reviewData, items: nextItems };
+          onUpdateReviewData(nextData);
+          fetch('/api/student/review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ studentId, reviewData: nextData }),
+          }).catch(console.error);
+        }
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [studentId, reviewData.items]);
 
   // Toggle tree expand/collapse

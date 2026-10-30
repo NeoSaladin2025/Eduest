@@ -34,6 +34,7 @@ import {
 import { ReviewItem, StudentReviewData, ReviewTestHistory, ReviewTestResultItem, ReviewLapRecord } from './types';
 import ReviewSolutionModal from './ReviewSolutionModal';
 import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
+import { parseQuestionFromHtmlClient, ExtractedQuestionResult } from '@/lib/clientQuestionParser';
 
 interface ReviewTestModalProps {
   studentId: string;
@@ -91,6 +92,83 @@ export default function ReviewTestModal({
   // DB 저장 완료 메시지
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
 
+  // ── 🌟 [버그 수정] 라이브러리 HTML 문항 자동 파싱 캐시 (문제 이미지, 정답, 문항유형) ──
+  const [htmlParsedCache, setHtmlParsedCache] = useState<Record<string, ExtractedQuestionResult>>({});
+  const [htmlLoadingIds, setHtmlLoadingIds] = useState<Record<string, boolean>>({});
+  const [fullHtmlCache, setFullHtmlCache] = useState<Record<string, string>>({});
+  const [imageLoadErrors, setImageLoadErrors] = useState<Record<string, boolean>>({});
+
+  const isRealUrl = (url?: string) =>
+    Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/')));
+
+  // 📄 라이브러리 HTML 파일 또는 누락 데이터 비동기 자동 파싱 및 보강
+  useEffect(() => {
+    let isCancelled = false;
+
+    items.forEach(async (item) => {
+      const hasRealImg = isRealUrl(item.problemUrl);
+      const hasAnswer = Boolean(item.answer || item.raw_answer);
+      const isHtmlType = item.type === 'html' || item.name.toLowerCase().endsWith('.html') || !hasRealImg;
+
+      if (!isHtmlType && hasRealImg && hasAnswer) return;
+      if (htmlParsedCache[item.id] || htmlLoadingIds[item.id]) return;
+
+      const fileId = item.fileId || item.solutionUrl || item.problemUrl || item.id;
+      if (!fileId) return;
+
+      setHtmlLoadingIds(prev => ({ ...prev, [item.id]: true }));
+      try {
+        const res = await fetch(`/api/drive/library/file?fileId=${encodeURIComponent(fileId)}&type=html`);
+        const json = await res.json();
+        if (isCancelled) return;
+
+        if (json.success && json.data) {
+          const rawHtml = json.data;
+          setFullHtmlCache(prev => ({ ...prev, [item.id]: rawHtml }));
+          const parsed = parseQuestionFromHtmlClient(rawHtml, {
+            drive_id: fileId,
+            name: item.name,
+            question_image_drive_id: (item as any).question_image_drive_id,
+          });
+
+          setHtmlParsedCache(prev => ({ ...prev, [item.id]: parsed }));
+
+          // 🌟 부모 reviewData 영구 보강 동기화 (문제 이미지 & 정답 & 문항유형 채워넣기)
+          if (onUpdateReviewData && reviewData) {
+            const currentItemInReview = reviewData.items.find(ri => ri.id === item.id || ri.fileId === item.fileId);
+            if (currentItemInReview && (!isRealUrl(currentItemInReview.problemUrl) || !currentItemInReview.answer)) {
+              const updatedItems = reviewData.items.map(ri => {
+                if (ri.id === item.id || ri.fileId === item.fileId) {
+                  return {
+                    ...ri,
+                    problemUrl: parsed.imageUrl || ri.problemUrl,
+                    answer: parsed.answer || ri.answer,
+                    raw_answer: parsed.rawAnswer || ri.raw_answer,
+                    question_type: parsed.question_type || ri.question_type,
+                    is_descriptive: parsed.is_descriptive ?? ri.is_descriptive,
+                    sub_questions: parsed.sub_questions || ri.sub_questions,
+                  };
+                }
+                return ri;
+              });
+              onUpdateReviewData({ ...reviewData, items: updatedItems });
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[ReviewTestModal] Failed to parse question html for ${item.name}:`, err);
+      } finally {
+        if (!isCancelled) {
+          setHtmlLoadingIds(prev => ({ ...prev, [item.id]: false }));
+        }
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [items, htmlParsedCache, htmlLoadingIds, onUpdateReviewData, reviewData]);
+
   // ── 1. 🏃 달리기초 스톱워치 & 문제별 소요시간 실시간 계측 ──────────────────────
   useEffect(() => {
     if (viewMode !== 'taking') return;
@@ -145,14 +223,17 @@ export default function ReviewTestModal({
 
   // ── 🧩 문항 타입 판별 ('MULTIPLE' | 'SHORT' | 'DESCRIPTIVE') ───────
   const getItemQuestionType = (item: ReviewItem): 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE' => {
+    const parsed = htmlParsedCache[item.id];
+    if (parsed?.question_type) return parsed.question_type;
     if (item.question_type) return item.question_type;
-    if (item.is_descriptive) return 'DESCRIPTIVE';
+    if (parsed?.is_descriptive || item.is_descriptive) return 'DESCRIPTIVE';
 
-    const ans = String(item.answer || item.raw_answer || '').trim();
+    const ans = String(parsed?.answer || item.answer || item.raw_answer || parsed?.rawAnswer || '').trim();
     // 1~5 단일 번호 (소문항 없는 경우) -> 객관식
     if (/^[1-5]$/.test(ans)) return 'MULTIPLE';
 
     // 소문항 패턴이 있는 경우 ((1), (2), ①, ② 등)
+    if (Array.isArray(parsed?.sub_questions) && parsed.sub_questions.length >= 2) return 'SHORT';
     if (Array.isArray(item.sub_questions) && item.sub_questions.length >= 2) return 'SHORT';
     if (/\((?:1|2|가|나)\)|[①②]/.test(ans)) return 'SHORT';
 
@@ -168,10 +249,14 @@ export default function ReviewTestModal({
     if (customSubLabels[item.id] !== undefined) {
       return customSubLabels[item.id];
     }
+    const parsed = htmlParsedCache[item.id];
+    if (Array.isArray(parsed?.sub_questions) && parsed.sub_questions.length >= 2) {
+      return parsed.sub_questions.map(sq => sq.label);
+    }
     if (Array.isArray(item.sub_questions) && item.sub_questions.length >= 2) {
       return item.sub_questions.map(sq => sq.label);
     }
-    const ans = String(item.answer || item.raw_answer || '');
+    const ans = String(parsed?.answer || item.answer || item.raw_answer || parsed?.rawAnswer || '');
     const matches = ans.match(/\((?:1|2|3|4|5|[가-마])\)|[①②③④⑤]/g);
     if (matches) {
       const unique = Array.from(new Set(matches));
@@ -349,11 +434,13 @@ export default function ReviewTestModal({
 
     // 채점 및 랩타임 연산 루프
     items.forEach((item, idx) => {
+      const parsed = htmlParsedCache[item.id];
       const qType = getItemQuestionType(item);
       const subLabels = getItemSubLabels(item);
       const hasSubQuestions = subLabels.length >= 2;
       const rawUserAns = userAnswers[item.id] || '';
-      const correctAns = item.answer || item.raw_answer || '';
+      const correctAns = parsed?.answer || item.answer || item.raw_answer || parsed?.rawAnswer || '';
+      const rawCorrectAns = parsed?.rawAnswer || item.raw_answer || correctAns;
       const point = item.points || 4;
 
       let isCorrect = false;
@@ -377,7 +464,7 @@ export default function ReviewTestModal({
           } else {
             displayUserAns = String(rawUserAns || '');
             if (rawUserAns && rawUserAns !== '모름') {
-              isCorrect = checkAnswerMatch(displayUserAns, correctAns, item.raw_answer || correctAns, false) || true;
+              isCorrect = checkAnswerMatch(displayUserAns, correctAns, rawCorrectAns, false) || true;
             } else {
               isCorrect = false;
             }
@@ -399,10 +486,11 @@ export default function ReviewTestModal({
         subResults = {};
         displayUserAns = subLabels.map(lbl => `${lbl} ${parsedSub[lbl] || '(미입력)'}`).join(' / ');
 
+        const allSq = parsed?.sub_questions || item.sub_questions || [];
         let allMatched = true;
         subLabels.forEach(lbl => {
           const studentSubVal = parsedSub[lbl] || '';
-          const matchedSq = (item.sub_questions || []).find(sq => sq.label === lbl);
+          const matchedSq = allSq.find(sq => sq.label === lbl);
           const sqAns = matchedSq ? matchedSq.answer : correctAns;
           const matched = checkAnswerMatch(studentSubVal, sqAns, sqAns, false);
           subResults![lbl] = matched;
@@ -416,7 +504,7 @@ export default function ReviewTestModal({
         // 🌟 일반 객관식 또는 단일 단답형
         displayUserAns = typeof rawUserAns === 'object' ? JSON.stringify(rawUserAns) : String(rawUserAns || '');
         const isMultiple = qType === 'MULTIPLE';
-        isCorrect = checkAnswerMatch(displayUserAns, correctAns, item.raw_answer || correctAns, isMultiple);
+        isCorrect = checkAnswerMatch(displayUserAns, correctAns, rawCorrectAns, isMultiple);
       }
 
       if (isCorrect) {
@@ -467,7 +555,7 @@ export default function ReviewTestModal({
         isCorrect,
         spentSec,
         solutionUrl: item.solutionUrl,
-        problemUrl: item.problemUrl,
+        problemUrl: parsed?.imageUrl || (isRealUrl(item.problemUrl) ? item.problemUrl : undefined),
         question_type: qType,
         is_descriptive: item.is_descriptive || qType === 'DESCRIPTIVE',
         subResults,
@@ -808,22 +896,71 @@ export default function ReviewTestModal({
                     </div>
                   </div>
 
-                  {/* 문제 이미지 표시 */}
-                  <div className="w-full flex-1 flex justify-center items-center py-4">
-                    {currentItem.problemUrl ? (
-                      <img
-                        src={currentItem.problemUrl}
-                        alt={`문제 ${currentIndex + 1}번`}
-                        className="max-w-full max-h-[62vh] object-contain rounded-2xl shadow-2xl bg-white p-2.5"
-                      />
-                    ) : (
-                      <div className="text-center space-y-2 py-16 text-slate-500 my-auto">
-                        <AlertCircle size={36} className="mx-auto text-amber-500 opacity-60" />
-                        <p className="text-sm font-bold">문제 이미지가 등록되어 있지 않습니다.</p>
-                        <p className="text-xs text-slate-600 font-medium">{currentItem.name}</p>
+                  {/* 🌟 문제 이미지 및 지문 뷰어 (HTML 자동 파싱 및 fallback 완벽 지원) */}
+                  {(() => {
+                    const parsed = htmlParsedCache[currentItem.id];
+                    const isHtmlLoading = htmlLoadingIds[currentItem.id];
+                    const isImgBroken = imageLoadErrors[currentItem.id];
+
+                    let resolvedImageUrl = '';
+                    if (!isImgBroken && isRealUrl(currentItem.problemUrl)) {
+                      resolvedImageUrl = currentItem.problemUrl!;
+                    } else if (!isImgBroken && parsed?.imageUrl && isRealUrl(parsed.imageUrl)) {
+                      resolvedImageUrl = parsed.imageUrl;
+                    } else if (!isImgBroken && (currentItem as any).question_image_drive_id) {
+                      resolvedImageUrl = `https://lh3.googleusercontent.com/d/${(currentItem as any).question_image_drive_id}`;
+                    }
+
+                    const resolvedQuestionHtml = parsed?.questionHtml;
+                    const fullHtml = fullHtmlCache[currentItem.id];
+
+                    return (
+                      <div className="w-full flex-1 flex justify-center items-center py-4">
+                        {isHtmlLoading ? (
+                          <div className="text-center space-y-3 py-16 text-slate-400 my-auto">
+                            <Loader2 size={36} className="mx-auto text-violet-400 animate-spin" />
+                            <p className="text-sm font-bold text-slate-300">문제 문서를 불러오는 중입니다...</p>
+                            <p className="text-xs text-slate-500 font-medium">{currentItem.name}</p>
+                          </div>
+                        ) : resolvedImageUrl ? (
+                          <img
+                            src={resolvedImageUrl}
+                            alt={`문제 ${currentIndex + 1}번`}
+                            className="max-w-full max-h-[62vh] object-contain rounded-2xl shadow-2xl bg-white p-2.5"
+                            onError={() => {
+                              setImageLoadErrors(prev => ({ ...prev, [currentItem.id]: true }));
+                            }}
+                          />
+                        ) : resolvedQuestionHtml ? (
+                          <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-4 overflow-hidden my-auto">
+                            <iframe
+                              srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
+<script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+<style>body{font-family:system-ui,-apple-system,sans-serif;font-size:16px;line-height:1.8;padding:12px;color:#1e293b;background:#ffffff;margin:0;}</style>
+</head><body><div class="tex2jax_process">${resolvedQuestionHtml}</div></body></html>`}
+                              className="w-full min-h-[350px] border-0"
+                              title="문제 지문"
+                            />
+                          </div>
+                        ) : fullHtml ? (
+                          <div className="w-full h-full min-h-[460px] bg-white rounded-2xl shadow-2xl overflow-hidden">
+                            <iframe
+                              srcDoc={fullHtml}
+                              className="w-full h-full min-h-[460px] border-0"
+                              title="문제 본문"
+                            />
+                          </div>
+                        ) : (
+                          <div className="text-center space-y-2 py-16 text-slate-500 my-auto">
+                            <AlertCircle size={36} className="mx-auto text-amber-500 opacity-60" />
+                            <p className="text-sm font-bold">문제 이미지가 등록되어 있지 않습니다.</p>
+                            <p className="text-xs text-slate-600 font-medium">{currentItem.name}</p>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    );
+                  })()}
 
                   {/* 이전 / 다음 문제 이동 버튼 */}
                   <div className="w-full flex items-center justify-between pt-3 mt-auto border-t border-white/10">

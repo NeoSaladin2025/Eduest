@@ -650,6 +650,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         nextFolders.push(folder);
       }
 
+      const isRealUrl = (u?: string) => Boolean(u && (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:image/')));
+      const resolvedProblemUrl = isRealUrl(record.problemUrl)
+        ? record.problemUrl
+        : (record.question_image_drive_id ? `https://lh3.googleusercontent.com/d/${record.question_image_drive_id}` : undefined);
+
       const newItem: ReviewItem = {
         id: `review_${record.id}`,
         fileId: record.id,
@@ -657,7 +662,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         folderId: folder.id,
         folderName: folder.name,
         solutionUrl: record.solutionUrl || record.id,
-        problemUrl: record.problemUrl || record.id,
+        problemUrl: resolvedProblemUrl,
         type: 'html',
         addedAt: new Date().toISOString(),
       };
@@ -685,9 +690,14 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
     const currentFolderItemsMap = new Set(reviewData.items.map(i => i.fileId));
     const newItemsToAdd: ReviewItem[] = [];
+    const isRealUrl = (u?: string) => Boolean(u && (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:image/')));
 
     selectedList.forEach(record => {
       if (!currentFolderItemsMap.has(record.id)) {
+        const resolvedProblemUrl = isRealUrl(record.problemUrl)
+          ? record.problemUrl
+          : (record.question_image_drive_id ? `https://lh3.googleusercontent.com/d/${record.question_image_drive_id}` : undefined);
+
         newItemsToAdd.push({
           id: `review_${record.id}`,
           fileId: record.id,
@@ -695,7 +705,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           folderId: folder!.id,
           folderName: folder!.name,
           solutionUrl: record.solutionUrl || record.id,
-          problemUrl: record.problemUrl || record.id,
+          problemUrl: resolvedProblemUrl,
           type: 'html',
           addedAt: new Date().toISOString(),
         });
