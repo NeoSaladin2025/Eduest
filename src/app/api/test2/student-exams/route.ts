@@ -10,6 +10,16 @@ const supabase = createClient(
 const EXAMS_RECORD_DRIVE_ID = "test2_exam_papers_data";
 const SUBMISSIONS_RECORD_DRIVE_ID = "test2_student_submissions_data";
 
+export interface RoundHistoryItem {
+  round: number;
+  score: number;
+  correct_count: number;
+  total_questions: number;
+  total_spent_sec: number;
+  submitted_at: string;
+  answers: StudentSubmission["answers"];
+}
+
 export interface StudentSubmission {
   id: string; // `${studentId}_${examId}`
   student_id: string;
@@ -22,6 +32,9 @@ export interface StudentSubmission {
   has_pending_review?: boolean;
   pending_count?: number;
   submitted_by?: string;
+  current_round?: number;
+  completed_rounds?: number;
+  round_history?: RoundHistoryItem[];
   answers: {
     [questionId: string]: {
       user_answer: string;
@@ -301,6 +314,8 @@ export async function GET(req: NextRequest) {
               has_pending_review: !!sub.has_pending_review,
               pending_count: sub.pending_count || 0,
               proof_images: sub.proof_images,
+              current_round: sub.current_round || 1,
+              completed_rounds: sub.completed_rounds || 1,
             }
           : null,
       };
@@ -317,7 +332,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, answers, questionTimes, proofImages, teacherGrading, submittedBy } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
+    const { studentId, examId, answers, questionTimes, proofImages, teacherGrading, submittedBy, currentRound, round } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
+    const targetRound = typeof currentRound === 'number' && currentRound > 0
+      ? currentRound
+      : (typeof round === 'number' && round > 0 ? round : 1);
 
     if (!studentId || !examId) {
       return NextResponse.json(
@@ -458,6 +476,59 @@ export async function POST(req: NextRequest) {
       : (totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0);
     const score = Number.isInteger(calculatedScore) ? calculatedScore : Number(calculatedScore.toFixed(1));
 
+    // 회차별 총 풀이시간(초) 합산
+    let roundSpentSec = 0;
+    if (questionTimes && typeof questionTimes === 'object') {
+      roundSpentSec = Object.values(questionTimes).reduce((acc: number, t: any) => acc + (Number(t) || 0), 0);
+    } else {
+      roundSpentSec = Object.values(gradedAnswers).reduce((acc: number, a: any) => acc + (Number(a?.time_spent_sec) || 0), 0);
+    }
+
+    const allSubmissions = await getSubmissions();
+    const existingIdx = allSubmissions.findIndex((s) => s.student_id === studentId && s.exam_id === examId);
+    const prevSub = existingIdx !== -1 ? allSubmissions[existingIdx] : null;
+
+    // 🌟 [보물회수 회차 히스토리 누적 보존]
+    let history: RoundHistoryItem[] = Array.isArray(prevSub?.round_history)
+      ? [...prevSub.round_history]
+      : [];
+
+    // 만약 이전 기록이 존재하지만 history가 비어있었다면 이전 기록을 1회차로 자동 등록
+    if (prevSub && history.length === 0) {
+      history.push({
+        round: prevSub.current_round || 1,
+        score: prevSub.score,
+        correct_count: prevSub.correct_count,
+        total_questions: prevSub.total_questions,
+        total_spent_sec: Object.values(prevSub.answers || {}).reduce((acc: number, a: any) => acc + (Number(a?.time_spent_sec) || 0), 0),
+        submitted_at: prevSub.submitted_at,
+        answers: prevSub.answers,
+      });
+    }
+
+    // 이번 회차 기록 생성
+    const thisRoundHistoryItem: RoundHistoryItem = {
+      round: targetRound,
+      score,
+      correct_count: correctCount,
+      total_questions: totalQuestions,
+      total_spent_sec: roundSpentSec,
+      submitted_at: new Date().toISOString(),
+      answers: gradedAnswers,
+    };
+
+    // 동일 회차 재응시 시 해당 회차 업데이트, 아니면 추가
+    const existingHistIdx = history.findIndex((h) => h.round === targetRound);
+    if (existingHistIdx !== -1) {
+      history[existingHistIdx] = thisRoundHistoryItem;
+    } else {
+      history.push(thisRoundHistoryItem);
+    }
+    history.sort((a, b) => a.round - b.round);
+
+    const prevCompleted = prevSub?.completed_rounds || (prevSub ? 1 : 0);
+    const completedRounds = Math.max(prevCompleted, targetRound);
+
     const newSubmission: StudentSubmission = {
       id: `${studentId}_${examId}`,
       student_id: studentId,
@@ -472,10 +543,10 @@ export async function POST(req: NextRequest) {
       pending_count: pendingCount,
       proof_images: collectedProofImages,
       submitted_by: submittedBy || 'student',
+      current_round: targetRound,
+      completed_rounds: completedRounds,
+      round_history: history,
     };
-
-    const allSubmissions = await getSubmissions();
-    const existingIdx = allSubmissions.findIndex((s) => s.student_id === studentId && s.exam_id === examId);
 
     if (existingIdx !== -1) {
       allSubmissions[existingIdx] = newSubmission;
@@ -499,9 +570,11 @@ export async function POST(req: NextRequest) {
       console.warn("Failed to update student test_status in DB:", e);
     }
 
+    // 🌟 채점 완료 시점에는 정답과 해설(solution_drive_id)이 모두 포함된 완전한 시험지 객체를 함께 반환 (나갈 필요 없이 즉시 해설 활성화!)
     return NextResponse.json({
       success: true,
       submission: newSubmission,
+      exam: exam,
       message: "시험 답안이 제출 및 채점되었습니다.",
     });
   } catch (error: any) {

@@ -226,6 +226,8 @@ export default function StudentTest2View({
   const [solutionModalFileId, setSolutionModalFileId] = useState<string | null>(null);
   const [solutionHtml, setSolutionHtml] = useState<string | null>(null);
   const [solutionLoading, setSolutionLoading] = useState(false);
+  const [solutionWrongIndex, setSolutionWrongIndex] = useState<number>(0);
+  const [solutionWrongList, setSolutionWrongList] = useState<Array<{ q: ExamQuestion; originalIdx: number }>>([]);
 
   // 복습 토스트 메시지
   const [reviewToast, setReviewToast] = useState<string | null>(null);
@@ -776,6 +778,9 @@ export default function StudentTest2View({
 
         // 이미 제출된 시험지라도 새로운 회차 도전(forceNewRound)이면 시험 화면으로 바로 시작
         if (!forceNewRound && data.is_submitted && data.submission) {
+          // 🌟 [보물회수 회차 복원] 서버에 기록된 누적 완주 회차(completed_rounds)로 정확히 복원!
+          const restoredRound = data.submission.completed_rounds || data.submission.current_round || roundNum;
+          setCurrentRound(restoredRound);
           setSubmissionResult(data.submission);
           setViewMode('result');
         } else {
@@ -1300,12 +1305,20 @@ export default function StudentTest2View({
           answers: userAnswers,
           questionTimes: questionSpentTimes,
           proofImages: finalProofImages,
+          currentRound,
         }),
       });
 
       const data = await res.json();
       if (data.success && data.submission) {
+        // 🌟 채점 완료 시점: 마스킹 풀린 exam 객체로 즉시 동기화 (나갔다 들어올 필요 없이 해설 버튼 활성화!)
+        if (data.exam) {
+          setCurrentExam(data.exam);
+        }
         setSubmissionResult(data.submission);
+        if (typeof data.submission.current_round === 'number') {
+          setCurrentRound(data.submission.current_round);
+        }
         setShowSubmitConfirm(false);
 
         // 로컬 임시 데이터 정리
@@ -1347,10 +1360,18 @@ export default function StudentTest2View({
     }
   };
 
-  // 7. 원본 라이브러리 해설 보기 모달 열기
-  const handleOpenSolution = async (driveId: string) => {
+  // 7. 원본 라이브러리 해설 보기 모달 열기 (오답 연속 슬라이더 지원)
+  const handleOpenSolution = async (
+    driveId: string,
+    wrongIndex?: number,
+    wrongList?: Array<{ q: ExamQuestion; originalIdx: number }>
+  ) => {
     if (!driveId) return;
     setSolutionModalFileId(driveId);
+    if (typeof wrongIndex === 'number' && wrongList) {
+      setSolutionWrongIndex(wrongIndex);
+      setSolutionWrongList(wrongList);
+    }
     setSolutionLoading(true);
     setSolutionHtml(null);
 
@@ -1367,6 +1388,15 @@ export default function StudentTest2View({
       alert('해설 로딩 중 오류가 발생했습니다.');
     } finally {
       setSolutionLoading(false);
+    }
+  };
+
+  // 오답 연속 슬라이더 네비게이션
+  const handleNavigateWrongQuestion = (targetIdx: number) => {
+    if (!solutionWrongList || targetIdx < 0 || targetIdx >= solutionWrongList.length) return;
+    const targetItem = solutionWrongList[targetIdx];
+    if (targetItem?.q?.solution_drive_id) {
+      handleOpenSolution(targetItem.q.solution_drive_id, targetIdx, solutionWrongList);
     }
   };
 
@@ -3107,87 +3137,105 @@ export default function StudentTest2View({
           {/* 문항별 상세 채점 내역 & 해설 보기 */}
           <div className="space-y-4">
             <h3 className="text-xl font-black text-white">문항별 상세 채점 & 해설</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {currentExam.questions.map((q, idx) => {
-                const ansInfo = submissionResult.answers?.[q.id];
-                const isDescriptive = !!q.is_descriptive || !!ansInfo?.is_descriptive;
-                const isPending = ansInfo?.grading_status === 'pending' || (isDescriptive && ansInfo?.is_correct === null);
-                const isReviewed = ansInfo?.grading_status === 'reviewed';
-                const isCorrect = ansInfo?.is_correct === true;
-                const canShowSolution = ansInfo?.show_solution !== false;
-                const userAns = ansInfo?.user_answer || '(미입력)';
-                const correctAns = canShowSolution
-                  ? (ansInfo?.correct_answer || q.answer || '')
-                  : '(선생님 채점 검토 후 공개)';
-                const spentSec = ansInfo?.time_spent_sec || questionSpentTimes[q.id] || 0;
+            {(() => {
+              const wrongQuestionsWithIdx = currentExam.questions
+                .map((itemQ, itemIdx) => ({ q: itemQ, originalIdx: itemIdx }))
+                .filter(({ q: itemQ }) => {
+                  const ans = submissionResult.answers?.[itemQ.id];
+                  return ans && ans.is_correct === false;
+                });
 
-                let cardStyle = 'bg-rose-500/5 border-rose-500/20';
-                let badgeStyle = 'bg-rose-500 text-white';
-                let statusLabel = '오답';
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {currentExam.questions.map((q, idx) => {
+                    const ansInfo = submissionResult.answers?.[q.id];
+                    const isDescriptive = !!q.is_descriptive || !!ansInfo?.is_descriptive;
+                    const isPending = ansInfo?.grading_status === 'pending' || (isDescriptive && ansInfo?.is_correct === null);
+                    const isReviewed = ansInfo?.grading_status === 'reviewed';
+                    const isCorrect = ansInfo?.is_correct === true;
+                    const canShowSolution = ansInfo?.show_solution !== false;
+                    const userAns = ansInfo?.user_answer || '(미입력)';
+                    const correctAns = canShowSolution
+                      ? (ansInfo?.correct_answer || q.answer || '')
+                      : '(선생님 채점 검토 후 공개)';
+                    const spentSec = ansInfo?.time_spent_sec || questionSpentTimes[q.id] || 0;
 
-                if (isPending) {
-                  cardStyle = 'bg-amber-500/5 border-amber-500/25 ring-1 ring-amber-500/10';
-                  badgeStyle = 'bg-amber-500 text-slate-950 font-black';
-                  statusLabel = '⏳ 선생님 채점 대기';
-                } else if (isCorrect) {
-                  cardStyle = 'bg-emerald-500/5 border-emerald-500/20';
-                  badgeStyle = 'bg-emerald-500 text-white';
-                  statusLabel = isReviewed ? '⭕ 정답 (선생님 승인)' : '정답';
-                } else if (isReviewed) {
-                  statusLabel = '❌ 오답 (선생님 확인)';
-                }
+                    let cardStyle = 'bg-rose-500/5 border-rose-500/20';
+                    let badgeStyle = 'bg-rose-500 text-white';
+                    let statusLabel = '오답';
 
-                return (
-                  <div
-                    key={q.id}
-                    className={`p-6 rounded-[28px] border transition-all ${cardStyle}`}
-                  >
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center ${badgeStyle}`}>
-                          {idx + 1}
-                        </span>
-                        <span className={`text-xs font-bold ${
-                          isPending ? 'text-amber-300' : isCorrect ? 'text-emerald-300' : 'text-slate-300'
-                        }`}>
-                          {statusLabel}
-                        </span>
-                        {isDescriptive && (
-                          <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[9px] font-black">
-                            서술형
-                          </span>
-                        )}
-                      </div>
+                    if (isPending) {
+                      cardStyle = 'bg-amber-500/5 border-amber-500/25 ring-1 ring-amber-500/10';
+                      badgeStyle = 'bg-amber-500 text-slate-950 font-black';
+                      statusLabel = '⏳ 선생님 채점 대기';
+                    } else if (isCorrect) {
+                      cardStyle = 'bg-emerald-500/5 border-emerald-500/20';
+                      badgeStyle = 'bg-emerald-500 text-white';
+                      statusLabel = isReviewed ? '⭕ 정답 (선생님 승인)' : '정답';
+                    } else if (isReviewed) {
+                      statusLabel = '❌ 오답 (선생님 확인)';
+                    }
 
-                      <div className="flex items-center gap-2.5 text-xs">
-                        <span className="text-slate-400 font-mono">⏱️ {spentSec}초 소요</span>
-                        {q.solution_drive_id && canShowSolution && (
-                          <button
-                            onClick={() => handleOpenSolution(q.solution_drive_id)}
-                            className="px-3 py-1.5 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 text-violet-300 font-black text-[11px] transition-colors flex items-center gap-1 cursor-pointer"
-                          >
-                            <BookOpen size={13} />
-                            <span>해설 보기</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleToggleQuestionReview(q, idx)}
-                          className={`px-3 py-1.5 rounded-xl font-black text-[11px] transition-all flex items-center gap-1.5 ${
-                            isQuestionInReview(q.id)
-                              ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
-                              : 'bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white border border-white/10'
-                          }`}
-                          title={isQuestionInReview(q.id) ? '클릭 시 복습에서 제거' : '체크 시 내 복습 홈에 자동 추가'}
-                        >
-                          <Star
-                            size={13}
-                            fill={isQuestionInReview(q.id) ? 'currentColor' : 'none'}
-                            className={isQuestionInReview(q.id) ? 'text-slate-950' : 'text-amber-400'}
-                          />
-                          <span>{isQuestionInReview(q.id) ? '복습 담김' : '복습 체크'}</span>
-                        </button>
-                      </div>
-                    </div>
+                    return (
+                      <div
+                        key={q.id}
+                        className={`p-6 rounded-[28px] border transition-all ${cardStyle}`}
+                      >
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-8 h-8 rounded-xl font-black text-xs flex items-center justify-center ${badgeStyle}`}>
+                              {idx + 1}
+                            </span>
+                            <span className={`text-xs font-bold ${
+                              isPending ? 'text-amber-300' : isCorrect ? 'text-emerald-300' : 'text-slate-300'
+                            }`}>
+                              {statusLabel}
+                            </span>
+                            {isDescriptive && (
+                              <span className="px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[9px] font-black">
+                                서술형
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2.5 text-xs">
+                            <span className="text-slate-400 font-mono">⏱️ {spentSec}초 소요</span>
+                            {q.solution_drive_id && canShowSolution && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const wIdx = wrongQuestionsWithIdx.findIndex((item) => item.q.id === q.id);
+                                  handleOpenSolution(
+                                    q.solution_drive_id,
+                                    wIdx !== -1 ? wIdx : 0,
+                                    wrongQuestionsWithIdx.length > 0 ? wrongQuestionsWithIdx : undefined
+                                  );
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-violet-600/30 hover:bg-violet-600 text-violet-200 hover:text-white font-black text-[11px] transition-all flex items-center gap-1 cursor-pointer border border-violet-500/30 hover:border-violet-400 shadow-xs"
+                                title="이 문제의 원본 HTML 정답 및 상세 해설 보기"
+                              >
+                                <BookOpen size={13} />
+                                <span>해설 보기</span>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleToggleQuestionReview(q, idx)}
+                              className={`px-3 py-1.5 rounded-xl font-black text-[11px] transition-all flex items-center gap-1.5 ${
+                                isQuestionInReview(q.id)
+                                  ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-400/20'
+                                  : 'bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white border border-white/10'
+                              }`}
+                              title={isQuestionInReview(q.id) ? '클릭 시 복습에서 제거' : '체크 시 내 복습 홈에 자동 추가'}
+                            >
+                              <Star
+                                size={13}
+                                fill={isQuestionInReview(q.id) ? 'currentColor' : 'none'}
+                                className={isQuestionInReview(q.id) ? 'text-slate-950' : 'text-amber-400'}
+                              />
+                              <span>{isQuestionInReview(q.id) ? '복습 담김' : '복습 체크'}</span>
+                            </button>
+                          </div>
+                        </div>
 
                     {q.image_url ? (
                       <div className="bg-white p-2 rounded-xl mb-4 max-h-48 overflow-hidden flex justify-center">
@@ -3294,9 +3342,11 @@ export default function StudentTest2View({
                 );
               })}
             </div>
-          </div>
-        </div>
-      )}
+          );
+        })()}
+      </div>
+    </div>
+  )}
 
       {/* 🌟 풀이과정 사진 인증샷 확대 보기 모달 */}
       {viewingProofUrl && (
@@ -3334,25 +3384,76 @@ export default function StudentTest2View({
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          5. 원본 해설 보기 모달 (HTML iframe)
+          5. 원본 해설 보기 모달 (오답 연속 슬라이더 & 다음 회차 퀵 스타트)
       ───────────────────────────────────────────────────────────── */}
       {solutionModalFileId && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-[#0f172a] border border-white/10 rounded-[36px] max-w-4xl w-full h-[85vh] flex flex-col overflow-hidden shadow-3xl">
-            <div className="p-6 border-b border-white/10 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BookOpen size={20} className="text-violet-400" />
-                <h3 className="text-lg font-black text-white">문제 정답 및 상세 해설</h3>
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+          <div className="bg-[#0f172a] border border-white/10 rounded-[32px] sm:rounded-[36px] max-w-4xl w-full h-[88vh] flex flex-col overflow-hidden shadow-3xl">
+            {/* 상단 헤더: 오답 연속 슬라이더 네비게이션 */}
+            <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between gap-3 bg-slate-900/90 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-violet-600/30 border border-violet-500/30 flex items-center justify-center text-violet-300 shrink-0">
+                  <BookOpen size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                    <span>정답 및 상세 해설</span>
+                    {solutionWrongList.length > 0 && (
+                      <span className="hidden sm:inline-flex text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                        오답 원본 해설 뷰어
+                      </span>
+                    )}
+                  </h3>
+                </div>
               </div>
+
+              {/* 오답 슬라이더 컨트롤러 (오답이 2개 이상일 때 책장 넘기듯 이전/다음 이동) */}
+              {solutionWrongList.length > 0 && (
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleNavigateWrongQuestion(solutionWrongIndex - 1)}
+                    disabled={solutionWrongIndex <= 0}
+                    className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none text-xs font-black transition-all flex items-center gap-1 cursor-pointer border border-white/10"
+                    title="이전 오답 문제 해설 보기"
+                  >
+                    <span>◀</span>
+                    <span className="hidden sm:inline">이전 오답</span>
+                  </button>
+
+                  <span className="text-xs font-mono font-black text-amber-300 bg-amber-400/15 border border-amber-400/30 px-2.5 py-1 rounded-xl">
+                    오답 {solutionWrongIndex + 1} / {solutionWrongList.length}
+                    <span className="text-[10px] text-amber-200/80 ml-1 font-bold">
+                      ({solutionWrongList[solutionWrongIndex]?.originalIdx !== undefined ? `${solutionWrongList[solutionWrongIndex].originalIdx + 1}번` : ''})
+                    </span>
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => handleNavigateWrongQuestion(solutionWrongIndex + 1)}
+                    disabled={solutionWrongIndex >= solutionWrongList.length - 1}
+                    className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none text-xs font-black transition-all flex items-center gap-1 cursor-pointer border border-white/10"
+                    title="다음 오답 문제 해설 보기"
+                  >
+                    <span className="hidden sm:inline">다음 오답</span>
+                    <span>▶</span>
+                  </button>
+                </div>
+              )}
+
+              {/* 닫기 버튼 */}
               <button
+                type="button"
                 onClick={() => setSolutionModalFileId(null)}
-                className="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+                className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white flex items-center justify-center transition-colors shrink-0 text-sm font-bold cursor-pointer"
+                title="해설 닫기 (ESC)"
               >
                 ✕
               </button>
             </div>
 
-            <div className="flex-1 bg-white p-4 overflow-y-auto">
+            {/* 본문: 원본 HTML 해설 렌더링 iframe */}
+            <div className="flex-1 bg-white p-3 sm:p-5 overflow-y-auto">
               {solutionLoading ? (
                 <div className="h-full flex flex-col items-center justify-center space-y-3">
                   <Loader2 className="animate-spin text-violet-600" size={36} />
@@ -3370,6 +3471,57 @@ export default function StudentTest2View({
                 </div>
               )}
             </div>
+
+            {/* 하단 푸터: 다음 회차 타임어택 퀵 스타트 버튼 */}
+            {(() => {
+              if (!currentExam) return null;
+              const isTreasure = Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled);
+              const tConfig = (currentExam as any).treasure_config;
+              const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+              const hasNextRound = isTreasure && currentRound < repeatRounds;
+              const nextRound = currentRound + 1;
+              const nextDuration = calculateRoundDuration(
+                tConfig?.base_duration_min || currentExam.duration_min || 30,
+                nextRound,
+                tConfig?.time_attack_mode || 'fixed',
+                tConfig?.percent_reduction || 0,
+                tConfig?.manual_durations,
+                tConfig?.variable_reductions
+              );
+
+              return (
+                <div className="p-4 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-900 shrink-0">
+                  <div className="text-xs text-slate-400 flex items-center gap-1.5">
+                    <Sparkles size={13} className="text-amber-400" />
+                    <span>해설을 꼼꼼히 확인하고 나면 바로 다음 타임어택에 도전해 보세요!</span>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    {hasNextRound && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSolutionModalFileId(null);
+                          handleStartExam(currentExam.id, currentBundle, nextRound, true);
+                        }}
+                        className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-xs shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Sparkles size={14} className="fill-slate-950" />
+                        <span>💡 해설 이해 완료! 제 {nextRound}회차 바로 시작하기 ({nextDuration > 0 ? `${nextDuration}분` : '자율'}) ➔</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setSolutionModalFileId(null)}
+                      className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white font-bold text-xs transition-colors cursor-pointer"
+                    >
+                      닫기
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

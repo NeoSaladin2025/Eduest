@@ -32,6 +32,7 @@ interface Student {
 }
 
 export interface ChainRoundItem {
+  keyId: string; // 고유 키 (`${exam.id}_r${round}`)
   exam: ExamPaper;
   round: number; // 0: 원본, 1: 1회차, 2: 2회차 ...
   roundLabel: string;
@@ -104,8 +105,10 @@ export default function TreasureDetailModal({
       return false;
     });
 
-    // 각 시험지의 회차 번호 및 메타데이터 계산
-    const items: ChainRoundItem[] = matchedExams.map((ex) => {
+    // 각 시험지의 회차 번호 및 메타데이터 계산 (다회차 round_history 완벽 지원)
+    const items: ChainRoundItem[] = [];
+
+    matchedExams.forEach((ex) => {
       const parsed = parseExamRoundAndBaseTitle(ex.title);
       const isTreasure = Boolean(ex.is_treasure_hunt || parsed.isTreasure);
       const isWrong = Boolean(ex.is_wrong_review || parsed.isWrong);
@@ -115,54 +118,88 @@ export default function TreasureDetailModal({
           (Array.isArray(ex.questions) && ex.questions.some((q: any) => q.is_twin))
       );
 
-      // 회차 번호 (0: 원본, 1+: 보물회수/오답 N회차)
       let roundNum = ex.wrong_round ?? parsed.currentRound;
       const isOriginal = !isWrong && !isTreasure && roundNum === 0;
 
-      let roundLabel = '';
-      if (isOriginal) {
-        roundLabel = '원본 시험';
-      } else if (isTreasure) {
-        roundLabel = `보물회수 ${roundNum > 0 ? `${roundNum}회차` : '1회차'}${isTwin ? ' (쌍둥이)' : ''}`;
-      } else {
-        roundLabel = `오답 ${roundNum > 0 ? `${roundNum}회차` : '클리닉'}${isTwin ? ' (쌍둥이)' : ''}`;
-      }
-
-      // 해당 시험지의 제출 기록 매칭 (최신 submission)
       const sub = allSubmissions.find(
         (s) => s.student_id === student.id && s.exam_id === ex.id
       ) || (ex.id === initialExam.id ? initialSubmission : null);
 
-      // 총 소요시간(초) 계산
-      let spentSec = 0;
-      if (sub?.answers) {
-        Object.values(sub.answers).forEach((ans: any) => {
-          spentSec += Number(ans?.time_spent_sec) || 0;
+      // 🌟 만약 submission에 round_history가 2개 이상 들어있다면, 각 회차를 별도 탭 아이템으로 펼쳐서 비교 제공!
+      if (Array.isArray(sub?.round_history) && sub.round_history.length > 1) {
+        sub.round_history.forEach((h: any) => {
+          const rNumber = Number(h.round) || 1;
+          const rLabel = isTreasure
+            ? `보물회수 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`
+            : `오답 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`;
+
+          const virtualSub = {
+            ...sub,
+            score: h.score,
+            correct_count: h.correct_count,
+            total_questions: h.total_questions || ex.questions?.length || 0,
+            submitted_at: h.submitted_at,
+            answers: h.answers,
+          };
+
+          items.push({
+            keyId: `${ex.id}_r${rNumber}`,
+            exam: ex,
+            round: rNumber,
+            roundLabel: rLabel,
+            isOriginal: false,
+            isTreasure: isTreasure,
+            isTwin: isTwin,
+            durationMin: Number(ex.duration_min) || 0,
+            submission: virtualSub,
+            totalSpentSec: Number(h.total_spent_sec) || 0,
+            score: h.score !== undefined ? Number(h.score) : null,
+            correctCount: Number(h.correct_count) || 0,
+            totalQuestions: ex.questions?.length || 0,
+            submittedAt: h.submitted_at || null,
+          });
+        });
+      } else {
+        let roundLabel = '';
+        if (isOriginal) {
+          roundLabel = '원본 시험';
+        } else if (isTreasure) {
+          roundLabel = `보물회수 ${roundNum > 0 ? `${roundNum}회차` : '1회차'}${isTwin ? ' (쌍둥이)' : ''}`;
+        } else {
+          roundLabel = `오답 ${roundNum > 0 ? `${roundNum}회차` : '클리닉'}${isTwin ? ' (쌍둥이)' : ''}`;
+        }
+
+        let spentSec = 0;
+        if (sub?.answers) {
+          Object.values(sub.answers).forEach((ans: any) => {
+            spentSec += Number(ans?.time_spent_sec) || 0;
+          });
+        }
+
+        items.push({
+          keyId: ex.id,
+          exam: ex,
+          round: isOriginal ? 0 : roundNum > 0 ? roundNum : 1,
+          roundLabel,
+          isOriginal,
+          isTreasure,
+          isTwin,
+          durationMin: Number(ex.duration_min) || 0,
+          submission: sub,
+          totalSpentSec: spentSec,
+          score: sub ? Number(sub.score) : null,
+          correctCount: sub ? Number(sub.correct_count) || 0 : 0,
+          totalQuestions: ex.questions?.length || 0,
+          submittedAt: sub?.submitted_at || null,
         });
       }
-
-      return {
-        exam: ex,
-        round: isOriginal ? 0 : roundNum > 0 ? roundNum : 1,
-        roundLabel,
-        isOriginal,
-        isTreasure,
-        isTwin,
-        durationMin: Number(ex.duration_min) || 0,
-        submission: sub,
-        totalSpentSec: spentSec,
-        score: sub ? Number(sub.score) : null,
-        correctCount: sub ? Number(sub.correct_count) || 0 : 0,
-        totalQuestions: ex.questions?.length || 0,
-        submittedAt: sub?.submitted_at || null,
-      };
     });
 
-    // 중복 제거 (동일 exam.id 방지) 및 회차 오름차순 정렬
+    // 중복 제거 (동일 keyId 방지) 및 회차 오름차순 정렬
     const uniqueMap = new Map<string, ChainRoundItem>();
     items.forEach((it) => {
-      if (!uniqueMap.has(it.exam.id)) {
-        uniqueMap.set(it.exam.id, it);
+      if (!uniqueMap.has(it.keyId)) {
+        uniqueMap.set(it.keyId, it);
       }
     });
 
@@ -179,6 +216,7 @@ export default function TreasureDetailModal({
         });
       }
       list.push({
+        keyId: initialExam.id,
         exam: initialExam,
         round: initialExam.wrong_round ?? parsed.currentRound ?? 1,
         roundLabel: parsed.isTreasure
@@ -201,12 +239,17 @@ export default function TreasureDetailModal({
     return list;
   }, [allExams, allSubmissions, initialExam, initialSubmission, student.id]);
 
-  // 현재 활성화된 탭 (특정 회차 ID 또는 'matrix' 전체 비교 뷰)
-  const [activeTab, setActiveTab] = useState<string>(initialExam.id);
+  // 현재 활성화된 탭 (특정 회차 keyId 또는 'matrix' 전체 비교 뷰)
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    return roundChain[roundChain.length - 1]?.keyId || initialExam.id;
+  });
 
   // 현재 선택된 회차 정보
   const selectedChainItem = useMemo(() => {
-    return roundChain.find((c) => c.exam.id === activeTab) || roundChain[roundChain.length - 1];
+    return (
+      roundChain.find((c) => c.keyId === activeTab || c.exam.id === activeTab) ||
+      roundChain[roundChain.length - 1]
+    );
   }, [roundChain, activeTab]);
 
   // 로컬 채점 수정 중인 문항 ID
@@ -492,13 +535,13 @@ export default function TreasureDetailModal({
               회차 선택:
             </span>
             {roundChain.map((item) => {
-              const isActive = activeTab === item.exam.id;
+              const isActive = activeTab === item.keyId;
               const hasSub = item.submission !== null;
               return (
                 <button
-                  key={item.exam.id}
+                  key={item.keyId}
                   type="button"
-                  onClick={() => setActiveTab(item.exam.id)}
+                  onClick={() => setActiveTab(item.keyId)}
                   className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
                     isActive
                       ? 'bg-violet-600 text-white shadow-md shadow-violet-600/25 scale-[1.02]'
