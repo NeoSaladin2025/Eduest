@@ -44,7 +44,8 @@ import {
   SlidersHorizontal,
   RefreshCw,
   FolderKanban,
-  BookmarkPlus
+  BookmarkPlus,
+  Edit3
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
@@ -262,6 +263,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   // 응시 결과 현황 모달
   const [resultsModalExam, setResultsModalExam] = useState<ExamPaper | null>(null);
   const [tempProgressMap, setTempProgressMap] = useState<Record<string, any>>({});
+  // 🌟 [선택 학생 실시간 풀이 상태] 학생 필터 시 해당 학생의 시험지별 임시 풀이 현황 { [examId]: StudentTempProgress }
+  const [studentTempProgressMap, setStudentTempProgressMap] = useState<Record<string, any>>({});
   const [liveMonitoringStudent, setLiveMonitoringStudent] = useState<{ student: any; progress?: any } | null>(null);
   const [examSubmissions, setExamSubmissions] = useState<any[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
@@ -452,6 +455,27 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [refreshingStudent, setRefreshingStudent] = useState(false);
   const [refreshSuccessMessage, setRefreshSuccessMessage] = useState<string | null>(null);
 
+  // 🌟 [선택 학생 실시간 풀이 상태 로드]
+  const fetchStudentTempProgress = async (studentId?: string) => {
+    const targetId = studentId || (selectedStudentFilterId !== 'ALL' ? selectedStudentFilterId : null);
+    if (!targetId || targetId === 'ALL') {
+      setStudentTempProgressMap({});
+      return;
+    }
+    try {
+      const res = await fetch(`/api/test2/temp-progress?studentId=${targetId}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.success && data.progressMap) {
+        setStudentTempProgressMap(data.progressMap);
+      } else {
+        setStudentTempProgressMap({});
+      }
+    } catch (err) {
+      console.error('Failed to fetch student temp progress:', err);
+      setStudentTempProgressMap({});
+    }
+  };
+
   const handleRefreshStudentData = async (targetStudentId?: string, silent = false) => {
     try {
       if (!silent) setRefreshingStudent(true);
@@ -479,6 +503,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setExams(examData.exams);
       }
 
+      // 3) 특정 학생의 실시간 임시 풀이 상태 동기화
+      const studentIdToFetch = targetStudentId || (selectedStudentFilterId !== 'ALL' ? selectedStudentFilterId : undefined);
+      if (studentIdToFetch) {
+        await fetchStudentTempProgress(studentIdToFetch);
+      }
+
       if (!silent) {
         const studentObj = students.find((s) => s.id === targetStudentId);
         const name = studentObj ? studentObj.name : '학생';
@@ -493,6 +523,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       }
     }
   };
+
+  // 🌟 특정 학생 필터링 시 실시간 풀이 상태 조회 및 10초 주기 자동 갱신
+  useEffect(() => {
+    if (selectedStudentFilterId !== 'ALL') {
+      fetchStudentTempProgress(selectedStudentFilterId);
+      const interval = setInterval(() => {
+        fetchStudentTempProgress(selectedStudentFilterId);
+      }, 10000);
+      return () => clearInterval(interval);
+    } else {
+      setStudentTempProgressMap({});
+    }
+  }, [selectedStudentFilterId]);
 
   // 📡 실시간 학생 응시 완료 자동 감지 및 스마트 동기화
   useEffect(() => {
@@ -2107,7 +2150,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     const assignedExams = exams.filter(e => e.assigned_student_ids?.includes(selectedStudentFilterId));
     const subs = allSubmissions.filter(s => s.student_id === selectedStudentFilterId);
     const completedCount = assignedExams.filter(e => subs.some(s => s.exam_id === e.id)).length;
-    const uncompletedCount = Math.max(0, assignedExams.length - completedCount);
+    
+    // 🌟 [신규] 풀이 중인 시험지 개수 집계!
+    const inProgressCount = assignedExams.filter(e => {
+      const isCompleted = subs.some(s => s.exam_id === e.id);
+      if (isCompleted) return false;
+      const prog = studentTempProgressMap[e.id];
+      return prog && (prog.answered_count || 0) > 0;
+    }).length;
+
+    const uncompletedCount = Math.max(0, assignedExams.length - completedCount - inProgressCount);
     
     // 평균 점수
     const completedSubs = subs.filter(s => assignedExams.some(e => e.id === s.exam_id));
@@ -2124,12 +2176,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       student: st,
       totalAssigned: assignedExams.length,
       completedCount,
+      inProgressCount,
       uncompletedCount,
       avgScore,
       wrongTotal: wrongExams.length,
       wrongCompletionRate,
     };
-  }, [selectedStudentFilterId, students, exams, allSubmissions]);
+  }, [selectedStudentFilterId, students, exams, allSubmissions, studentTempProgressMap]);
 
   // 🌟 [사용자 요청] 필터링 및 다중 정렬된 시험지 목록
   const filteredExams = useMemo(() => {
@@ -2927,6 +2980,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 font-bold text-emerald-800">
                     응시 완료: <strong className="font-black text-emerald-900">{selectedStudentStats.completedCount}</strong>개
                   </div>
+                  {/* 🌟 [신규] 풀이 중 메트릭 뱃지 */}
+                  <div className={`px-3 py-1.5 rounded-xl border font-bold flex items-center gap-1.5 ${
+                    selectedStudentStats.inProgressCount > 0
+                      ? 'bg-indigo-50 border-indigo-200 text-indigo-800 shadow-2xs'
+                      : 'bg-slate-50 border-slate-200 text-slate-500'
+                  }`}>
+                    {selectedStudentStats.inProgressCount > 0 && (
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-600"></span>
+                      </span>
+                    )}
+                    풀이 중: <strong className={`font-black ${selectedStudentStats.inProgressCount > 0 ? 'text-indigo-900' : 'text-slate-700'}`}>{selectedStudentStats.inProgressCount}</strong>개
+                  </div>
                   <div className="px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 font-bold text-amber-800">
                     미응시: <strong className="font-black text-amber-900">{selectedStudentStats.uncompletedCount}</strong>개
                   </div>
@@ -3050,6 +3117,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   const isSingleStudentMode = selectedStudentFilterId !== 'ALL';
                   const studentSub = isSingleStudentMode 
                     ? relatedSubs.find(s => s.student_id === selectedStudentFilterId)
+                    : null;
+                  const studentTempProg = isSingleStudentMode 
+                    ? studentTempProgressMap[exam.id] 
                     : null;
                   const isSelected = selectedExamIds.has(exam.id);
 
@@ -3273,6 +3343,47 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               >
                                 <RotateCcw size={11} className={creatingWrongExamModal ? 'animate-spin' : ''} />
                                 <span>💎 보물회수</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : studentTempProg && (studentTempProg.answered_count || 0) > 0 ? (
+                          /* 🌟 [신규] 풀이 중 상태 노출! */
+                          <div className="bg-indigo-50/90 border border-indigo-200 rounded-2xl p-3 flex items-center justify-between text-xs shadow-2xs">
+                            <div className="flex items-center gap-2.5">
+                              <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                                <Edit3 size={15} className="animate-pulse" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-black text-indigo-950 text-xs">
+                                    풀이 중 ({studentTempProg.answered_count} / {exam.questions.length}문항)
+                                  </span>
+                                  <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-600"></span>
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-indigo-600 font-medium block mt-0.5">
+                                  진행률: {Math.round(((studentTempProg.answered_count || 0) / (exam.questions.length || 1)) * 100)}%
+                                  {studentTempProg.updated_at && ` • 최근: ${new Date(studentTempProg.updated_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const st = students.find(s => s.id === selectedStudentFilterId);
+                                  if (st) {
+                                    setLiveMonitoringStudent({ student: st, progress: studentTempProg });
+                                    setResultsModalExam(exam);
+                                  }
+                                }}
+                                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black text-[11px] shadow-xs hover:shadow transition-all flex items-center gap-1 cursor-pointer"
+                                title="현재 실시간 풀이 답안 및 가채점 확인"
+                              >
+                                <Eye size={12} />
+                                <span>실시간 확인</span>
                               </button>
                             </div>
                           </div>
@@ -5506,6 +5617,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         onSuccessSubmit={() => {
           if (resultsModalExam) {
             handleOpenResultsModal(resultsModalExam);
+          }
+          if (selectedStudentFilterId !== 'ALL') {
+            fetchStudentTempProgress(selectedStudentFilterId);
+            handleRefreshStudentData(selectedStudentFilterId, true);
           }
         }}
       />

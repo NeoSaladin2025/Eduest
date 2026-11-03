@@ -70,26 +70,42 @@ export async function GET(req: NextRequest) {
     const examId = searchParams.get("examId");
     const studentId = searchParams.get("studentId");
 
-    if (!examId) {
-      return NextResponse.json({ success: false, error: "examId가 필요합니다." }, { status: 400 });
+    if (!examId && !studentId) {
+      return NextResponse.json({ success: false, error: "examId 또는 studentId가 필요합니다." }, { status: 400 });
     }
 
     const allMap = await getAllTempProgress();
     
-    // 특정 시험지의 학생별 맵 추출
-    const examProgressMap: Record<string, StudentTempProgress> = {};
-    Object.entries(allMap).forEach(([key, val]) => {
-      if (val && val.exam_id === examId) {
-        examProgressMap[val.student_id] = val;
-      }
-    });
-
-    if (studentId) {
-      const single = examProgressMap[studentId] || null;
+    // 1) 특정 시험지 + 특정 학생 단건 조회
+    if (examId && studentId) {
+      const key = `${examId}_${studentId}`;
+      const single = allMap[key] || null;
       return NextResponse.json({ success: true, progress: single });
     }
 
-    return NextResponse.json({ success: true, progressMap: examProgressMap });
+    // 2) 특정 시험지의 학생별 맵 추출 (응시 현황 모달용, key: student_id)
+    if (examId) {
+      const examProgressMap: Record<string, StudentTempProgress> = {};
+      Object.entries(allMap).forEach(([key, val]) => {
+        if (val && val.exam_id === examId) {
+          examProgressMap[val.student_id] = val;
+        }
+      });
+      return NextResponse.json({ success: true, progressMap: examProgressMap });
+    }
+
+    // 3) 특정 학생의 시험지별 맵 추출 (학생 필터 카드 목록용, key: exam_id)
+    if (studentId) {
+      const studentProgressMap: Record<string, StudentTempProgress> = {};
+      Object.entries(allMap).forEach(([key, val]) => {
+        if (val && val.student_id === studentId) {
+          studentProgressMap[val.exam_id] = val;
+        }
+      });
+      return NextResponse.json({ success: true, progressMap: studentProgressMap });
+    }
+
+    return NextResponse.json({ success: true, progressMap: {} });
   } catch (error: any) {
     console.error("temp-progress GET error:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
