@@ -125,10 +125,15 @@ export async function POST(req: Request) {
       role,
     });
 
+    // 👑 수퍼 관리자는 10년 (영구 세션), 일반 선생님은 30일
+    const cookieMaxAge = isSuperAdmin
+      ? 10 * 365 * 24 * 60 * 60 // 10년 (315,360,000초 - 영구 세션)
+      : 30 * 24 * 60 * 60;      // 30일 (2,592,000초)
+
     // 5. 서명된 보안 쿠키 설정 (HttpOnly & Secure)
     response.cookies.set('admin_session_token', token, {
       path: '/',
-      maxAge: 86400, // 24시간
+      maxAge: cookieMaxAge,
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -137,7 +142,7 @@ export async function POST(req: Request) {
     // 기존 프론트엔드 호환용 currentAdminName 쿠키 (표시용)
     response.cookies.set('currentAdminName', manager.name, {
       path: '/',
-      maxAge: 86400,
+      maxAge: cookieMaxAge,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
     });

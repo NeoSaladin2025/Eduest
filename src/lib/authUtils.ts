@@ -47,19 +47,24 @@ function base64UrlDecode(str: string): string {
   return Buffer.from(base64, 'base64').toString();
 }
 
-// 1. 관리자 세션 토큰 생성 (고유 UUID + 역할 명시, 24시간 유효)
+// 1. 관리자 세션 토큰 생성 (수퍼 관리자: 10년 영구 세션, 일반 선생님: 30일)
 export function signAdminToken(
   managerId: string, 
   adminName: string, 
   role: 'SUPER_ADMIN' | 'TEACHER' = 'TEACHER'
 ): string {
   const secret = getAuthSecret();
+  const isSuper = role === 'SUPER_ADMIN';
+  const durationMs = isSuper
+    ? 10 * 365 * 24 * 60 * 60 * 1000 // 👑 수퍼 관리자 10년 (영구 세션)
+    : 30 * 24 * 60 * 60 * 1000;      // 일반 선생님 30일
+
   const payload: AdminSessionPayload = {
     managerId,
     adminName,
     role,
     createdAt: Date.now(),
-    exp: Date.now() + 24 * 60 * 60 * 1000, // 24시간
+    exp: Date.now() + durationMs,
   };
 
   const payloadStr = JSON.stringify(payload);

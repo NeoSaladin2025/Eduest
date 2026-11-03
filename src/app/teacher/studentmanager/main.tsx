@@ -190,10 +190,21 @@ export default function StudentManagerMain() {
     });
   };
 
-  const fetchStudents = async () => {
+  const fetchStudents = async (retryCount = 0) => {
     try {
       setFetching(true);
       const res = await fetch('/api/drive/students');
+      
+      if (res.status === 401) {
+        alert('⚠️ 로그인 세션이 만료되었습니다. 다시 로그인해 주세요!');
+        window.location.href = '/';
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(`학생 목록 응답 오류: ${res.status}`);
+      }
+
       const data = await res.json();
       
       if (data.students) {
@@ -201,6 +212,12 @@ export default function StudentManagerMain() {
       }
     } catch (err) {
       console.error('목록 로드 실패:', err);
+      // 모바일 슬립 복귀 및 네트워크 순단 대비: 최대 2회 자동 재시도
+      if (retryCount < 2) {
+        setTimeout(() => {
+          fetchStudents(retryCount + 1);
+        }, 1200);
+      }
     } finally {
       setFetching(false);
     }
@@ -1192,9 +1209,21 @@ export default function StudentManagerMain() {
           <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-2 italic uppercase leading-none">EduOS Student Center</h1>
           <p className="text-slate-500 font-medium font-sans uppercase text-[10px] tracking-widest opacity-60">Database Management & Access Control</p>
         </div>
-        <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-bold shadow-sm">
-          <Users size={16} />
-          총 {students.length}명
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => fetchStudents(0)}
+            disabled={fetching}
+            className="flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 text-slate-600 rounded-full text-xs font-bold border border-slate-200 shadow-xs transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            title="학생 목록 새로고침"
+          >
+            <RefreshCw size={14} className={fetching ? 'animate-spin text-indigo-600' : 'text-slate-500'} />
+            <span className="hidden sm:inline">새로고침</span>
+          </button>
+          <div className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-bold shadow-sm">
+            <Users size={16} />
+            총 {students.length}명
+          </div>
         </div>
       </div>
 
@@ -1496,6 +1525,15 @@ export default function StudentManagerMain() {
             <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-[40px] py-32 flex flex-col items-center justify-center text-slate-300">
               <Users size={60} className="mb-4 opacity-10" />
               <p className="font-black italic uppercase tracking-widest text-sm">No Student Found</p>
+              <button
+                type="button"
+                onClick={() => fetchStudents(0)}
+                disabled={fetching}
+                className="mt-4 flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded-xl shadow-md shadow-indigo-100 transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={fetching ? 'animate-spin' : ''} />
+                학생 목록 다시 불러오기
+              </button>
             </div>
           )}
         </div>
