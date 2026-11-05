@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Printer,
   X,
@@ -149,6 +149,19 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   // 화면 미리보기 줌 (기본 80%)
   const [zoomScale, setZoomScale] = useState(0.8);
   const [isPreparingPrint, setIsPreparingPrint] = useState(false);
+  const [printingProgress, setPrintingProgress] = useState<{
+    current: number;
+    total: number;
+    studentName: string;
+  } | null>(null);
+  const cancelPrintRef = useRef(false);
+
+  // 컴포넌트 언마운트 시 인쇄 플래그 정리
+  useEffect(() => {
+    return () => {
+      cancelPrintRef.current = true;
+    };
+  }, []);
 
   // 💾 브라우저 localStorage에서 저장된 설정 불러오기 (마운트 시점 1회)
   useEffect(() => {
@@ -909,10 +922,131 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     );
   };
 
+  // 인쇄 취소 핸들러
+  const handleCancelPrinting = () => {
+    cancelPrintRef.current = true;
+    setPrintingProgress(null);
+  };
+
+  // 단일 독립 iframe 생성 및 인쇄 작업 실행 (afterprint 대기)
+  const executePrintJob = (fullDocumentHtml: string): Promise<void> => {
+    return new Promise((resolve) => {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.visibility = 'hidden';
+      document.body.appendChild(iframe);
+
+      const doc = iframe.contentWindow?.document;
+      if (!doc) {
+        if (document.body.contains(iframe)) document.body.removeChild(iframe);
+        resolve();
+        return;
+      }
+
+      doc.open();
+      doc.write(fullDocumentHtml);
+      doc.close();
+
+      let isFinished = false;
+      let checkTimer: NodeJS.Timeout | null = null;
+      let maxTimer: NodeJS.Timeout | null = null;
+
+      const finish = () => {
+        if (isFinished) return;
+        isFinished = true;
+
+        if (checkTimer) clearInterval(checkTimer);
+        if (maxTimer) clearTimeout(maxTimer);
+
+        window.removeEventListener('afterprint', finish);
+        iframe.contentWindow?.removeEventListener('afterprint', finish);
+
+        setTimeout(() => {
+          try {
+            if (document.body.contains(iframe)) {
+              document.body.removeChild(iframe);
+            }
+          } catch (e) {
+            // ignore
+          }
+        }, 300);
+
+        resolve();
+      };
+
+      const startPrint = async () => {
+        try {
+          // iframe 내부 이미지 로딩 대기
+          const iframeImages = Array.from(doc.images);
+          await Promise.all(
+            iframeImages.map(img => {
+              if (img.complete) return Promise.resolve(true);
+              return new Promise(r => {
+                img.onload = () => r(true);
+                img.onerror = () => r(false);
+              });
+            })
+          );
+
+          // 렌더링 안정화 대기
+          await new Promise(r => setTimeout(r, 200));
+
+          if (cancelPrintRef.current) {
+            finish();
+            return;
+          }
+
+          // afterprint 리스너 등록
+          window.addEventListener('afterprint', finish, { once: true });
+          iframe.contentWindow?.addEventListener('afterprint', finish, { once: true });
+
+          // 인쇄 다이얼로그 호출
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+
+          // 안전장치 1: 키오스크 모드(--kiosk-printing)이거나 포커스가 돌아왔을 때 안전 감지
+          let stableFocusTicks = 0;
+          checkTimer = setInterval(() => {
+            if (cancelPrintRef.current) {
+              finish();
+              return;
+            }
+            if (document.hasFocus()) {
+              stableFocusTicks++;
+              if (stableFocusTicks >= 4) {
+                finish();
+              }
+            } else {
+              stableFocusTicks = 0;
+            }
+          }, 250);
+
+          // 안전장치 2: 최대 60초 타임아웃
+          maxTimer = setTimeout(() => {
+            finish();
+          }, 60000);
+        } catch (err) {
+          console.error('executePrintJob startPrint error:', err);
+          finish();
+        }
+      };
+
+      startPrint();
+    });
+  };
+
   // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
+  // 다중 학생 선택 시: 복합기 스테이플러가 각 학생마다 따로 찍히도록 학생별 개별 Print Job으로 분리 순차 전송
   const handleTriggerPrint = async () => {
     if (!exam) return;
     setIsPreparingPrint(true);
+    cancelPrintRef.current = false;
+
     try {
       // 1. 모든 문항 이미지 사전 로딩 및 디코딩 완료 대기
       const imageUrls = exam.questions.map(q => q.image_url).filter(Boolean);
@@ -941,70 +1075,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         .map(node => node.outerHTML)
         .join('\n');
 
-      // 3. 인쇄 전용 숨김 iframe 확보 (기존 것 재사용 또는 신규 생성)
-      let iframe = document.getElementById('eduest-print-iframe') as HTMLIFrameElement;
-      if (!iframe) {
-        iframe = document.createElement('iframe');
-        iframe.id = 'eduest-print-iframe';
-        iframe.style.position = 'fixed';
-        iframe.style.right = '0';
-        iframe.style.bottom = '0';
-        iframe.style.width = '0';
-        iframe.style.height = '0';
-        iframe.style.border = '0';
-        iframe.style.visibility = 'hidden';
-        document.body.appendChild(iframe);
-      }
-
-      const doc = iframe.contentWindow?.document;
-      if (!doc) {
-        window.print();
-        setIsPreparingPrint(false);
-        return;
-      }
-
       const paddingVal = resolvedMargins.cssPadding;
 
-      // 4. 모달의 fixed/overflow 제약이 전혀 없는 깨끗한 A4 인쇄 HTML 주입
-      doc.open();
-      // 다중 학생 일괄 인쇄용 HTML 조합
-      let printContentHtml = '';
-
-      if (selectedStudentIds.length > 1) {
-        const selectedStudents = assignedStudents.filter(s => selectedStudentIds.includes(s.id));
-        const setsHtml = selectedStudents.map((st, sIdx) => {
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = printArea.innerHTML;
-
-          const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
-          nameCells.forEach(cell => {
-            cell.textContent = st.name;
-          });
-
-          const classCells = tempDiv.querySelectorAll('[data-field="class-name"]');
-          classCells.forEach(cell => {
-            cell.textContent = st.grade || exam.grade || '';
-          });
-
-          // 학생 세트 구분: 마지막 페이지에 page-break-after 강제
-          const sheets = tempDiv.querySelectorAll('.a4-print-sheet');
-          if (sheets.length > 0 && sIdx < selectedStudents.length - 1) {
-            const lastSheet = sheets[sheets.length - 1];
-            if (lastSheet instanceof HTMLElement) {
-              lastSheet.style.pageBreakAfter = 'always';
-              lastSheet.style.breakAfter = 'page';
-            }
-          }
-
-          return tempDiv.innerHTML;
-        });
-
-        printContentHtml = setsHtml.join('\n');
-      } else {
-        printContentHtml = printArea.innerHTML;
-      }
-
-      doc.write(`
+      // 공통 완벽한 A4 인쇄 HTML 빌더
+      const buildDocumentHtml = (contentHtml: string) => `
         <!DOCTYPE html>
         <html>
           <head>
@@ -1078,33 +1152,63 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
           </head>
           <body>
             <div id="eduest-print-area">
-              ${printContentHtml}
+              ${contentHtml}
             </div>
           </body>
         </html>
-      `);
-      doc.close();
+      `;
 
-      // 5. iframe 내부 이미지 로딩 대기 후 인쇄 트리거
-      const iframeImages = Array.from(doc.images);
-      await Promise.all(
-        iframeImages.map(img => {
-          if (img.complete) return Promise.resolve(true);
-          return new Promise(resolve => {
-            img.onload = () => resolve(true);
-            img.onerror = () => resolve(false);
-          });
-        })
-      );
-
-      setTimeout(() => {
+      // 1명 이하 인쇄 (단일 Print Job)
+      if (selectedStudentIds.length <= 1) {
         setIsPreparingPrint(false);
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-      }, 350);
-    } catch (e) {
-      console.error('Print iframe failed, fallback to window.print():', e);
+        await executePrintJob(buildDocumentHtml(printArea.innerHTML));
+        return;
+      }
+
+      // 2명 이상 다중 학생 인쇄 (각 학생마다 독립된 Print Job으로 순차 전송 ➜ 복합기 스테이플러 개별 체결)
+      const selectedStudents = assignedStudents.filter(s => selectedStudentIds.includes(s.id));
       setIsPreparingPrint(false);
+
+      for (let i = 0; i < selectedStudents.length; i++) {
+        if (cancelPrintRef.current) break;
+
+        const st = selectedStudents[i];
+        setPrintingProgress({
+          current: i + 1,
+          total: selectedStudents.length,
+          studentName: st.name
+        });
+
+        // 학생 맞춤형 DOM 생성
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = printArea.innerHTML;
+
+        const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
+        nameCells.forEach(cell => {
+          cell.textContent = st.name;
+        });
+
+        const classCells = tempDiv.querySelectorAll('[data-field="class-name"]');
+        classCells.forEach(cell => {
+          cell.textContent = st.grade || exam.grade || '';
+        });
+
+        const studentDocHtml = buildDocumentHtml(tempDiv.innerHTML);
+
+        // 학생 1명 인쇄 작업 실행 (프린터로 1개 Job 전송 및 대기)
+        await executePrintJob(studentDocHtml);
+
+        // 다음 작업으로 넘어가기 전 프린터 스풀러 안정화 딜레이 (400ms)
+        if (i < selectedStudents.length - 1 && !cancelPrintRef.current) {
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
+      }
+
+      setPrintingProgress(null);
+    } catch (e) {
+      console.error('Print execution failed, fallback to window.print():', e);
+      setIsPreparingPrint(false);
+      setPrintingProgress(null);
       window.print();
     }
   };
@@ -1214,6 +1318,46 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         }
       `}</style>
 
+      {/* 🖨️ 학생별 순차 인쇄 진행 중 오버레이 (복합기 스테이플 분리용) */}
+      {printingProgress && (
+        <div className="no-print absolute inset-0 z-[200] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-violet-500/40 rounded-3xl p-7 max-w-sm w-full shadow-2xl text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-violet-600/20 border border-violet-500/40 text-violet-300 flex items-center justify-center mx-auto shadow-inner">
+              <Printer size={28} className="animate-pulse text-violet-400" />
+            </div>
+            <div className="space-y-1.5">
+              <span className="inline-block text-[10px] font-black tracking-wider uppercase px-2.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                개별 스테이플 인쇄 진행 중
+              </span>
+              <h4 className="text-base font-black text-white">
+                <span className="text-violet-400">{printingProgress.studentName}</span> 학생 시험지 전송 중
+              </h4>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                총 {printingProgress.total}명 중 <strong className="text-slate-200">{printingProgress.current}번째</strong> 학생 시험지를 인쇄기로 보내고 있습니다.
+              </p>
+            </div>
+
+            {/* 프로그레스 바 */}
+            <div className="w-full bg-slate-800 rounded-full h-2.5 p-0.5 overflow-hidden border border-slate-700">
+              <div
+                className="bg-gradient-to-r from-violet-600 to-indigo-500 h-full transition-all duration-300 rounded-full"
+                style={{ width: `${(printingProgress.current / printingProgress.total) * 100}%` }}
+              />
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleCancelPrinting}
+                className="px-4 py-2 text-xs font-black text-rose-300 hover:text-white bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/40 rounded-xl transition-all cursor-pointer active:scale-95"
+              >
+                인쇄 전송 중단
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 상단 모달 헤더 바 (화면 전용) */}
       <header className="no-print h-16 bg-slate-900 border-b border-slate-800 px-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
@@ -1270,7 +1414,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
           <button
             type="button"
             onClick={handleTriggerPrint}
-            disabled={isPreparingPrint}
+            disabled={isPreparingPrint || printingProgress !== null}
             className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 active:scale-98 text-white text-xs font-black rounded-xl shadow-lg shadow-violet-600/30 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60"
           >
             {isPreparingPrint ? (
@@ -1278,14 +1422,19 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 <Loader2 size={16} className="animate-spin" />
                 <span>이미지 준비 중...</span>
               </>
+            ) : printingProgress ? (
+              <>
+                <Loader2 size={16} className="animate-spin text-amber-300" />
+                <span>인쇄 전송 중 ({printingProgress.current}/{printingProgress.total}명: {printingProgress.studentName})</span>
+              </>
             ) : (
               <>
                 <Printer size={16} />
                 {selectedStudentIds.length > 1 ? (
-                <span>학생 {selectedStudentIds.length}명 일괄 인쇄 (총 {selectedStudentIds.length * totalPages}쪽)</span>
-              ) : (
-                <span>인쇄하기 (PDF 저장)</span>
-              )}
+                  <span>학생 {selectedStudentIds.length}명 일괄 인쇄 (개별 스테이플 철)</span>
+                ) : (
+                  <span>인쇄하기 (PDF 저장)</span>
+                )}
               </>
             )}
           </button>
@@ -1348,9 +1497,15 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
               {/* 다중 선택 안내 */}
               {selectedStudentIds.length > 1 && (
-                <p className="text-[11px] font-bold text-violet-300/90 bg-violet-900/30 px-2.5 py-1.5 rounded-lg border border-violet-500/20 leading-tight">
-                  ✨ <strong>{selectedStudentIds.length}명 일괄 인쇄:</strong> 각 학생의 이름이 적힌 시험지(총 {selectedStudentIds.length * totalPages}쪽)가 순서대로 연속 인쇄됩니다.
-                </p>
+                <div className="text-[11px] font-bold text-violet-300/90 bg-violet-900/30 px-3 py-2 rounded-xl border border-violet-500/20 leading-tight space-y-1">
+                  <div className="flex items-center gap-1.5 text-violet-200">
+                    <Sparkles size={13} className="text-amber-400 shrink-0" />
+                    <strong>{selectedStudentIds.length}명 개별 스테이플 인쇄</strong>
+                  </div>
+                  <p className="text-[10.5px] text-violet-300/80 font-normal">
+                    학생마다 독립된 인쇄 작업으로 전송되어, 복합기 스테이플러가 한 명씩 따로 묶여서 출력됩니다.
+                  </p>
+                </div>
               )}
             </div>
           )}
