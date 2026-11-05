@@ -94,6 +94,62 @@ export default function ReviewTestModal({
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
 
+  // 🌟 [오라버니 기획 v3] 문항 네비게이션 필터 & 서랍/슬림 모드 상태
+  const [navFilter, setNavFilter] = useState<'all' | 'unanswered' | 'unknown' | 'answered'>('all');
+  const [navViewMode, setNavViewMode] = useState<'drawer' | 'slim'>('drawer');
+  const [navGroupIndex, setNavGroupIndex] = useState<number>(0);
+  const [isNavGridPopoverOpen, setIsNavGridPopoverOpen] = useState<boolean>(false);
+
+  // 🌟 실시간 문항 통계 및 20문항 그룹 계산 (초록 완료 / 노랑 모름 / 빨강 미완료)
+  const navStats = useMemo(() => {
+    if (!items || items.length === 0) return { total: 0, answered: 0, unknown: 0, unanswered: 0, groups: [] };
+    const total = items.length;
+    let answered = 0;
+    let unknown = 0;
+    let unanswered = 0;
+
+    items.forEach(item => {
+      const isUnk = userAnswers[item.id] === '모름';
+      const isAns = Boolean(userAnswers[item.id]) && !isUnk;
+      if (isUnk) unknown++;
+      else if (isAns) answered++;
+      else unanswered++;
+    });
+
+    const groupCount = Math.ceil(total / 20) || 1;
+    const groups = Array.from({ length: groupCount }, (_, gIdx) => {
+      const startIdx = gIdx * 20;
+      const endIdx = Math.min((gIdx + 1) * 20, total);
+      const groupItems = items.slice(startIdx, endIdx);
+
+      let gAns = 0;
+      let gUnk = 0;
+      let gUnans = 0;
+
+      groupItems.forEach(item => {
+        const isUnk = userAnswers[item.id] === '모름';
+        const isAns = Boolean(userAnswers[item.id]) && !isUnk;
+        if (isUnk) gUnk++;
+        else if (isAns) gAns++;
+        else gUnans++;
+      });
+
+      return {
+        id: gIdx,
+        startIdx,
+        endIdx,
+        name: `${startIdx + 1} ~ ${endIdx}번`,
+        total: groupItems.length,
+        answered: gAns,
+        unknown: gUnk,
+        unanswered: gUnans,
+        items: groupItems,
+      };
+    });
+
+    return { total, answered, unknown, unanswered, groups };
+  }, [items, userAnswers]);
+
   // ── 🌟 [버그 수정] 라이브러리 HTML 문항 자동 파싱 캐시 (문제 이미지, 정답, 문항유형) ──
   const [htmlParsedCache, setHtmlParsedCache] = useState<Record<string, ExtractedQuestionResult>>({});
   const [htmlLoadingIds, setHtmlLoadingIds] = useState<Record<string, boolean>>({});
@@ -213,6 +269,7 @@ export default function ReviewTestModal({
     if (newIdx < 0 || newIdx >= items.length) return;
     questionEnteredAtRef.current = Date.now();
     setCurrentIndex(newIdx);
+    setNavGroupIndex(Math.floor(newIdx / 20));
   };
 
   // 🏃 달리기초 포맷팅 헬퍼 (MM:SS.s - 분:초.0.1초)
@@ -853,35 +910,6 @@ export default function ReviewTestModal({
                 </div>
               </div>
 
-              {/* 문항 번호 칩 네비게이션 */}
-              <div className="flex items-center gap-1.5 overflow-x-auto max-w-full md:max-w-xs py-1 scrollbar-hide">
-                {items.map((item, idx) => {
-                  const isCurrent = currentIndex === idx;
-                  const ans = userAnswers[item.id];
-                  const isUnknown = ans === '모름';
-                  const isAnswered = !!ans && !isUnknown;
-
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => handleNavigateQuestion(idx)}
-                      className={`w-8 h-8 rounded-xl font-black text-xs shrink-0 transition-all flex items-center justify-center ${
-                        isCurrent
-                          ? 'bg-violet-600 text-white shadow-lg shadow-violet-500/50 scale-105 ring-2 ring-violet-400'
-                          : isUnknown
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                          : isAnswered
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          : 'bg-white/5 text-slate-500 hover:text-white border border-white/5'
-                      }`}
-                      title={`${idx + 1}번 문항으로 이동`}
-                    >
-                      {isUnknown ? '?' : idx + 1}
-                    </button>
-                  );
-                })}
-              </div>
-
               <div className="flex items-center gap-2 shrink-0">
                 {/* 창 크기 최대화 토글 버튼 */}
                 <button
@@ -905,6 +933,246 @@ export default function ReviewTestModal({
               </div>
 
             </div>
+
+            {/* 🌟 [오라버니 기획 v3] 하이브리드 문항 네비게이션 패널 (복습 테스트 모달용) */}
+            {items.length > 1 && (() => {
+              const currentGroup = navStats.groups[navGroupIndex] || navStats.groups[0];
+
+              const isItemVisible = (item: ReviewItem) => {
+                const isUnk = userAnswers[item.id] === '모름';
+                const isAns = Boolean(userAnswers[item.id]) && !isUnk;
+                if (navFilter === 'all') return true;
+                if (navFilter === 'unanswered') return !isAns && !isUnk;
+                if (navFilter === 'unknown') return isUnk;
+                if (navFilter === 'answered') return isAns;
+                return true;
+              };
+
+              return (
+                <div className="mx-4 md:mx-6 mt-4 bg-slate-900/90 border border-white/10 rounded-2xl p-3 md:p-4 shadow-xl space-y-3">
+                  {/* [1층] 상태 필터 선택 바 + 상태 범례 + 뷰 모드 스위처 */}
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 bg-black/40 p-2 rounded-xl border border-white/10">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider mr-1">🔍 필터:</span>
+                      <button
+                        type="button"
+                        onClick={() => setNavFilter('all')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                          navFilter === 'all'
+                            ? 'bg-white/20 text-white shadow-md ring-1 ring-white/40'
+                            : 'text-slate-300 hover:text-white bg-white/5'
+                        }`}
+                      >
+                        전체 ({navStats.total})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNavFilter('unanswered')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                          navFilter === 'unanswered'
+                            ? 'bg-rose-500 text-white shadow-md ring-1 ring-rose-300'
+                            : 'text-rose-300 bg-rose-500/15 border border-rose-500/30'
+                        }`}
+                      >
+                        <span>🔴 안 푼 문제</span>
+                        <span className="font-mono font-black">({navStats.unanswered})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNavFilter('unknown')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                          navFilter === 'unknown'
+                            ? 'bg-amber-400 text-slate-950 shadow-md ring-1 ring-amber-300'
+                            : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
+                        }`}
+                      >
+                        <span>🟡 모름</span>
+                        <span className="font-mono font-black">({navStats.unknown})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNavFilter('answered')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                          navFilter === 'answered'
+                            ? 'bg-emerald-500 text-white shadow-md ring-1 ring-emerald-300'
+                            : 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30'
+                        }`}
+                      >
+                        <span>🟢 완료</span>
+                        <span className="font-mono font-black">({navStats.answered})</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1 text-xs">
+                      <span className="text-[11px] font-bold text-slate-400 mr-1">보기:</span>
+                      <div className="flex items-center bg-black/50 p-0.5 rounded-lg border border-white/10 gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setNavViewMode('drawer')}
+                          className={`px-2.5 py-0.5 rounded-md text-xs font-black transition-all cursor-pointer ${
+                            navViewMode === 'drawer'
+                              ? 'bg-cyan-600 text-white shadow-sm'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          서랍 탭
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNavViewMode('slim')}
+                          className={`px-2.5 py-0.5 rounded-md text-xs font-black transition-all cursor-pointer ${
+                            navViewMode === 'slim'
+                              ? 'bg-violet-600 text-white shadow-sm'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          슬림
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 서랍식 2단 탭 */}
+                  {navViewMode === 'drawer' && (
+                    <div className="bg-slate-950/60 border border-white/10 rounded-xl p-3 space-y-2.5">
+                      <div className="flex items-center justify-between flex-wrap gap-2 pb-1.5 border-b border-white/5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-slate-400 font-bold text-xs mr-0.5">그룹:</span>
+                          {navStats.groups.map((grp) => {
+                            const isSelected = grp.id === navGroupIndex;
+                            return (
+                              <button
+                                key={grp.id}
+                                type="button"
+                                onClick={() => setNavGroupIndex(grp.id)}
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-cyan-600 text-white font-black shadow-md ring-1 ring-cyan-300'
+                                    : 'bg-white/5 text-slate-300 hover:text-white'
+                                }`}
+                              >
+                                <span>{grp.name}</span>
+                                {navFilter === 'all' ? (
+                                  <div className="flex items-center gap-1 text-[10px] font-mono ml-0.5">
+                                    <span className="px-1 rounded bg-emerald-500/20 text-emerald-300" title="완료">{grp.answered}</span>
+                                    <span className="px-1 rounded bg-amber-500/20 text-amber-300" title="모름">{grp.unknown}</span>
+                                    <span className="px-1 rounded bg-rose-500/20 text-rose-300" title="안 푼 문제">{grp.unanswered}</span>
+                                  </div>
+                                ) : navFilter === 'unanswered' ? (
+                                  <span className="px-1.5 py-0.2 rounded-full bg-rose-500/25 text-rose-300 text-[10px] font-black">{grp.unanswered}</span>
+                                ) : navFilter === 'unknown' ? (
+                                  <span className="px-1.5 py-0.2 rounded-full bg-amber-500/25 text-amber-300 text-[10px] font-black">{grp.unknown}</span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/25 text-emerald-300 text-[10px] font-black">{grp.answered}</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {currentGroup && (
+                          <div className="text-[11px] text-slate-400 font-bold">
+                            {navFilter === 'all' ? (
+                              <span>{currentGroup.name}: <strong className="text-emerald-400">완료 {currentGroup.answered}</strong> · <strong className="text-amber-300">모름 {currentGroup.unknown}</strong> · <strong className="text-rose-400">안 푼 문제 {currentGroup.unanswered}</strong></span>
+                            ) : navFilter === 'unanswered' ? (
+                              <span>{currentGroup.name} 안 푼 문제: <strong className="text-rose-400">{currentGroup.unanswered}개</strong></span>
+                            ) : navFilter === 'unknown' ? (
+                              <span>{currentGroup.name} 모름 문제: <strong className="text-amber-300">{currentGroup.unknown}개</strong></span>
+                            ) : (
+                              <span>{currentGroup.name} 완료 문제: <strong className="text-emerald-400">{currentGroup.answered}개</strong></span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="bg-black/30 border border-white/5 rounded-xl p-2.5">
+                        {(() => {
+                          if (!currentGroup) return null;
+                          const visibleItems = currentGroup.items.filter(isItemVisible);
+                          if (visibleItems.length === 0) {
+                            return <div className="py-4 text-center text-xs text-slate-400 font-bold">이 그룹에는 해당하는 문항이 없습니다.</div>;
+                          }
+                          return (
+                            <div className="grid grid-cols-5 sm:grid-cols-10 gap-1.5">
+                              {visibleItems.map((item) => {
+                                const origIdx = items.findIndex((it) => it.id === item.id);
+                                const isCur = currentIndex === origIdx;
+                                const isUnk = userAnswers[item.id] === '모름';
+                                const isAns = Boolean(userAnswers[item.id]) && !isUnk;
+
+                                let bCls = 'h-9 rounded-lg font-black text-xs transition-all flex items-center justify-center cursor-pointer ';
+                                if (isCur) bCls += 'bg-cyan-500 text-slate-950 ring-2 ring-white scale-102 shadow-md ';
+                                else if (isAns) bCls += 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 ';
+                                else if (isUnk) bCls += 'bg-amber-500/20 text-amber-300 border border-amber-500/40 ';
+                                else bCls += 'bg-rose-500/10 text-rose-300 border border-rose-500/30 ';
+
+                                return (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    onClick={() => handleNavigateQuestion(origIdx)}
+                                    className={bCls}
+                                  >
+                                    <span>{origIdx + 1}번</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 슬림 모드 */}
+                  {navViewMode === 'slim' && (
+                    <div className="bg-slate-950/60 border border-white/10 rounded-xl p-2 flex items-center justify-between gap-2 overflow-x-auto">
+                      <button
+                        type="button"
+                        onClick={() => handleNavigateQuestion(Math.max(0, currentIndex - 10))}
+                        disabled={currentIndex === 0}
+                        className="px-2 py-1 rounded-lg bg-white/5 hover:bg-white/15 disabled:opacity-30 text-xs font-black cursor-pointer"
+                      >
+                        ◀ 10
+                      </button>
+                      <div className="flex items-center gap-1 overflow-x-auto">
+                        {items.slice(Math.max(0, currentIndex - 4), currentIndex + 5).map((item) => {
+                          const origIdx = items.findIndex((it) => it.id === item.id);
+                          const isCur = currentIndex === origIdx;
+                          const isUnk = userAnswers[item.id] === '모름';
+                          const isAns = Boolean(userAnswers[item.id]) && !isUnk;
+
+                          let cCls = 'w-8 h-8 rounded-lg font-black text-xs shrink-0 transition-all flex items-center justify-center cursor-pointer ';
+                          if (isCur) cCls += 'bg-violet-600 text-white shadow-md ring-1 ring-violet-300';
+                          else if (isAns) cCls += 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                          else if (isUnk) cCls += 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
+                          else cCls += 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => handleNavigateQuestion(origIdx)}
+                              className={cCls}
+                            >
+                              {isUnk ? '?' : origIdx + 1}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleNavigateQuestion(Math.min(items.length - 1, currentIndex + 10))}
+                        disabled={currentIndex >= items.length - 1}
+                        className="px-2 py-1 rounded-lg bg-white/5 hover:bg-white/15 disabled:opacity-30 text-xs font-black cursor-pointer"
+                      >
+                        10 ▶
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* 메인 문제 및 OMR 답안 마킹 패널 */}
             <div className="flex-1 overflow-y-auto p-4 md:p-6">

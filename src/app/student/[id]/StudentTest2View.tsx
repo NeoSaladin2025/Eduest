@@ -231,6 +231,12 @@ export default function StudentTest2View({
   const [solutionWrongList, setSolutionWrongList] = useState<Array<{ q: ExamQuestion; originalIdx: number }>>([]);
   const [isSolutionMaximized, setIsSolutionMaximized] = useState<boolean>(false);
 
+  // 🌟 [오라버니 기획 v3] 문항 네비게이션 필터 & 서랍/슬림 모드 상태
+  const [navFilter, setNavFilter] = useState<'all' | 'unanswered' | 'unknown' | 'answered'>('all');
+  const [navViewMode, setNavViewMode] = useState<'drawer' | 'slim'>('drawer');
+  const [navGroupIndex, setNavGroupIndex] = useState<number>(0);
+  const [isNavGridPopoverOpen, setIsNavGridPopoverOpen] = useState<boolean>(false);
+
   // 복습 토스트 메시지
   const [reviewToast, setReviewToast] = useState<string | null>(null);
   const showReviewToast = (msg: string) => {
@@ -1130,6 +1136,57 @@ export default function StudentTest2View({
     return typeof ans === 'string' && ans.trim().length > 0;
   };
 
+  // 🌟 [오라버니 기획 v3] 실시간 문항 통계 및 20문항 그룹 계산 (초록 완료 / 노랑 모름 / 빨강 미완료)
+  const navStats = useMemo(() => {
+    if (!currentExam) return { total: 0, answered: 0, unknown: 0, unanswered: 0, groups: [] };
+    const questions = currentExam.questions;
+    const total = questions.length;
+    let answered = 0;
+    let unknown = 0;
+    let unanswered = 0;
+
+    questions.forEach(q => {
+      const isUnk = userAnswers[q.id] === '모름';
+      const isAns = isQuestionAnswered(q) && !isUnk;
+      if (isUnk) unknown++;
+      else if (isAns) answered++;
+      else unanswered++;
+    });
+
+    const groupCount = Math.ceil(total / 20) || 1;
+    const groups = Array.from({ length: groupCount }, (_, gIdx) => {
+      const startIdx = gIdx * 20;
+      const endIdx = Math.min((gIdx + 1) * 20, total);
+      const groupQuestions = questions.slice(startIdx, endIdx);
+
+      let gAns = 0;
+      let gUnk = 0;
+      let gUnans = 0;
+
+      groupQuestions.forEach(q => {
+        const isUnk = userAnswers[q.id] === '모름';
+        const isAns = isQuestionAnswered(q) && !isUnk;
+        if (isUnk) gUnk++;
+        else if (isAns) gAns++;
+        else gUnans++;
+      });
+
+      return {
+        id: gIdx,
+        startIdx,
+        endIdx,
+        name: `${startIdx + 1} ~ ${endIdx}번`,
+        total: groupQuestions.length,
+        answered: gAns,
+        unknown: gUnk,
+        unanswered: gUnans,
+        questions: groupQuestions,
+      };
+    });
+
+    return { total, answered, unknown, unanswered, groups };
+  }, [currentExam, userAnswers, customSubLabels]);
+
   // 문항 전환 시 풀이 시작 시각 갱신
   const handleNavigateQuestion = (targetIdx: number) => {
     // 이전 문항에서 머문 시간 누적 (만약 답안을 마킹하지 않고 넘어가더라도 풀이 시간으로 인정)
@@ -1149,6 +1206,7 @@ export default function StudentTest2View({
     }
 
     setCurrentQuestionIndex(targetIdx);
+    setNavGroupIndex(Math.floor(targetIdx / 20));
     questionEnteredAtRef.current = Date.now();
 
     // 진도 변경 실시간 통지
@@ -2269,53 +2327,398 @@ export default function StudentTest2View({
               </div>
             )}
 
-            {/* 문항 번호 네비게이션 칩 */}
-            <div className="flex items-center gap-1.5 overflow-x-auto max-w-full md:max-w-md py-1 scrollbar-hide">
-              {currentExam.questions.map((q, idx) => {
-                const isCurrent = currentQuestionIndex === idx;
-                const ans = userAnswers[q.id];
-                const isUnknown = ans === '모름';
-                const isAnswered = isQuestionAnswered(q);
+            <div className="flex items-center gap-3 shrink-0">
+              {/* 📋 종이 시험 일괄 입력 (디지털 OMR) 버튼 */}
+              <button
+                onClick={() => setShowBatchAnswerModal(true)}
+                className="px-4 py-3 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 font-black text-xs rounded-2xl transition-all shadow-lg shadow-emerald-500/10 flex items-center gap-2 shrink-0 active:scale-95 cursor-pointer"
+                title="종이 시험지로 풀이한 답안을 한 번에 빠르게 마킹합니다"
+              >
+                <FileText size={15} />
+                <span>일괄 마킹 (OMR)</span>
+              </button>
 
-                return (
-                  <button
-                    key={q.id}
-                    onClick={() => handleNavigateQuestion(idx)}
-                    className={`w-9 h-9 rounded-xl font-black text-xs shrink-0 transition-all flex items-center justify-center relative ${
-                      isCurrent
-                        ? 'bg-violet-600 text-white shadow-lg shadow-violet-500/50 scale-105 ring-2 ring-violet-400'
-                        : isUnknown
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                        : isAnswered
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                        : 'bg-white/5 text-slate-500 hover:text-white border border-white/5'
-                    }`}
-                  >
-                    {isUnknown ? '?' : idx + 1}
-                  </button>
-                );
-              })}
+              {/* 답안 제출 버튼 */}
+              <button
+                onClick={() => setShowSubmitConfirm(true)}
+                className="px-6 py-3 bg-violet-600 hover:bg-violet-500 text-white font-black text-xs rounded-2xl transition-all shadow-lg shadow-violet-600/30 flex items-center gap-2 shrink-0 cursor-pointer"
+              >
+                <Send size={15} />
+                <span>답안 제출</span>
+              </button>
             </div>
-
-            {/* 📋 종이 시험 일괄 입력 (디지털 OMR) 버튼 */}
-            <button
-              onClick={() => setShowBatchAnswerModal(true)}
-              className="px-4 py-3 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 font-black text-xs rounded-2xl transition-all shadow-lg shadow-emerald-500/10 flex items-center gap-2 shrink-0 active:scale-95"
-              title="종이 시험지로 풀이한 답안을 한 번에 빠르게 마킹합니다"
-            >
-              <FileText size={15} />
-              <span>일괄 마킹 (OMR)</span>
-            </button>
-
-            {/* 답안 제출 버튼 */}
-            <button
-              onClick={() => setShowSubmitConfirm(true)}
-              className="px-6 py-3 bg-violet-600 hover:bg-violet-500 text-white font-black text-xs rounded-2xl transition-all shadow-lg shadow-violet-600/30 flex items-center gap-2 shrink-0"
-            >
-              <Send size={15} />
-              <span>답안 제출</span>
-            </button>
           </div>
+
+          {/* 🌟 [오라버니 기획 v3] 하이브리드 문항 네비게이션 패널 (필터별 추출 & 3색 배지 & 서랍/슬림 모드) */}
+          {(() => {
+            const currentGroup = navStats.groups[navGroupIndex] || navStats.groups[0];
+
+            // 필터 판별 헬퍼
+            const isQuestionVisible = (q: ExamQuestion) => {
+              const isUnk = userAnswers[q.id] === '모름';
+              const isAns = isQuestionAnswered(q) && !isUnk;
+              if (navFilter === 'all') return true;
+              if (navFilter === 'unanswered') return !isAns && !isUnk;
+              if (navFilter === 'unknown') return isUnk;
+              if (navFilter === 'answered') return isAns;
+              return true;
+            };
+
+            return (
+              <div className="bg-[#0f172a] border border-white/10 rounded-[28px] md:rounded-[36px] p-4 md:p-5 mb-6 shadow-2xl space-y-3.5 relative">
+                {/* [1층] 상태 필터 선택 바 + 상태 범례 + 뷰 모드 스위처 */}
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-2.5 rounded-2xl border border-white/10">
+                  {/* 좌측: 상태 필터 버튼군 */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider mr-1">🔍 필터:</span>
+                    <button
+                      type="button"
+                      onClick={() => setNavFilter('all')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                        navFilter === 'all'
+                          ? 'bg-white/20 text-white shadow-md ring-2 ring-white/40'
+                          : 'text-slate-300 hover:text-white bg-white/5 hover:bg-white/10'
+                      }`}
+                    >
+                      전체 ({navStats.total})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNavFilter('unanswered')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                        navFilter === 'unanswered'
+                          ? 'bg-rose-500 text-white shadow-md ring-2 ring-rose-300'
+                          : 'text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25'
+                      }`}
+                    >
+                      <span>🔴 안 푼 문제만</span>
+                      <span className="font-mono font-black">({navStats.unanswered})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNavFilter('unknown')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                        navFilter === 'unknown'
+                          ? 'bg-amber-400 text-slate-950 shadow-md ring-2 ring-amber-300'
+                          : 'text-amber-300 bg-amber-500/15 border border-amber-500/30 hover:bg-amber-500/25'
+                      }`}
+                    >
+                      <span>🟡 모름만</span>
+                      <span className="font-mono font-black">({navStats.unknown})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNavFilter('answered')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1 ${
+                        navFilter === 'answered'
+                          ? 'bg-emerald-500 text-white shadow-md ring-2 ring-emerald-300'
+                          : 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25'
+                      }`}
+                    >
+                      <span>🟢 완료만</span>
+                      <span className="font-mono font-black">({navStats.answered})</span>
+                    </button>
+                  </div>
+
+                  {/* 중앙: 상태 범례 안내 */}
+                  <div className="hidden lg:flex items-center gap-2 text-[11px] text-slate-400 bg-black/30 px-3 py-1 rounded-xl border border-white/5">
+                    <span className="font-bold">범례:</span>
+                    <span className="text-rose-400 font-bold">🔴 안 푼 문제</span>
+                    <span>·</span>
+                    <span className="text-amber-400 font-bold">🟡 모름</span>
+                    <span>·</span>
+                    <span className="text-emerald-400 font-bold">🟢 완료</span>
+                  </div>
+
+                  {/* 우측: 뷰 모드 취사선택 스위치 */}
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-[11px] font-bold text-slate-400">보기 모드:</span>
+                    <div className="flex items-center bg-black/50 p-1 rounded-xl border border-white/10 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setNavViewMode('drawer')}
+                        className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                          navViewMode === 'drawer'
+                            ? 'bg-cyan-600 text-white shadow-md'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        서랍식 2단 탭
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNavViewMode('slim')}
+                        className={`px-3 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                          navViewMode === 'slim'
+                            ? 'bg-violet-600 text-white shadow-md'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        슬림 팝오버
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* [2층 - 서랍식 2단 탭 모드] */}
+                {navViewMode === 'drawer' && (
+                  <div className="bg-slate-900/60 border border-white/10 rounded-2xl p-3.5 space-y-3">
+                    {/* 그룹 탭 바: [전체]일 땐 초록/노랑/빨강 3색 숫자, [필터]일 땐 해당 색상 단일 배지 */}
+                    <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-white/5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-slate-400 font-bold text-xs mr-0.5">그룹:</span>
+                        {navStats.groups.map((grp) => {
+                          const isSelected = grp.id === navGroupIndex;
+                          return (
+                            <button
+                              key={grp.id}
+                              type="button"
+                              onClick={() => setNavGroupIndex(grp.id)}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-cyan-600 text-white font-black shadow-md ring-2 ring-cyan-300 scale-102'
+                                  : 'bg-white/5 text-slate-300 hover:text-white hover:bg-white/10 font-bold'
+                              }`}
+                            >
+                              <span>{grp.name}</span>
+                              {navFilter === 'all' ? (
+                                <div className="flex items-center gap-1 text-[10px] font-mono ml-0.5">
+                                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" title="완료">
+                                    {grp.answered}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30" title="모름">
+                                    {grp.unknown}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30" title="안 푼 문제">
+                                    {grp.unanswered}
+                                  </span>
+                                </div>
+                              ) : navFilter === 'unanswered' ? (
+                                <span className="px-2 py-0.5 rounded-full bg-rose-500/25 text-rose-300 border border-rose-500/40 text-[10px] font-black">
+                                  {grp.unanswered}
+                                </span>
+                              ) : navFilter === 'unknown' ? (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/40 text-[10px] font-black">
+                                  {grp.unknown}
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-[10px] font-black">
+                                  {grp.answered}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {currentGroup && (
+                        <div className="text-xs text-slate-400 font-bold">
+                          {navFilter === 'all' ? (
+                            <span>
+                              {currentGroup.name} 현황: <strong className="text-emerald-400">완료 {currentGroup.answered}</strong> · <strong className="text-amber-300">모름 {currentGroup.unknown}</strong> · <strong className="text-rose-400">안 푼 문제 {currentGroup.unanswered}</strong>
+                            </span>
+                          ) : navFilter === 'unanswered' ? (
+                            <span>
+                              {currentGroup.name} 안 푼 문제: <strong className="text-rose-400 text-sm">{currentGroup.unanswered}개</strong>
+                            </span>
+                          ) : navFilter === 'unknown' ? (
+                            <span>
+                              {currentGroup.name} 모름 문제: <strong className="text-amber-300 text-sm">{currentGroup.unknown}개</strong>
+                            </span>
+                          ) : (
+                            <span>
+                              {currentGroup.name} 완료 문제: <strong className="text-emerald-400 text-sm">{currentGroup.answered}개</strong>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 2단 바둑판 그리드: 선택된 필터에 맞는 문제만 쫙! */}
+                    <div className="bg-black/30 border border-white/5 rounded-2xl p-3">
+                      {(() => {
+                        if (!currentGroup) return null;
+                        const visibleQuestions = currentGroup.questions.filter(isQuestionVisible);
+
+                        if (visibleQuestions.length === 0) {
+                          let emptyMsg = '해당하는 문항이 없습니다.';
+                          if (navFilter === 'unanswered') emptyMsg = '🎉 이 그룹의 모든 문제를 풀었습니다! (안 푼 문제 0개)';
+                          if (navFilter === 'unknown') emptyMsg = '이 그룹에 [모름] 체크된 문항이 없습니다.';
+                          if (navFilter === 'answered') emptyMsg = '이 그룹에 완료된 문항이 없습니다.';
+                          return (
+                            <div className="py-6 text-center text-xs text-slate-400 font-bold">
+                              {emptyMsg}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
+                            {visibleQuestions.map((q) => {
+                              const originalIdx = currentExam.questions.findIndex((item) => item.id === q.id);
+                              const isCurrent = currentQuestionIndex === originalIdx;
+                              const isUnk = userAnswers[q.id] === '모름';
+                              const isAns = isQuestionAnswered(q) && !isUnk;
+
+                              let btnCls = 'h-11 rounded-xl font-black text-xs transition-all flex items-center justify-center relative cursor-pointer ';
+                              if (isCurrent) {
+                                btnCls += 'bg-cyan-500 text-slate-950 ring-2 ring-white scale-102 shadow-lg font-black ';
+                              } else if (isAns) {
+                                btnCls += 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/30 ';
+                              } else if (isUnk) {
+                                btnCls += 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 ';
+                              } else {
+                                btnCls += 'bg-rose-500/10 text-rose-300 border border-rose-500/30 hover:bg-rose-500/20 ';
+                              }
+
+                              const userVal = userAnswers[q.id];
+                              const markText = isAns && userVal && userVal !== '__DIRECT_PAPER__' && userVal !== '__PHOTO_SUBMISSION__'
+                                ? ` ✓${userVal}`
+                                : isAns
+                                ? ' ✓'
+                                : isUnk
+                                ? ' ?'
+                                : '';
+
+                              return (
+                                <button
+                                  key={q.id}
+                                  type="button"
+                                  onClick={() => handleNavigateQuestion(originalIdx)}
+                                  className={btnCls}
+                                >
+                                  <span>{originalIdx + 1}번</span>
+                                  {markText && <span className="text-[10px] ml-1 opacity-90">{markText}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                )}
+
+                {/* [2층 - 슬림 팝오버 모드] */}
+                {navViewMode === 'slim' && (
+                  <div className="bg-slate-900/60 border border-white/10 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-3 relative">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-slate-400">현재:</span>
+                      <span className="px-2.5 py-1 rounded-lg bg-violet-600 text-white font-black text-xs">
+                        {currentQuestionIndex + 1}번 문항
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 bg-black/40 p-1.5 rounded-2xl border border-white/10 max-w-full overflow-x-auto">
+                      <button
+                        type="button"
+                        onClick={() => handleNavigateQuestion(Math.max(0, currentQuestionIndex - 10))}
+                        disabled={currentQuestionIndex === 0}
+                        className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 disabled:opacity-30 text-slate-300 hover:text-white text-xs font-black transition-all cursor-pointer"
+                      >
+                        ◀ 10
+                      </button>
+
+                      {/* 슬라이딩 칩 */}
+                      <div className="flex items-center gap-1.5 px-1">
+                        {currentExam.questions.slice(Math.max(0, currentQuestionIndex - 4), currentQuestionIndex + 5).map((q) => {
+                          const originalIdx = currentExam.questions.findIndex((item) => item.id === q.id);
+                          const isCurrent = currentQuestionIndex === originalIdx;
+                          const isUnk = userAnswers[q.id] === '모름';
+                          const isAns = isQuestionAnswered(q) && !isUnk;
+
+                          let chipCls = 'w-9 h-9 rounded-xl font-black text-xs shrink-0 transition-all flex items-center justify-center cursor-pointer ';
+                          if (isCurrent) {
+                            chipCls += 'bg-violet-600 text-white shadow-lg ring-2 ring-violet-400 scale-105';
+                          } else if (isAns) {
+                            chipCls += 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                          } else if (isUnk) {
+                            chipCls += 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
+                          } else {
+                            chipCls += 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+                          }
+
+                          return (
+                            <button
+                              key={q.id}
+                              type="button"
+                              onClick={() => handleNavigateQuestion(originalIdx)}
+                              className={chipCls}
+                            >
+                              {isUnk ? '?' : originalIdx + 1}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleNavigateQuestion(Math.min(currentExam.questions.length - 1, currentQuestionIndex + 10))}
+                        disabled={currentQuestionIndex >= currentExam.questions.length - 1}
+                        className="px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/15 disabled:opacity-30 text-slate-300 hover:text-white text-xs font-black transition-all cursor-pointer"
+                      >
+                        10 ▶
+                      </button>
+
+                      <div className="h-5 w-px bg-white/10 mx-1" />
+
+                      <button
+                        type="button"
+                        onClick={() => setIsNavGridPopoverOpen((prev) => !prev)}
+                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-black text-xs transition-all shadow-md cursor-pointer"
+                      >
+                        <span>⊞ 전체 팝오버 맵</span>
+                        <span>▾</span>
+                      </button>
+                    </div>
+
+                    {/* 팝오버 바둑판 레이어 */}
+                    {isNavGridPopoverOpen && (
+                      <div className="absolute top-16 left-1/2 -translate-x-1/2 w-[95%] max-w-2xl bg-[#0f172a] border border-violet-500/40 rounded-[28px] p-5 shadow-3xl z-40 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
+                        <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                          <span className="text-sm font-black text-white">전체 {currentExam.questions.length}문항 퀵 점프 맵</span>
+                          <button
+                            type="button"
+                            onClick={() => setIsNavGridPopoverOpen(false)}
+                            className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-xs cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-10 sm:grid-cols-12 md:grid-cols-15 gap-1.5 max-h-64 overflow-y-auto custom-scroll p-1 mt-3">
+                          {currentExam.questions.map((q, idx) => {
+                            const isCurrent = currentQuestionIndex === idx;
+                            const isUnk = userAnswers[q.id] === '모름';
+                            const isAns = isQuestionAnswered(q) && !isUnk;
+
+                            let popCls = 'w-9 h-9 rounded-xl font-black text-xs shrink-0 transition-all flex items-center justify-center cursor-pointer ';
+                            if (isCurrent) popCls += 'bg-violet-600 text-white ring-2 ring-violet-300 shadow-lg';
+                            else if (isAns) popCls += 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                            else if (isUnk) popCls += 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
+                            else popCls += 'bg-rose-500/15 text-rose-300 border border-rose-500/30';
+
+                            return (
+                              <button
+                                key={q.id}
+                                type="button"
+                                onClick={() => {
+                                  handleNavigateQuestion(idx);
+                                  setIsNavGridPopoverOpen(false);
+                                }}
+                                className={popCls}
+                              >
+                                {idx + 1}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* 메인 문제 영역 */}
           {(() => {
