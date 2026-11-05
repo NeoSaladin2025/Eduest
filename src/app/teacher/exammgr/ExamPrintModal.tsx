@@ -1193,6 +1193,18 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
           cell.textContent = st.grade || exam.grade || '';
         });
 
+        // 셀렉터 미검출 대비 보조 치환
+        if (nameCells.length === 0 && customStudentName) {
+          const walkAndReplace = (node: Node) => {
+            if (node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim() === customStudentName.trim()) {
+              node.nodeValue = st.name;
+            } else {
+              node.childNodes.forEach(walkAndReplace);
+            }
+          };
+          walkAndReplace(tempDiv);
+        }
+
         const studentDocHtml = buildDocumentHtml(tempDiv.innerHTML);
 
         // 학생 1명 인쇄 작업 실행 (프린터로 1개 Job 전송 및 대기)
@@ -1372,6 +1384,9 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
               </span>
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
                 총 {exam.questions.length}문항 • {totalPages}페이지
+              </span>
+              <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                스테이플 분리 엔진 v2.1
               </span>
             </div>
             <p className="text-xs text-slate-400">시험지 인쇄 레이아웃 설정 및 실시간 A4 미리보기</p>
@@ -2653,10 +2668,16 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                                     <th className={`px-2.5 ${headerDensity === 'compact' ? 'py-0.5 text-[10px]' : 'py-1 text-xs'} font-bold text-slate-700`}>점 수</th>
                                   </tr>
                                   <tr>
-                                    <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-16 font-bold text-slate-800`}>
+                                    <td
+                                      data-field="class-name"
+                                      className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-16 font-bold text-slate-800`}
+                                    >
                                       {showClassName ? customClassName : ''}
                                     </td>
-                                    <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-24 font-black text-slate-950`}>
+                                    <td
+                                      data-field="student-name"
+                                      className={`${headerDensity === 'compact' ? 'h-6.5 text-[11px]' : 'h-8 text-xs'} border-r border-slate-300 w-24 font-black text-slate-950`}
+                                    >
                                       {showStudentName ? customStudentName : ''}
                                     </td>
                                     <td className={`${headerDensity === 'compact' ? 'h-6.5 text-[9px]' : 'h-8 text-[10px]'} w-16 text-slate-400 font-mono align-bottom pb-1`}>
