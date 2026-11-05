@@ -10,7 +10,9 @@ import {
   ChevronLeft, 
   ChevronRight,
   Sparkles,
-  AlertCircle
+  AlertCircle,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { ReviewItem } from './types';
 import { parseQuestionFromHtmlClient } from '@/lib/clientQuestionParser';
@@ -29,6 +31,7 @@ export default function ReviewSolutionModal({
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   // 'solution' (해설) 또는 'problem' (문제 원본)
   const [activeTab, setActiveTab] = useState<'solution' | 'problem'>('solution');
+  const [isMaximized, setIsMaximized] = useState(false);
   
   const [htmlContent, setHtmlContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,8 +101,14 @@ export default function ReviewSolutionModal({
   if (!currentItem) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-200">
-      <div className="bg-[#0f172a] border border-white/10 rounded-[32px] md:rounded-[40px] max-w-5xl w-full h-[90vh] flex flex-col overflow-hidden shadow-3xl">
+    <div className={`fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-200 ${
+      isMaximized ? 'p-0 sm:p-2' : 'p-3 md:p-6'
+    }`}>
+      <div className={`bg-[#0f172a] border border-white/10 flex flex-col overflow-hidden shadow-3xl transition-all duration-200 ${
+        isMaximized 
+          ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[28px]' 
+          : 'max-w-5xl w-full h-[90vh] rounded-[32px] md:rounded-[40px]'
+      }`}>
         
         {/* 상단 헤더 바 */}
         <div className="p-4 md:p-5 border-b border-white/10 bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
@@ -153,7 +162,7 @@ export default function ReviewSolutionModal({
             </button>
           </div>
 
-          {/* 우측: 문항 네비게이션 및 닫기 버튼 */}
+          {/* 우측: 문항 네비게이션 및 창 크기 조절 & 닫기 버튼 */}
           <div className="flex items-center gap-2">
             {items.length > 1 && (
               <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5">
@@ -178,6 +187,15 @@ export default function ReviewSolutionModal({
                 </button>
               </div>
             )}
+
+            {/* 창 크기 최대화 토글 버튼 */}
+            <button
+              onClick={() => setIsMaximized(prev => !prev)}
+              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+              title={isMaximized ? '창 크기 원래대로' : '창 크기 최대화 (태블릿 넓게 보기)'}
+            >
+              {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
 
             <button
               onClick={onClose}

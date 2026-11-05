@@ -27,6 +27,7 @@ import {
   Camera,
   Trash2,
   Maximize2,
+  Minimize2,
   Plus,
   Minus,
   Info,
@@ -228,6 +229,7 @@ export default function StudentTest2View({
   const [solutionLoading, setSolutionLoading] = useState(false);
   const [solutionWrongIndex, setSolutionWrongIndex] = useState<number>(0);
   const [solutionWrongList, setSolutionWrongList] = useState<Array<{ q: ExamQuestion; originalIdx: number }>>([]);
+  const [isSolutionMaximized, setIsSolutionMaximized] = useState<boolean>(false);
 
   // 복습 토스트 메시지
   const [reviewToast, setReviewToast] = useState<string | null>(null);
@@ -3387,8 +3389,14 @@ export default function StudentTest2View({
           5. 원본 해설 보기 모달 (오답 연속 슬라이더 & 다음 회차 퀵 스타트)
       ───────────────────────────────────────────────────────────── */}
       {solutionModalFileId && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
-          <div className="bg-[#0f172a] border border-white/10 rounded-[32px] sm:rounded-[36px] max-w-4xl w-full h-[88vh] flex flex-col overflow-hidden shadow-3xl">
+        <div className={`fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-200 ${
+          isSolutionMaximized ? 'p-0 sm:p-2' : 'p-3 sm:p-4'
+        }`}>
+          <div className={`bg-[#0f172a] border border-white/10 flex flex-col overflow-hidden shadow-3xl transition-all duration-200 ${
+            isSolutionMaximized 
+              ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[28px]' 
+              : 'max-w-4xl w-full h-[88vh] rounded-[32px] sm:rounded-[36px]'
+          }`}>
             {/* 상단 헤더: 오답 연속 슬라이더 네비게이션 */}
             <div className="p-4 sm:p-5 border-b border-white/10 flex items-center justify-between gap-3 bg-slate-900/90 shrink-0">
               <div className="flex items-center gap-2 min-w-0">
@@ -3441,19 +3449,30 @@ export default function StudentTest2View({
                 </div>
               )}
 
-              {/* 닫기 버튼 */}
-              <button
-                type="button"
-                onClick={() => setSolutionModalFileId(null)}
-                className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white flex items-center justify-center transition-colors shrink-0 text-sm font-bold cursor-pointer"
-                title="해설 닫기 (ESC)"
-              >
-                ✕
-              </button>
+              {/* 우측 상단 액션: 창 크기 토글 & 닫기 버튼 */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsSolutionMaximized(prev => !prev)}
+                  className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors shrink-0 cursor-pointer"
+                  title={isSolutionMaximized ? '창 크기 원래대로' : '창 크기 최대화 (태블릿 넓게 보기)'}
+                >
+                  {isSolutionMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSolutionModalFileId(null)}
+                  className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-400 hover:text-white flex items-center justify-center transition-colors shrink-0 text-sm font-bold cursor-pointer"
+                  title="해설 닫기 (ESC)"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             {/* 본문: 원본 HTML 해설 렌더링 iframe */}
-            <div className="flex-1 bg-white p-3 sm:p-5 overflow-y-auto">
+            <div className={`flex-1 bg-white overflow-y-auto ${isSolutionMaximized ? 'p-1.5 sm:p-4' : 'p-3 sm:p-5'}`}>
               {solutionLoading ? (
                 <div className="h-full flex flex-col items-center justify-center space-y-3">
                   <Loader2 className="animate-spin text-violet-600" size={36} />
