@@ -1386,7 +1386,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 총 {exam.questions.length}문항 • {totalPages}페이지
               </span>
               <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                스테이플 분리 엔진 v2.1
+                스테이플 분리 엔진 v2.2
               </span>
             </div>
             <p className="text-xs text-slate-400">시험지 인쇄 레이아웃 설정 및 실시간 A4 미리보기</p>
@@ -2657,9 +2657,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                             </div>
                           </div>
 
-                          {/* 수험자 기재란 박스 (반 / 성명 자동 기재 & 슬림 밀도 연동) */}
+                          {/* 수험자 기재란 박스 (반 / 성명 자동 기재 & 슬림 밀도 연동, 초밀착 모드 시 프린터 하드웨어 롤러 마진에 의한 우측 세로 테두리 잘림 방지 2.5mm 보정) */}
                           {showHeaderInfo && (
-                            <div className="border border-slate-900 rounded-md overflow-hidden text-xs shrink-0 self-start">
+                            <div
+                              style={{
+                                marginRight: resolvedMargins.isUltra ? '2.5mm' : resolvedMargins.isCompact ? '1mm' : undefined,
+                              }}
+                              className="border border-slate-900 rounded-md overflow-hidden text-xs shrink-0 self-start transition-all"
+                            >
                               <table className="border-collapse text-center">
                                 <tbody>
                                   <tr className="border-b border-slate-300 bg-slate-50">
