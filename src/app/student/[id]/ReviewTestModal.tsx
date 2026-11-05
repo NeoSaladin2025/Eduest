@@ -27,6 +27,7 @@ import {
   Camera,
   Loader2,
   Maximize2,
+  Minimize2,
   Trash2,
   ThumbsUp,
   ThumbsDown
@@ -91,6 +92,7 @@ export default function ReviewTestModal({
 
   // DB 저장 완료 메시지
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
+  const [isMaximized, setIsMaximized] = useState<boolean>(false);
 
   // ── 🌟 [버그 수정] 라이브러리 HTML 문항 자동 파싱 캐시 (문제 이미지, 정답, 문항유형) ──
   const [htmlParsedCache, setHtmlParsedCache] = useState<Record<string, ExtractedQuestionResult>>({});
@@ -98,29 +100,47 @@ export default function ReviewTestModal({
   const [fullHtmlCache, setFullHtmlCache] = useState<Record<string, string>>({});
   const [imageLoadErrors, setImageLoadErrors] = useState<Record<string, boolean>>({});
 
+  const fetchingIdsRef = useRef<Set<string>>(new Set());
+  const isMountedRef = useRef<boolean>(true);
+  const reviewDataRef = useRef(reviewData);
+  const onUpdateReviewDataRef = useRef(onUpdateReviewData);
+
+  useEffect(() => {
+    reviewDataRef.current = reviewData;
+    onUpdateReviewDataRef.current = onUpdateReviewData;
+  }, [reviewData, onUpdateReviewData]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const isRealUrl = (url?: string) =>
     Boolean(url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:image/')));
 
   // 📄 라이브러리 HTML 파일 또는 누락 데이터 비동기 자동 파싱 및 보강
   useEffect(() => {
-    let isCancelled = false;
-
     items.forEach(async (item) => {
       const hasRealImg = isRealUrl(item.problemUrl);
       const hasAnswer = Boolean(item.answer || item.raw_answer);
       const isHtmlType = item.type === 'html' || item.name.toLowerCase().endsWith('.html') || !hasRealImg;
 
       if (!isHtmlType && hasRealImg && hasAnswer) return;
-      if (htmlParsedCache[item.id] || htmlLoadingIds[item.id]) return;
+      if (htmlParsedCache[item.id] || fetchingIdsRef.current.has(item.id)) return;
 
       const fileId = item.fileId || item.solutionUrl || item.problemUrl || item.id;
       if (!fileId) return;
 
+      fetchingIdsRef.current.add(item.id);
       setHtmlLoadingIds(prev => ({ ...prev, [item.id]: true }));
+
       try {
         const res = await fetch(`/api/drive/library/file?fileId=${encodeURIComponent(fileId)}&type=html`);
         const json = await res.json();
-        if (isCancelled) return;
+
+        if (!isMountedRef.current) return;
 
         if (json.success && json.data) {
           const rawHtml = json.data;
@@ -134,10 +154,12 @@ export default function ReviewTestModal({
           setHtmlParsedCache(prev => ({ ...prev, [item.id]: parsed }));
 
           // 🌟 부모 reviewData 영구 보강 동기화 (문제 이미지 & 정답 & 문항유형 채워넣기)
-          if (onUpdateReviewData && reviewData) {
-            const currentItemInReview = reviewData.items.find(ri => ri.id === item.id || ri.fileId === item.fileId);
+          const currentReviewData = reviewDataRef.current;
+          const updateCallback = onUpdateReviewDataRef.current;
+          if (updateCallback && currentReviewData) {
+            const currentItemInReview = currentReviewData.items.find(ri => ri.id === item.id || ri.fileId === item.fileId);
             if (currentItemInReview && (!isRealUrl(currentItemInReview.problemUrl) || !currentItemInReview.answer)) {
-              const updatedItems = reviewData.items.map(ri => {
+              const updatedItems = currentReviewData.items.map(ri => {
                 if (ri.id === item.id || ri.fileId === item.fileId) {
                   return {
                     ...ri,
@@ -151,23 +173,20 @@ export default function ReviewTestModal({
                 }
                 return ri;
               });
-              onUpdateReviewData({ ...reviewData, items: updatedItems });
+              updateCallback({ ...currentReviewData, items: updatedItems });
             }
           }
         }
       } catch (err) {
         console.error(`[ReviewTestModal] Failed to parse question html for ${item.name}:`, err);
       } finally {
-        if (!isCancelled) {
+        fetchingIdsRef.current.delete(item.id);
+        if (isMountedRef.current) {
           setHtmlLoadingIds(prev => ({ ...prev, [item.id]: false }));
         }
       }
     });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [items, htmlParsedCache, htmlLoadingIds, onUpdateReviewData, reviewData]);
+  }, [items]);
 
   // ── 1. 🏃 달리기초 스톱워치 & 문제별 소요시간 실시간 계측 ──────────────────────
   useEffect(() => {
@@ -776,8 +795,14 @@ export default function ReviewTestModal({
   const currentSpentSec = currentItem ? (questionSpentTimes[currentItem.id] || 0) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-300">
-      <div className="bg-[#0b0f19] border border-white/10 rounded-[36px] md:rounded-[48px] max-w-6xl w-full h-[92vh] flex flex-col overflow-hidden shadow-3xl text-white">
+    <div className={`fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-300 ${
+      isMaximized ? 'p-0 sm:p-2' : 'p-3 md:p-6'
+    }`}>
+      <div className={`bg-[#0b0f19] border border-white/10 flex flex-col overflow-hidden shadow-3xl text-white transition-all duration-200 ${
+        isMaximized 
+          ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[36px]' 
+          : 'max-w-6xl w-full h-[92vh] rounded-[36px] md:rounded-[48px]'
+      }`}>
         
         {/* ── [A] 시험 응시 화면 (taking) ────────────────────────── */}
         {viewMode === 'taking' && currentItem && (
@@ -857,15 +882,27 @@ export default function ReviewTestModal({
                 })}
               </div>
 
-              {/* 답안 제출 버튼 */}
-              <button
-                onClick={() => setShowSubmitConfirm(true)}
-                disabled={isSubmitting}
-                className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 text-white font-black text-xs rounded-2xl transition-all shadow-lg shadow-violet-600/30 flex items-center gap-2 shrink-0 disabled:opacity-50"
-              >
-                <Send size={14} />
-                <span>답안 제출</span>
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {/* 창 크기 최대화 토글 버튼 */}
+                <button
+                  type="button"
+                  onClick={() => setIsMaximized(prev => !prev)}
+                  className="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+                  title={isMaximized ? "창 크기 원래대로" : "창 크기 최대화 (태블릿 넓게 보기)"}
+                >
+                  {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
+
+                {/* 답안 제출 버튼 */}
+                <button
+                  onClick={() => setShowSubmitConfirm(true)}
+                  disabled={isSubmitting}
+                  className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 text-white font-black text-xs rounded-2xl transition-all shadow-lg shadow-violet-600/30 flex items-center gap-2 shrink-0 disabled:opacity-50 cursor-pointer"
+                >
+                  <Send size={14} />
+                  <span>답안 제출</span>
+                </button>
+              </div>
 
             </div>
 
