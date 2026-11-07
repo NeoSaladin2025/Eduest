@@ -97,11 +97,15 @@ export default function TeacherBatchGradingModal({
     exam.questions.forEach((q) => {
       if (existingSub?.answers?.[q.id]) {
         const a = existingSub.answers[q.id];
-        initialGrading[q.id] = a.is_correct === true;
-        initialAnswers[q.id] = a.user_answer || '';
+        const isCorr = a.is_correct === true;
+        initialGrading[q.id] = isCorr;
+        if (!isCorr && (!a.user_answer || a.user_answer === q.answer)) {
+          initialAnswers[q.id] = '(선생님 오답 채점)';
+        } else {
+          initialAnswers[q.id] = a.user_answer || (isCorr ? (q.answer || '') : '(선생님 오답 채점)');
+        }
       } else {
         // 기존 제출이 없는 경우 기본값은 정답(true)으로 편의 세팅!
-        // (선생님은 종이 보면서 틀린 문항만 X로 콕콕 바꾸면 됨)
         initialGrading[q.id] = true;
         initialAnswers[q.id] = q.answer || '';
       }
@@ -141,18 +145,29 @@ export default function TeacherBatchGradingModal({
   // 전체 O / 전체 X 일괄 설정
   const handleSetAll = (allCorrect: boolean) => {
     const nextGrading: Record<string, boolean> = {};
+    const nextAnswers: Record<string, string> = { ...customAnswers };
     exam.questions.forEach((q) => {
       nextGrading[q.id] = allCorrect;
+      nextAnswers[q.id] = allCorrect ? (q.answer || '정답') : '(선생님 오답 채점)';
     });
     setGradingState(nextGrading);
+    setCustomAnswers(nextAnswers);
   };
 
-  // 문항 O/X 토글
+  // 문항 O/X 토글 (X로 바뀔 때 자동으로 '(선생님 오답 채점)'으로 답안 동기화)
   const handleToggleQuestion = (qId: string) => {
+    const nextVal = !gradingState[qId];
     setGradingState((prev) => ({
       ...prev,
-      [qId]: !prev[qId],
+      [qId]: nextVal,
     }));
+    setCustomAnswers((prev) => {
+      const q = exam.questions.find((item) => item.id === qId);
+      return {
+        ...prev,
+        [qId]: nextVal ? (q?.answer || '정답') : '(선생님 오답 채점)',
+      };
+    });
   };
 
   // 채점 데이터 저장

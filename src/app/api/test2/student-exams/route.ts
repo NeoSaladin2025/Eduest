@@ -55,6 +55,8 @@ export interface StudentSubmission {
       grading_status?: 'graded' | 'pending' | 'reviewed';
       show_solution?: boolean;
       reviewed_at?: string;
+      is_manual_grading?: boolean;
+      graded_by?: string;
     };
   };
   proof_images?: Array<{
@@ -368,13 +370,28 @@ export async function POST(req: NextRequest) {
       let gradingStatus: 'graded' | 'pending' | 'reviewed' = 'graded';
       let subAnswers: Record<string, string> | undefined = undefined;
       let subResults: Record<string, boolean> | undefined = undefined;
+      let isManualGrading = false;
+      let gradedByRole: string | undefined = undefined;
 
       // 🌟 선생님 직접 O/X 채점 모드 처리
       if (teacherGrading && typeof teacherGrading === 'object' && q.id in teacherGrading) {
         const teacherCorr = Boolean(teacherGrading[q.id]);
         isCorrect = teacherCorr;
         gradingStatus = 'graded';
-        userAns = rawUserAns || (teacherCorr ? (q.answer || '정답') : '오답');
+        isManualGrading = true;
+        gradedByRole = 'teacher';
+
+        // 🌟 틀렸다고 채점한 경우, 만약 기존 답안이 정답과 같거나 비어있으면 '(선생님 오답 채점)'으로 확정
+        if (!teacherCorr) {
+          if (!rawUserAns || rawUserAns === q.answer) {
+            userAns = '(선생님 오답 채점)';
+          } else {
+            userAns = rawUserAns;
+          }
+        } else {
+          userAns = rawUserAns || q.answer || '정답';
+        }
+
         if (teacherCorr) correctCount++;
       } else if (isDescriptive) {
         // 서술형: 즉시 오답으로 확정하지 않고 선생님 채점 대기(pending)로 설정
@@ -451,6 +468,8 @@ export async function POST(req: NextRequest) {
         is_direct_paper: isDirectPaper,
         is_photo_submission: userAns === '__PHOTO_SUBMISSION__',
         grading_status: gradingStatus,
+        is_manual_grading: isManualGrading,
+        graded_by: gradedByRole,
         show_solution: !isDescriptive, // 일반 문제는 기본 공개, 서술형은 선생님 승인 시 공개
       };
     });

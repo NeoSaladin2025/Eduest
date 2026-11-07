@@ -600,6 +600,15 @@ export async function POST(req: NextRequest) {
             const existingAnsObj = sub.answers[q.id];
             if (!existingAnsObj) return;
 
+            // 🌟 선생님이 수동으로 채점한 문항은 자동 재채점 대상에서 제외 (수동 채점 보호 락!)
+            if (
+              existingAnsObj.is_manual_grading === true ||
+              existingAnsObj.graded_by === 'teacher' ||
+              existingAnsObj.user_answer === '(선생님 오답 채점)'
+            ) {
+              return;
+            }
+
             const oldIsCorrect = existingAnsObj.is_correct;
             const newIsCorrect = evaluateAnswer(
               existingAnsObj.user_answer,
@@ -930,6 +939,16 @@ export async function POST(req: NextRequest) {
               for (const [qId, qMeta] of Object.entries(updatedQuestionMap)) {
                 const userAns = sub.answers?.[qId];
                 if (!userAns) continue;
+
+                // 🌟 선생님이 수동으로 채점한 문항은 자동 재채점 대상에서 제외 (수동 채점 보호 락!)
+                if (
+                  userAns.is_manual_grading === true ||
+                  userAns.graded_by === 'teacher' ||
+                  userAns.user_answer === '(선생님 오답 채점)'
+                ) {
+                  continue;
+                }
+
                 const wasCorrect = userAns.is_correct === true;
                 const nowCorrect = evaluateAnswer(userAns.user_answer, qMeta.newAnswer, qMeta.subQuestions, userAns.sub_answers) === true;
 
