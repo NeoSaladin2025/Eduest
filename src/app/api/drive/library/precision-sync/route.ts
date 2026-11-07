@@ -681,6 +681,317 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // ==========================================
+    // ACTION 3: SCAN_CHANGES (구글 드라이브 변경 파일 자동 감지)
+    // ==========================================
+    if (action === "scan_changes") {
+      const { grade } = body;
+      let query = supabase.from("exam_library").select("drive_id, name, parent_id, grade, updated_at").eq("type", "file");
+      if (grade && grade !== "ALL") {
+        query = query.eq("grade", grade);
+      }
+      const { data: dbFiles } = await query;
+      if (!Array.isArray(dbFiles) || dbFiles.length === 0) {
+        return NextResponse.json({ success: true, changedFiles: [], count: 0, message: "등록된 라이브러리 파일이 없습니다." });
+      }
+
+      const parentMap = new Map<string, Array<{ drive_id: string; name: string; updated_at?: string }>>();
+      dbFiles.forEach((f: any) => {
+        if (!f.parent_id) return;
+        let list = parentMap.get(f.parent_id);
+        if (!list) {
+          list = [];
+          parentMap.set(f.parent_id, list);
+        }
+        list.push(f);
+      });
+
+      const changedFiles: Array<{
+        drive_id: string;
+        name: string;
+        parent_id: string;
+        grade: string;
+        reason: string;
+        modifiedTime?: string;
+      }> = [];
+
+      const parentIds = Array.from(parentMap.keys()).slice(0, 30);
+      await Promise.all(
+        parentIds.map(async (parentId) => {
+          try {
+            const listRes = await drive.files.list({
+              q: `'${parentId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+              fields: "files(id, name, modifiedTime)",
+              pageSize: 100,
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+            });
+            const driveFiles = listRes.data.files || [];
+            const driveMap = new Map<string, { id: string; modifiedTime?: string }>();
+            driveFiles.forEach((df: any) => driveMap.set(df.name, { id: df.id, modifiedTime: df.modifiedTime }));
+
+            const localList = parentMap.get(parentId) || [];
+            localList.forEach((lf: any) => {
+              const df = driveMap.get(lf.name);
+              if (df) {
+                if (df.id !== lf.drive_id) {
+                  changedFiles.push({
+                    drive_id: lf.drive_id,
+                    name: lf.name,
+                    parent_id: parentId,
+                    grade: grade || "공통",
+                    reason: "구글 드라이브에 신규 ID 파일로 교체됨",
+                    modifiedTime: df.modifiedTime,
+                  });
+                } else if (df.modifiedTime && lf.updated_at) {
+                  const dTime = new Date(df.modifiedTime).getTime();
+                  const lTime = new Date(lf.updated_at).getTime();
+                  if (dTime > lTime + 5000) {
+                    changedFiles.push({
+                      drive_id: lf.drive_id,
+                      name: lf.name,
+                      parent_id: parentId,
+                      grade: grade || "공통",
+                      reason: "파일 내용이 최근 수정됨",
+                      modifiedTime: df.modifiedTime,
+                    });
+                  }
+                }
+              }
+            });
+          } catch (e) {
+            console.error(`Scan error for parent ${parentId}:`, e);
+          }
+        })
+      );
+
+      return NextResponse.json({
+        success: true,
+        changedFiles,
+        count: changedFiles.length,
+      });
+    }
+
+    // ==========================================
+    // ACTION 4: APPLY_BATCH (다중 파일 일괄 도미노 동기화)
+    // ==========================================
+    if (action === "apply_batch") {
+      const { files: targetFiles, autoRegrade = true } = body;
+      if (!Array.isArray(targetFiles) || targetFiles.length === 0) {
+        return NextResponse.json({ success: false, error: "처리할 files 목록이 필요합니다." }, { status: 400 });
+      }
+
+      let totalUpdatedBankCount = 0;
+      let totalUpdatedExamsCount = 0;
+      let totalRegradedSubmissionsCount = 0;
+      const allScoreChanges: any[] = [];
+      const processedFiles: string[] = [];
+      const failedFiles: Array<{ name: string; error: string }> = [];
+
+      for (const item of targetFiles) {
+        try {
+          const { targetDriveId, fileName, parentId, grade } = item;
+          const escapedFileName = fileName.replace(/'/g, "\\'");
+          const fileQuery = `'${parentId}' in parents and trashed = false and name = '${escapedFileName}'`;
+          const driveFileRes = await drive.files.list({
+            q: fileQuery,
+            fields: "files(id, name, mimeType, modifiedTime)",
+            orderBy: "modifiedTime desc",
+            pageSize: 1,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+          });
+
+          const foundFiles = driveFileRes.data.files || [];
+          if (foundFiles.length === 0) {
+            failedFiles.push({ name: fileName, error: "구글 드라이브에서 파일을 찾을 수 없음" });
+            continue;
+          }
+
+          const latestFile = foundFiles[0];
+
+          const stem = fileName.replace(/\.[^/.]+$/, "");
+          const escapedStem = stem.replace(/'/g, "\\'");
+          const pngQuery = `'${parentId}' in parents and trashed = false and (name = '${escapedStem}.png' or name = '${escapedStem}.PNG')`;
+          const pngRes = await drive.files.list({
+            q: pngQuery,
+            fields: "files(id, name, mimeType)",
+            orderBy: "modifiedTime desc",
+            pageSize: 1,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+          });
+          const latestPng = pngRes.data.files?.[0];
+          const newQuestionImageDriveId = latestPng ? latestPng.id : null;
+
+          const fileContentRes = await drive.files.get(
+            { fileId: latestFile.id, alt: "media", supportsAllDrives: true },
+            { responseType: "text" }
+          );
+          const rawHtml = typeof fileContentRes.data === "string" ? fileContentRes.data : "";
+          const parsedQuestion = parseQuestionFromHtml(rawHtml, {
+            drive_id: latestFile.id,
+            name: fileName,
+            question_image_drive_id: newQuestionImageDriveId,
+          });
+
+          // 1. exam_library 갱신
+          await supabase.from("exam_library").upsert(
+            {
+              drive_id: latestFile.id,
+              parent_id: parentId,
+              name: fileName,
+              type: "file",
+              grade: grade || "공통",
+              question_image_drive_id: newQuestionImageDriveId || null,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "drive_id" }
+          );
+
+          if (targetDriveId !== latestFile.id) {
+            await supabase.from("exam_library").delete().eq("drive_id", targetDriveId);
+          }
+
+          // 2. test_bank_items 갱신
+          const bankItems = await getTestBankItems();
+          let bCount = 0;
+          const nextBankItems = bankItems.map((bi) => {
+            if (bi.drive_id === targetDriveId || bi.drive_id === latestFile.id) {
+              bCount++;
+              return {
+                ...bi,
+                drive_id: latestFile.id,
+                question_image_drive_id: newQuestionImageDriveId || null,
+              };
+            }
+            return bi;
+          });
+          if (bCount > 0) {
+            await saveTestBankItems(nextBankItems);
+            totalUpdatedBankCount += bCount;
+          }
+
+          // 3. 시험지 갱신
+          const allExams = await getExamPapers();
+          let eCount = 0;
+          const updatedQuestionMap: Record<string, { newAnswer: string; newRawAnswer: string; subQuestions?: any[]; points: number }> = {};
+          const nextExams = allExams.map((exam) => {
+            if (!Array.isArray(exam.questions)) return exam;
+            let modified = false;
+            const nextQuestions = exam.questions.map((q: any) => {
+              if (q.drive_id === targetDriveId || q.drive_id === latestFile.id) {
+                modified = true;
+                updatedQuestionMap[q.id] = {
+                  newAnswer: parsedQuestion.answer,
+                  newRawAnswer: parsedQuestion.rawAnswer,
+                  subQuestions: parsedQuestion.sub_questions,
+                  points: q.points || 0,
+                };
+                return {
+                  ...q,
+                  drive_id: latestFile.id,
+                  answer: parsedQuestion.answer,
+                  raw_answer: parsedQuestion.rawAnswer,
+                  sub_questions: parsedQuestion.sub_questions,
+                  question_type: parsedQuestion.question_type,
+                  is_descriptive: parsedQuestion.is_descriptive,
+                  image_url: parsedQuestion.imageUrl || q.image_url,
+                  solution_drive_id: latestFile.id,
+                };
+              }
+              return q;
+            });
+            if (modified) {
+              eCount++;
+              return {
+                ...exam,
+                questions: nextQuestions,
+                updated_at: new Date().toISOString(),
+              };
+            }
+            return exam;
+          });
+
+          if (eCount > 0) {
+            await saveExamPapers(nextExams);
+            totalUpdatedExamsCount += eCount;
+          }
+
+          // 4. 재채점
+          if (autoRegrade && Object.keys(updatedQuestionMap).length > 0) {
+            const allSubs = await getSubmissions();
+            let sCount = 0;
+            const nextSubs = allSubs.map((sub) => {
+              let subModified = false;
+              let scoreDelta = 0;
+              let correctDelta = 0;
+
+              for (const [qId, qMeta] of Object.entries(updatedQuestionMap)) {
+                const userAns = sub.answers?.[qId];
+                if (!userAns) continue;
+                const wasCorrect = userAns.is_correct === true;
+                const nowCorrect = evaluateAnswer(userAns.user_answer, qMeta.newAnswer, qMeta.subQuestions, userAns.sub_answers) === true;
+
+                if (wasCorrect !== nowCorrect) {
+                  subModified = true;
+                  userAns.is_correct = nowCorrect;
+                  if (nowCorrect) {
+                    scoreDelta += qMeta.points;
+                    correctDelta += 1;
+                  } else {
+                    scoreDelta -= qMeta.points;
+                    correctDelta -= 1;
+                  }
+                }
+              }
+
+              if (subModified) {
+                sCount++;
+                const oldScore = sub.score || 0;
+                const newScore = Math.max(0, Math.round((oldScore + scoreDelta) * 10) / 10);
+                allScoreChanges.push({
+                  student_id: sub.student_id,
+                  student_name: sub.student_name || '학생',
+                  exam_id: sub.exam_id,
+                  old_score: oldScore,
+                  new_score: newScore,
+                  diff: newScore - oldScore,
+                });
+                return {
+                  ...sub,
+                  score: newScore,
+                  correct_count: (sub.correct_count || 0) + correctDelta,
+                };
+              }
+              return sub;
+            });
+
+            if (sCount > 0) {
+              await saveSubmissions(nextSubs);
+              totalRegradedSubmissionsCount += sCount;
+            }
+          }
+
+          processedFiles.push(fileName);
+        } catch (itemErr: any) {
+          failedFiles.push({ name: item.fileName, error: itemErr.message });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `${processedFiles.length}개 파일이 일괄 동기화되었습니다.`,
+        processedCount: processedFiles.length,
+        processedFiles,
+        failedFiles,
+        totalUpdatedBankCount,
+        totalUpdatedExamsCount,
+        totalRegradedSubmissionsCount,
+        scoreChanges: allScoreChanges,
+      });
+    }
+
     return NextResponse.json({ success: false, error: "알 수 없는 action입니다." }, { status: 400 });
   } catch (error: any) {
     console.error("Precision Sync error:", error);

@@ -249,6 +249,89 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, message: `${itemIds.length}개 문제가 삭제되었습니다.`, items: filtered });
     }
 
+    // 6. 아이템들을 다른 카테고리나 폴더로 이동 (move_items)
+    if (action === "move_items") {
+      const { itemIds, targetCategoryId, targetFolderPath, targetFolderName } = body;
+      if (!Array.isArray(itemIds) || itemIds.length === 0) {
+        return NextResponse.json({ success: false, error: "이동할 itemIds가 필요합니다." }, { status: 400 });
+      }
+
+      const idSet = new Set(itemIds);
+      let targetGrade = "";
+      if (targetCategoryId) {
+        const cat = categories.find((c) => c.id === targetCategoryId);
+        if (cat) targetGrade = cat.grade;
+      }
+
+      const updatedItems = items.map((item) => {
+        if (!idSet.has(item.id)) return item;
+        return {
+          ...item,
+          category_id: targetCategoryId || item.category_id,
+          grade: targetGrade || item.grade,
+          folder_path: targetFolderPath !== undefined ? targetFolderPath : item.folder_path,
+          folder_name: targetFolderName !== undefined ? targetFolderName : item.folder_name,
+        };
+      });
+
+      await saveItems(updatedItems);
+      return NextResponse.json({
+        success: true,
+        message: `${itemIds.length}개 문제가 성공적으로 이동되었습니다.`,
+        items: updatedItems,
+      });
+    }
+
+    // 7. 특정 폴더의 전체 문항들을 다른 카테고리나 상위 경로로 이동 (move_folder)
+    if (action === "move_folder") {
+      const { sourceCategoryId, sourceFolderPath, sourceFolderName, targetCategoryId, newParentFolderPath } = body;
+      if (!targetCategoryId) {
+        return NextResponse.json({ success: false, error: "targetCategoryId가 필요합니다." }, { status: 400 });
+      }
+
+      const targetCat = categories.find((c) => c.id === targetCategoryId);
+      const targetGrade = targetCat ? targetCat.grade : "";
+
+      let movedCount = 0;
+      const updatedItems = items.map((item) => {
+        // 소스 카테고리 일치 검사
+        if (sourceCategoryId && item.category_id !== sourceCategoryId) return item;
+
+        // 폴더 매칭 검사
+        const itemPath = item.folder_path || item.folder_name || "";
+        const isMatch = sourceFolderPath
+          ? itemPath === sourceFolderPath || itemPath.startsWith(sourceFolderPath + " >")
+          : sourceFolderName
+          ? item.folder_name === sourceFolderName
+          : false;
+
+        if (!isMatch) return item;
+
+        movedCount++;
+        // 새로운 폴더 경로 계산
+        let nextPath = item.folder_path;
+        if (newParentFolderPath !== undefined) {
+          const leafName = item.folder_name || sourceFolderName || "기타";
+          nextPath = newParentFolderPath ? `${newParentFolderPath} > ${leafName}` : leafName;
+        }
+
+        return {
+          ...item,
+          category_id: targetCategoryId,
+          grade: targetGrade || item.grade,
+          folder_path: nextPath,
+        };
+      });
+
+      await saveItems(updatedItems);
+      return NextResponse.json({
+        success: true,
+        movedCount,
+        message: `${movedCount}개 문제가 '${targetCat?.name || "새 카테고리"}'(으)로 이동되었습니다.`,
+        items: updatedItems,
+      });
+    }
+
     return NextResponse.json({ success: false, error: "지원하지 않는 action입니다." }, { status: 400 });
   } catch (error: any) {
     console.error("Bank POST error:", error);

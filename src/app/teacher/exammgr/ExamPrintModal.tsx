@@ -50,6 +50,7 @@ export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
 export type TitleFontSizeType = 'small' | 'medium' | 'large';
 export type HeaderDensityType = 'compact' | 'normal';
 export type MarginPresetType = 'ultracompact' | 'compact' | 'normal' | 'custom';
+export type PageRangePresetType = 'all' | 'problems_only' | 'odd' | 'even' | 'custom';
 
 const DEFAULT_CHIPS = ['모의평가', '단원평가', '주간테스트', '과제물', '중간고사 대비'];
 
@@ -145,6 +146,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   const [newChipText, setNewChipText] = useState('');
   const [editingChipIdx, setEditingChipIdx] = useState<number | null>(null);
   const [editingChipText, setEditingChipText] = useState('');
+
+  // 📄 인쇄 대상 페이지 범위 상태
+  const [pageRangePreset, setPageRangePreset] = useState<PageRangePresetType>('all');
+  const [customPageInput, setCustomPageInput] = useState<string>('');
+  const [manuallySelectedPages, setManuallySelectedPages] = useState<Set<number>>(new Set());
 
   // 화면 미리보기 줌 (기본 80%)
   const [zoomScale, setZoomScale] = useState(0.8);
@@ -845,6 +851,108 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   // 시험지 본문 페이지수 + 정답표 페이지수 완벽 합산
   const totalPages = questionPages.length + (includeAnswerKey ? answerPages.length : 0);
 
+  // 📄 텍스트 범위 파싱 헬퍼 (예: "1-3, 5" -> [1, 2, 3, 5])
+  const parsePageRangeString = (input: string, maxPages: number): Set<number> => {
+    const result = new Set<number>();
+    const tokens = input.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+
+    tokens.forEach(tok => {
+      if (tok.includes('-')) {
+        const parts = tok.split('-');
+        const s = parseInt(parts[0], 10);
+        const e = parseInt(parts[1], 10);
+        if (!isNaN(s) && !isNaN(e)) {
+          const from = Math.max(1, Math.min(s, e));
+          const to = Math.min(maxPages, Math.max(s, e));
+          for (let p = from; p <= to; p++) result.add(p);
+        }
+      } else {
+        const p = parseInt(tok, 10);
+        if (!isNaN(p) && p >= 1 && p <= maxPages) {
+          result.add(p);
+        }
+      }
+    });
+
+    return result;
+  };
+
+  // 📄 실제 인쇄 대상 페이지 번호 집합 (1-based Set)
+  const effectiveSelectedPages = useMemo<Set<number>>(() => {
+    const allSet = new Set<number>();
+    for (let i = 1; i <= totalPages; i++) allSet.add(i);
+
+    if (pageRangePreset === 'all') {
+      return allSet;
+    }
+    if (pageRangePreset === 'problems_only') {
+      const qSet = new Set<number>();
+      for (let i = 1; i <= questionPages.length; i++) qSet.add(i);
+      return qSet.size > 0 ? qSet : allSet;
+    }
+    if (pageRangePreset === 'odd') {
+      const oddSet = new Set<number>();
+      for (let i = 1; i <= totalPages; i += 2) oddSet.add(i);
+      return oddSet;
+    }
+    if (pageRangePreset === 'even') {
+      const evenSet = new Set<number>();
+      for (let i = 2; i <= totalPages; i += 2) evenSet.add(i);
+      return evenSet;
+    }
+    // custom
+    if (customPageInput.trim()) {
+      const parsed = parsePageRangeString(customPageInput, totalPages);
+      return parsed.size > 0 ? parsed : allSet;
+    }
+    return manuallySelectedPages.size > 0 ? manuallySelectedPages : allSet;
+  }, [pageRangePreset, customPageInput, manuallySelectedPages, totalPages, questionPages.length]);
+
+  const handlePagePresetChange = (preset: PageRangePresetType) => {
+    setPageRangePreset(preset);
+    if (preset === 'all') {
+      const set = new Set<number>();
+      for (let i = 1; i <= totalPages; i++) set.add(i);
+      setManuallySelectedPages(set);
+      setCustomPageInput('');
+    } else if (preset === 'problems_only') {
+      const set = new Set<number>();
+      for (let i = 1; i <= questionPages.length; i++) set.add(i);
+      setManuallySelectedPages(set);
+      setCustomPageInput(`1-${questionPages.length}`);
+    } else if (preset === 'odd') {
+      const set = new Set<number>();
+      for (let i = 1; i <= totalPages; i += 2) set.add(i);
+      setManuallySelectedPages(set);
+      setCustomPageInput(Array.from(set).join(', '));
+    } else if (preset === 'even') {
+      const set = new Set<number>();
+      for (let i = 2; i <= totalPages; i += 2) set.add(i);
+      setManuallySelectedPages(set);
+      setCustomPageInput(Array.from(set).join(', '));
+    }
+  };
+
+  const handleTogglePage = (pageNum: number) => {
+    setPageRangePreset('custom');
+    setManuallySelectedPages(prev => {
+      const base = prev.size > 0 ? prev : effectiveSelectedPages;
+      const next = new Set(base);
+      if (next.has(pageNum)) {
+        if (next.size > 1) {
+          next.delete(pageNum);
+        } else {
+          alert('최소 1개 이상의 페이지를 선택해야 인쇄할 수 있습니다.');
+          return prev;
+        }
+      } else {
+        next.add(pageNum);
+      }
+      setCustomPageInput(Array.from(next).sort((a, b) => a - b).join(', '));
+      return next;
+    });
+  };
+
   // 📋 정답표 테이블 렌더링 헬퍼 함수 (1단 및 2단 공용)
   const renderAnswerTable = (items: AnswerPageItem[], isCompactCol: boolean = false) => {
     const { fontFamStyle, sizeClass, weightClass } = getAnswerTextStyle();
@@ -1158,10 +1266,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         </html>
       `;
 
+      // 선택된 페이지만 인쇄용 컨테이너에 남기는 필터 함수
+      const filterSelectedSheets = (container: HTMLElement) => {
+        const sheets = Array.from(container.querySelectorAll('.a4-print-sheet'));
+        sheets.forEach((sheet) => {
+          const pNum = Number(sheet.getAttribute('data-page-number'));
+          if (pNum && !effectiveSelectedPages.has(pNum)) {
+            sheet.remove();
+          }
+        });
+      };
+
       // 1명 이하 인쇄 (단일 Print Job)
       if (selectedStudentIds.length <= 1) {
         setIsPreparingPrint(false);
-        await executePrintJob(buildDocumentHtml(printArea.innerHTML));
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = printArea.innerHTML;
+        filterSelectedSheets(tempDiv);
+        await executePrintJob(buildDocumentHtml(tempDiv.innerHTML));
         return;
       }
 
@@ -1182,6 +1304,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         // 학생 맞춤형 DOM 생성
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = printArea.innerHTML;
+        filterSelectedSheets(tempDiv);
 
         const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
         nameCells.forEach(cell => {
@@ -1524,6 +1647,98 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
               )}
             </div>
           )}
+
+          {/* 🌟 0. 인쇄 대상 페이지 선택 (원하는 페이지만 골라 인쇄) */}
+          <div className="space-y-2 bg-gradient-to-br from-violet-950/40 via-slate-900 to-indigo-950/40 p-3 rounded-2xl border border-violet-500/30 shadow-inner">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black text-slate-200 flex items-center gap-1.5">
+                <FileText size={14} className="text-violet-400" />
+                <span>인쇄 페이지 범위</span>
+              </label>
+              <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-violet-600/30 text-violet-300 border border-violet-500/30">
+                {effectiveSelectedPages.size}쪽 / 총 {totalPages}쪽
+              </span>
+            </div>
+
+            {/* 빠른 프리셋 버튼들 */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => handlePagePresetChange('all')}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-black border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  pageRangePreset === 'all'
+                    ? 'bg-violet-600 text-white border-violet-400 shadow-sm'
+                    : 'bg-slate-800/70 text-slate-400 border-slate-700/80 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+              >
+                <span>전체 ({totalPages}쪽)</span>
+                {pageRangePreset === 'all' && <Check size={12} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePagePresetChange('problems_only')}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-black border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  pageRangePreset === 'problems_only'
+                    ? 'bg-violet-600 text-white border-violet-400 shadow-sm'
+                    : 'bg-slate-800/70 text-slate-400 border-slate-700/80 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+                title="정답/해설지를 제외하고 문제 페이지만 인쇄"
+              >
+                <span>문제만 ({questionPages.length}쪽)</span>
+                {pageRangePreset === 'problems_only' && <Check size={12} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePagePresetChange('odd')}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-black border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  pageRangePreset === 'odd'
+                    ? 'bg-violet-600 text-white border-violet-400 shadow-sm'
+                    : 'bg-slate-800/70 text-slate-400 border-slate-700/80 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+                title="수동 양면 인쇄용 홀수 페이지만"
+              >
+                <span>홀수 쪽 (1, 3, 5...)</span>
+                {pageRangePreset === 'odd' && <Check size={12} />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePagePresetChange('even')}
+                className={`py-1.5 px-2 rounded-xl text-[11px] font-black border transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  pageRangePreset === 'even'
+                    ? 'bg-violet-600 text-white border-violet-400 shadow-sm'
+                    : 'bg-slate-800/70 text-slate-400 border-slate-700/80 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+                title="수동 양면 인쇄용 짝수 페이지만"
+              >
+                <span>짝수 쪽 (2, 4, 6...)</span>
+                {pageRangePreset === 'even' && <Check size={12} />}
+              </button>
+            </div>
+
+            {/* 페이지 직접 입력창 */}
+            <div className="space-y-1 pt-1">
+              <div className="flex items-center justify-between text-[10.5px] text-slate-400 font-bold">
+                <span>페이지 직접 지정:</span>
+                <span className="text-[10px] text-slate-500">예: 1-3, 5</span>
+              </div>
+              <input
+                type="text"
+                value={customPageInput}
+                onChange={e => {
+                  setCustomPageInput(e.target.value);
+                  setPageRangePreset('custom');
+                }}
+                placeholder={`1-${totalPages}`}
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 transition-colors"
+              />
+              <p className="text-[10px] text-slate-400/80 pt-0.5">
+                💡 우측 A4 미리보기 상단 배지를 직접 클릭해 켜고 끌 수도 있습니다.
+              </p>
+            </div>
+          </div>
 
           {/* 1. 페이지당 문항 수 선택 */}
           <div className="space-y-2">
@@ -2553,14 +2768,18 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
               const isFirstPage = pageIdx === 0;
               const isEvenPage = pageNumber % 2 === 0;
               const shouldRotate = duplexBinding === 'long' && isEvenPage;
+              const isPageIncluded = effectiveSelectedPages.has(pageNumber);
 
               return (
                 <div
                   key={pageIdx}
-                  className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
+                  data-page-number={pageNumber}
+                  className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-all duration-200 ${
                     shouldRotate ? 'even-page-rotate' : ''
                   } ${
                     shouldRotate && previewRotateEven ? 'rotate-180' : ''
+                  } ${
+                    !isPageIncluded ? 'opacity-40 ring-4 ring-rose-500/50 grayscale-30' : ''
                   }`}
                   style={{
                     width: '210mm',
@@ -2569,6 +2788,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                     padding: resolvedMargins.cssPadding,
                   }}
                 >
+                  {/* 🌟 인쇄 대상 포함/제외 토글 뱃지 (화면 전용 no-print) */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTogglePage(pageNumber);
+                    }}
+                    className={`no-print absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full text-[11px] font-black shadow-md flex items-center gap-1.5 transition-all cursor-pointer select-none ${
+                      isPageIncluded
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-600/30 ring-2 ring-white/80'
+                        : 'bg-rose-600 text-white hover:bg-rose-700 shadow-rose-600/30'
+                    }`}
+                    title={isPageIncluded ? '클릭 시 이 페이지를 인쇄 대상에서 제외합니다' : '클릭 시 이 페이지를 인쇄 대상에 포함합니다'}
+                  >
+                    {isPageIncluded ? <Check size={12} strokeWidth={3} /> : <X size={12} strokeWidth={3} />}
+                    <span>{pageNumber}쪽 {isPageIncluded ? '인쇄 포함' : '인쇄 제외'}</span>
+                  </button>
+
                   {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
                   {shouldRotate && (
                     <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
@@ -2881,14 +3118,18 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 const currentGlobalPage = questionPages.length + ansPageIdx + 1;
                 const isEvenPage = currentGlobalPage % 2 === 0;
                 const shouldRotate = duplexBinding === 'long' && isEvenPage;
+                const isPageIncluded = effectiveSelectedPages.has(currentGlobalPage);
 
                 return (
                   <div
                     key={`ans-page-${ansPageIdx}`}
-                    className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-transform duration-200 ${
+                    data-page-number={currentGlobalPage}
+                    className={`a4-print-sheet bg-white text-slate-900 shadow-2xl relative flex flex-col justify-between transition-all duration-200 ${
                       shouldRotate ? 'even-page-rotate' : ''
                     } ${
                       shouldRotate && previewRotateEven ? 'rotate-180' : ''
+                    } ${
+                      !isPageIncluded ? 'opacity-40 ring-4 ring-rose-500/50 grayscale-30' : ''
                     }`}
                     style={{
                       width: '210mm',
@@ -2897,6 +3138,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                       padding: resolvedMargins.cssPadding,
                     }}
                   >
+                    {/* 🌟 인쇄 대상 포함/제외 토글 뱃지 (화면 전용 no-print) */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleTogglePage(currentGlobalPage);
+                      }}
+                      className={`no-print absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full text-[11px] font-black shadow-md flex items-center gap-1.5 transition-all cursor-pointer select-none ${
+                        isPageIncluded
+                          ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-600/30 ring-2 ring-white/80'
+                          : 'bg-rose-600 text-white hover:bg-rose-700 shadow-rose-600/30'
+                      }`}
+                      title={isPageIncluded ? '클릭 시 이 페이지를 인쇄 대상에서 제외합니다' : '클릭 시 이 페이지를 인쇄 대상에 포함합니다'}
+                    >
+                      {isPageIncluded ? <Check size={12} strokeWidth={3} /> : <X size={12} strokeWidth={3} />}
+                      <span>{currentGlobalPage}쪽 (정답표) {isPageIncluded ? '인쇄 포함' : '인쇄 제외'}</span>
+                    </button>
+
                     {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
                     {shouldRotate && (
                       <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">

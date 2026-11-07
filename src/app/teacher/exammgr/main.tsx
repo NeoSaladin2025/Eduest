@@ -653,6 +653,23 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
   };
 
+  // 🌟 문항의 카테고리 + 상위 폴더 계층 풀 패스(Full Source Path) 생성 헬퍼
+  const getFullSourcePath = (item: { category_id?: string; folder_path?: string | null; folder_name?: string | null }): string => {
+    const cat = bankCategories.find(c => c.id === item.category_id);
+    const catName = cat ? cat.name.trim() : '';
+    const subPath = (item.folder_path || item.folder_name || '').trim();
+
+    if (!catName && !subPath) return '';
+    if (!catName) return subPath;
+    if (!subPath) return catName;
+
+    // 이미 경로 앞에 카테고리명이 포함되어 있는 경우 중복 결합 방지
+    if (subPath === catName || subPath.startsWith(catName + ' >') || subPath.startsWith(catName + '>')) {
+      return subPath;
+    }
+    return `${catName} > ${subPath}`;
+  };
+
   // 문제 바구니에 파일 추가/제거 토글
   const toggleSelectFile = (file: {
     drive_id: string;
@@ -705,15 +722,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       const currentIds = new Set(prev.map(f => f.drive_id));
       const toAdd = sortedCatItems
         .filter(item => !currentIds.has(item.drive_id))
-        .map(item => ({
-          drive_id: item.drive_id,
-          name: item.name,
-          question_image_drive_id: item.question_image_drive_id,
-          folder_name: item.folder_name,
-          folder_path: item.folder_path,
-          question_number: item.question_number,
-          display_name: item.display_name,
-        }));
+        .map(item => {
+          const fullPath = getFullSourcePath(item);
+          return {
+            drive_id: item.drive_id,
+            name: item.name,
+            question_image_drive_id: item.question_image_drive_id,
+            folder_name: fullPath || item.folder_name,
+            folder_path: fullPath || item.folder_path,
+            question_number: item.question_number,
+            display_name: item.display_name,
+          };
+        });
       let nextList = [...prev, ...toAdd];
       if (basketSortMode !== 'manual') {
         nextList = applyBasketSort(nextList, basketSortMode);
@@ -770,15 +790,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     } else {
       const toAdd = targetItems
         .filter(item => !currentIds.has(item.drive_id))
-        .map(item => ({
-          drive_id: item.drive_id,
-          name: item.name,
-          question_image_drive_id: item.question_image_drive_id,
-          folder_name: item.folder_name,
-          folder_path: item.folder_path,
-          question_number: item.question_number,
-          display_name: item.display_name,
-        }));
+        .map(item => {
+          const fullPath = getFullSourcePath(item);
+          return {
+            drive_id: item.drive_id,
+            name: item.name,
+            question_image_drive_id: item.question_image_drive_id,
+            folder_name: fullPath || item.folder_name,
+            folder_path: fullPath || item.folder_path,
+            question_number: item.question_number,
+            display_name: item.display_name,
+          };
+        });
       setSelectedFiles(prev => {
         let nextList = [...prev, ...toAdd];
         if (basketSortMode !== 'manual') {
@@ -801,15 +824,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     const currentIds = new Set(selectedFiles.map(f => f.drive_id));
     const toAdd = matched
       .filter(item => !currentIds.has(item.drive_id))
-      .map(item => ({
-        drive_id: item.drive_id,
-        name: item.name,
-        question_image_drive_id: item.question_image_drive_id,
-        folder_name: item.folder_name,
-        folder_path: item.folder_path,
-        question_number: item.question_number,
-        display_name: item.display_name,
-      }));
+      .map(item => {
+        const fullPath = getFullSourcePath(item);
+        return {
+          drive_id: item.drive_id,
+          name: item.name,
+          question_image_drive_id: item.question_image_drive_id,
+          folder_name: fullPath || item.folder_name,
+          folder_path: fullPath || item.folder_path,
+          question_number: item.question_number,
+          display_name: item.display_name,
+        };
+      });
 
     if (toAdd.length === 0) {
       alert('조건에 해당하는 모든 문제가 이미 바구니에 담겨 있습니다.');
@@ -4170,15 +4196,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                               return (
                                                 <div
                                                   key={item.id}
-                                                  onClick={() => toggleSelectFile({
-                                                    drive_id: item.drive_id,
-                                                    name: item.name,
-                                                    question_image_drive_id: item.question_image_drive_id,
-                                                    folder_name: item.folder_name,
-                                                    folder_path: item.folder_path,
-                                                    question_number: item.question_number,
-                                                    display_name: item.display_name,
-                                                  })}
+                                                  onClick={() => {
+                                                    const fullPath = getFullSourcePath(item);
+                                                    toggleSelectFile({
+                                                      drive_id: item.drive_id,
+                                                      name: item.name,
+                                                      question_image_drive_id: item.question_image_drive_id,
+                                                      folder_name: fullPath || item.folder_name,
+                                                      folder_path: fullPath || item.folder_path,
+                                                      question_number: item.question_number,
+                                                      display_name: item.display_name,
+                                                    });
+                                                  }}
                                                   className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors text-xs select-none ${
                                                     isSelected
                                                       ? 'bg-violet-50 text-violet-700 font-bold border border-violet-200'

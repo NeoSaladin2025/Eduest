@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Layers, 
+  FolderTree, 
   Folder, 
   FolderOpen, 
   FileText, 
@@ -94,6 +95,95 @@ export function getItemGroupInfo(
 }
 
 // 파일명에서 가장 마지막 연속된 숫자를 문항 번호로 파싱 (예: "0001.html" -> 1, "10차_05.html" -> 5)
+export interface BankTreeNode {
+  id: string; // fullPath
+  name: string;
+  fullPath: string;
+  subFolders: BankTreeNode[];
+  items: TestBankItem[];
+  totalItemCount: number;
+}
+
+// 🌟 시험 DB 아이템들을 재귀적 폴더 계층 트리 구조로 변환
+export function buildBankTree(items: TestBankItem[], sortOption: SortOption = 'folder_asc'): BankTreeNode[] {
+  interface MutableNode {
+    id: string;
+    name: string;
+    fullPath: string;
+    subFolders: Map<string, MutableNode>;
+    items: TestBankItem[];
+  }
+
+  const rootMap = new Map<string, MutableNode>();
+
+  items.forEach((item) => {
+    const rawPath = (item.folder_path || item.folder_name || '기타').trim();
+    const segments = rawPath.split(/\s*>\s*/).filter(Boolean);
+    if (segments.length === 0) segments.push('기타');
+
+    let currentMap = rootMap;
+    let accumulatedPath = '';
+
+    segments.forEach((seg, idx) => {
+      accumulatedPath = accumulatedPath ? `${accumulatedPath} > ${seg}` : seg;
+      let node = currentMap.get(seg);
+      if (!node) {
+        node = {
+          id: accumulatedPath,
+          name: seg,
+          fullPath: accumulatedPath,
+          subFolders: new Map(),
+          items: [],
+        };
+        currentMap.set(seg, node);
+      }
+
+      if (idx === segments.length - 1) {
+        node.items.push(item);
+      }
+      currentMap = node.subFolders;
+    });
+  });
+
+  function convertAndSort(nodeMap: Map<string, MutableNode>): BankTreeNode[] {
+    const list: BankTreeNode[] = [];
+    nodeMap.forEach((mNode) => {
+      const sortedSubs = convertAndSort(mNode.subFolders);
+
+      // 문항 번호 및 자연어 정렬
+      const sortedItems = [...mNode.items].sort((a, b) => {
+        const qA = a.question_number ?? parseQuestionNum(a.name) ?? 999999;
+        const qB = b.question_number ?? parseQuestionNum(b.name) ?? 999999;
+        if (qA !== qB) return qA - qB;
+        return compareNatural(a.name, b.name);
+      });
+
+      const subItemsCount = sortedSubs.reduce((acc, sub) => acc + sub.totalItemCount, 0);
+      const totalItemCount = sortedItems.length + subItemsCount;
+
+      list.push({
+        id: mNode.id,
+        name: mNode.name,
+        fullPath: mNode.fullPath,
+        subFolders: sortedSubs,
+        items: sortedItems,
+        totalItemCount,
+      });
+    });
+
+    list.sort((a, b) => {
+      if (sortOption === 'folder_desc') {
+        return compareNatural(b.name, a.name);
+      }
+      return compareNatural(a.name, b.name);
+    });
+
+    return list;
+  }
+
+  return convertAndSort(rootMap);
+}
+
 export function parseQuestionNum(fileName: string): number | null {
   const clean = fileName.replace(/\.[^/.]+$/, "");
   const match = clean.match(/(\d+)(?!.*\d)/);
@@ -154,6 +244,24 @@ export default function TestDataManagerMain() {
   const [sortOption, setSortOption] = useState<SortOption>('folder_asc');
   const [groupLevel, setGroupLevel] = useState<GroupLevel>('leaf');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  // 🌟 시험 DB 보기 모드 ('tree': 원천 DB식 계층 트리 뷰★ / 'flat': 최하위 폴더 카드 뷰)
+  const [bankViewMode, setBankViewMode] = useState<'tree' | 'flat'>('tree');
+  const [expandedBankFolders, setExpandedBankFolders] = useState<Set<string>>(new Set());
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+  const [dragOverCatId, setDragOverCatId] = useState<string | null>(null);
+
+  // 🌟 윈도우 탐색기식 문항/폴더 이동 모달 상태
+  const [moveModalData, setMoveModalData] = useState<{
+    type: 'item' | 'folder';
+    item?: TestBankItem;
+    folderPath?: string;
+    folderTitle?: string;
+    count?: number;
+  } | null>(null);
+  const [moveTargetCatId, setMoveTargetCatId] = useState<string>('');
+  const [moveTargetParentPath, setMoveTargetParentPath] = useState<string>('');
+  const [isMoving, setIsMoving] = useState<boolean>(false);
+
   const [isReordering, setIsReordering] = useState(false);
 
   // 개별 파일 직접 체크 선택 상태 (기존 방식 지원)
@@ -821,6 +929,121 @@ export default function TestDataManagerMain() {
     return bankItems.filter(item => item.category_id === selectedCategoryId);
   }, [bankItems, selectedCategoryId]);
 
+  // 🌟 원천 DB식 재귀적 계층 트리 구조 (시험 DB 전용)
+  const bankTree = useMemo(() => {
+    return buildBankTree(currentCategoryItems, sortOption);
+  }, [currentCategoryItems, sortOption]);
+
+  // 카테고리 변경 시 모든 폴더 기본 펼침
+  useEffect(() => {
+    const allFolderKeys = new Set<string>();
+    const collectKeys = (nodes: BankTreeNode[]) => {
+      nodes.forEach(node => {
+        allFolderKeys.add(node.id);
+        if (node.subFolders.length > 0) collectKeys(node.subFolders);
+      });
+    };
+    collectKeys(bankTree);
+    setExpandedBankFolders(allFolderKeys);
+  }, [selectedCategoryId, bankTree.length]);
+
+  // 🌟 문항들을 다른 카테고리나 폴더로 이동 (API & 낙관적 UI)
+  const handleMoveItems = async (itemIds: string[], targetCatId: string, targetFolderPath?: string) => {
+    if (itemIds.length === 0 || !targetCatId) return;
+
+    // 낙관적 UI 업데이트
+    setBankItems(prev => prev.map(item => {
+      if (!itemIds.includes(item.id)) return item;
+      return {
+        ...item,
+        category_id: targetCatId,
+        folder_path: targetFolderPath !== undefined ? targetFolderPath : item.folder_path,
+      };
+    }));
+
+    try {
+      const res = await fetch('/api/test2/bank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'move_items',
+          itemIds,
+          targetCategoryId: targetCatId,
+          targetFolderPath,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(data.error || '문항 이동 실패');
+        await loadTestBank(selectedGrade);
+      }
+    } catch (e) {
+      alert('문항 이동 중 오류가 발생했습니다.');
+      await loadTestBank(selectedGrade);
+    }
+  };
+
+  // 🌟 특정 폴더의 전체 문항들을 다른 카테고리나 상위 경로로 이동
+  const handleMoveFolder = async (sourceFolderPath: string, sourceFolderName: string, targetCatId: string, newParentPath?: string) => {
+    if (!targetCatId) return;
+
+    try {
+      const res = await fetch('/api/test2/bank', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'move_folder',
+          sourceCategoryId: selectedCategoryId,
+          sourceFolderPath,
+          sourceFolderName,
+          targetCategoryId: targetCatId,
+          newParentFolderPath: newParentPath,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadTestBank(selectedGrade);
+      } else {
+        alert(data.error || '폴더 이동 실패');
+      }
+    } catch (e) {
+      alert('폴더 이동 중 오류가 발생했습니다.');
+    }
+  };
+
+  const toggleBankFolder = (folderId: string) => {
+    setExpandedBankFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  };
+
+  // 🌟 모달 확인 버튼 클릭 시 실행되는 이동 통합 핸들러
+  const handleConfirmMoveModal = async () => {
+    if (!moveModalData || !moveTargetCatId) return;
+    setIsMoving(true);
+
+    try {
+      if (moveModalData.type === 'item' && moveModalData.item) {
+        const nextPath = moveTargetParentPath.trim() || moveModalData.item.folder_path || undefined;
+        await handleMoveItems([moveModalData.item.id], moveTargetCatId, nextPath);
+      } else if (moveModalData.type === 'folder' && moveModalData.folderPath) {
+        await handleMoveFolder(
+          moveModalData.folderPath,
+          moveModalData.folderTitle || '',
+          moveTargetCatId,
+          moveTargetParentPath.trim() || undefined
+        );
+      }
+      setMoveModalData(null);
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+
   // 🌟 폴더별 다단계 묶음 및 정렬된 그룹 목록
   const groupedCategoryItems = useMemo(() => {
     let items = [...currentCategoryItems];
@@ -962,6 +1185,322 @@ export default function TestDataManagerMain() {
   }, [categories, selectedCategoryId]);
 
   // 🌟 원천 DB 트리 렌더러 (폴더 체크박스 + 회차 정보 연동)
+  // 🌟 시험 DB 재귀적 계층 폴더 트리 렌더러 (윈도우 탐색기형 계층 구조 & 드래그 앤 드롭)
+  const renderBankTree = (nodes: BankTreeNode[], depth = 0): React.ReactNode => {
+    return (
+      <div className={`space-y-1 ${depth > 0 ? 'ml-3 pl-2.5 border-l border-slate-200' : ''}`}>
+        {nodes.map(node => {
+          const isExpanded = expandedBankFolders.has(node.id);
+          const hasChildren = node.subFolders.length > 0 || node.items.length > 0;
+          const isDragOver = dragOverTarget === node.fullPath;
+
+          return (
+            <div key={node.id} className="text-xs">
+              {/* 폴더 행 */}
+              <div
+                draggable={true}
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  e.dataTransfer.setData('application/json', JSON.stringify({
+                    type: 'folder',
+                    folderPath: node.fullPath,
+                    folderName: node.name,
+                    count: node.totalItemCount,
+                  }));
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (dragOverTarget !== node.fullPath) {
+                    setDragOverTarget(node.fullPath);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (dragOverTarget === node.fullPath) {
+                    setDragOverTarget(null);
+                  }
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragOverTarget(null);
+                  const rawData = e.dataTransfer.getData('application/json');
+                  if (!rawData) return;
+                  try {
+                    const parsed = JSON.parse(rawData);
+                    if (parsed.type === 'item' && parsed.itemId) {
+                      await handleMoveItems([parsed.itemId], selectedCategoryId!, node.fullPath);
+                    } else if (parsed.type === 'folder' && parsed.folderPath && parsed.folderPath !== node.fullPath) {
+                      await handleMoveFolder(parsed.folderPath, parsed.folderName || '', selectedCategoryId!, node.fullPath);
+                    }
+                  } catch (err) {
+                    console.error('Drop error:', err);
+                  }
+                }}
+                onClick={() => toggleBankFolder(node.id)}
+                className={`flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer select-none group border ${
+                  isDragOver
+                    ? 'bg-indigo-100/90 border-indigo-400 ring-2 ring-indigo-300 shadow-md scale-[1.01]'
+                    : isExpanded
+                    ? 'bg-gradient-to-r from-slate-50 via-indigo-50/20 to-slate-50 border-slate-200/90 hover:bg-slate-100 shadow-2xs'
+                    : 'bg-white hover:bg-slate-50 border-slate-200/70'
+                }`}
+                title="마우스로 드래그하여 다른 폴더나 카테고리로 휙 옮길 수 있습니다"
+              >
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                  {/* 펼침 토글 버튼 */}
+                  {hasChildren ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleBankFolder(node.id);
+                      }}
+                      className="w-5 h-5 rounded-md hover:bg-slate-200/60 flex items-center justify-center text-slate-500 shrink-0 transition-colors"
+                    >
+                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+                  ) : (
+                    <div className="w-5 shrink-0" />
+                  )}
+
+                  {/* 폴더 아이콘 */}
+                  {isExpanded ? (
+                    <FolderOpen size={16} className="text-indigo-600 shrink-0" />
+                  ) : (
+                    <Folder size={16} className="text-amber-500 shrink-0" />
+                  )}
+
+                  {/* 폴더 이름 */}
+                  <span className="font-black text-slate-800 truncate text-xs">
+                    {node.name}
+                  </span>
+
+                  {/* 전체 경로 보조 힌트 */}
+                  {node.fullPath && node.fullPath !== node.name && (
+                    <span className="text-[10px] text-slate-400 truncate hidden lg:inline" title={node.fullPath}>
+                      ({node.fullPath})
+                    </span>
+                  )}
+
+                  {/* 카운트 배지 */}
+                  <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200/80 rounded-full text-[10px] font-black shrink-0">
+                    {node.subFolders.length > 0 ? `${node.subFolders.length}폴더 ` : ''}{node.totalItemCount}문제
+                  </span>
+                </div>
+
+                {/* 🌟 폴더 액션 버튼: 이동 & 삭제 */}
+                <div className="flex items-center gap-1 shrink-0 ml-2" onClick={e => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoveModalData({
+                        type: 'folder',
+                        folderPath: node.fullPath,
+                        folderTitle: node.name,
+                        count: node.totalItemCount,
+                      });
+                      setMoveTargetCatId(selectedCategoryId || '');
+                      setMoveTargetParentPath('');
+                    }}
+                    className="px-2 py-1 rounded-lg bg-white hover:bg-indigo-50 border border-slate-200 text-indigo-600 hover:text-indigo-800 text-[10px] font-bold transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+                    title="이 폴더를 다른 카테고리나 상위 폴더로 이동"
+                  >
+                    <ArrowRight size={11} />
+                    <span>이동</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!confirm(`'${node.name}' 폴더의 모든 문제(${node.totalItemCount}개)를 삭제하시겠습니까?`)) return;
+                      const itemIdsToDelete: string[] = [];
+                      const collect = (n: BankTreeNode) => {
+                        n.items.forEach((i: TestBankItem) => itemIdsToDelete.push(i.id));
+                        n.subFolders.forEach(collect);
+                      };
+                      collect(node);
+
+                      try {
+                        const res = await fetch('/api/test2/bank', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            action: 'delete_batch',
+                            itemIds: itemIdsToDelete,
+                          }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                          setBankItems(prev => prev.filter(i => !itemIdsToDelete.includes(i.id)));
+                        }
+                      } catch (err) {
+                        alert('삭제 중 오류가 발생했습니다.');
+                      }
+                    }}
+                    className="p-1 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                    title="이 폴더 내 문제 일괄 삭제"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* 하위 내용 (폴더 및 문항 파일들) */}
+              {isExpanded && (
+                <div className="mt-1 space-y-1">
+                  {/* 하위 폴더들 재귀 렌더링 */}
+                  {node.subFolders.length > 0 && renderBankTree(node.subFolders, depth + 1)}
+
+                  {/* 이 폴더에 직접 속한 문항들 */}
+                  {node.items.length > 0 && (
+                    <div className="ml-5 pl-2 border-l border-slate-200 space-y-1 mt-1">
+                      {node.items.map((item, itemIdx) => {
+                        const fallbackNum = parseQuestionNum(item.name);
+                        const displayNum = item.question_number ?? fallbackNum;
+
+                        const bankTwins = getBankItemTwins(item);
+                        const bankTwinKey = `bank_${item.id}_${displayNum || 0}`;
+                        const isBankTwinExpanded = expandedTwinKeys.has(bankTwinKey);
+
+                        return (
+                          <div key={item.id} className="space-y-1">
+                            {/* 문항 행 카드 */}
+                            <div
+                              draggable={true}
+                              onDragStart={(e) => {
+                                e.stopPropagation();
+                                e.dataTransfer.setData('application/json', JSON.stringify({
+                                  type: 'item',
+                                  itemId: item.id,
+                                  name: item.name,
+                                }));
+                              }}
+                              className="flex items-center justify-between p-2 rounded-xl border border-slate-200/80 bg-white hover:bg-indigo-50/60 hover:border-indigo-200 transition-all text-xs group shadow-2xs select-none"
+                              title="마우스로 끌어서 다른 폴더나 상단 카테고리에 놓으면 휙 이동합니다"
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <span className="w-5 h-5 rounded-md bg-slate-100 text-slate-500 font-bold flex items-center justify-center text-[10px] shrink-0 border border-slate-200">
+                                  {itemIdx + 1}
+                                </span>
+
+                                {displayNum ? (
+                                  <span className="px-2 py-0.5 bg-violet-100 text-violet-800 border border-violet-200 rounded-md text-xs font-black shrink-0">
+                                    {displayNum}번
+                                  </span>
+                                ) : null}
+
+                                <span className="font-bold text-slate-700 truncate">
+                                  {item.name}
+                                </span>
+
+                                {/* 쌍둥이 문제 뱃지 */}
+                                {bankTwins.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleTwinExpand(bankTwinKey)}
+                                    className={`px-2 py-0.5 rounded-md text-[10px] font-black transition-all shrink-0 flex items-center gap-1 cursor-pointer border ${
+                                      isBankTwinExpanded
+                                        ? 'bg-purple-600 text-white border-purple-600 shadow-2xs'
+                                        : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                                    }`}
+                                  >
+                                    <Sparkles size={11} />
+                                    <span>쌍둥이 {bankTwins.length}개</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* 문항 우측 액션 버튼들 (이동, 미리보기, 삭제) */}
+                              <div className="flex items-center gap-1 shrink-0 ml-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMoveModalData({
+                                      type: 'item',
+                                      item,
+                                    });
+                                    setMoveTargetCatId(item.category_id);
+                                    setMoveTargetParentPath(item.folder_path || '');
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-slate-50 hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 border border-slate-200 text-[10px] font-bold transition-all shadow-2xs flex items-center gap-0.5 cursor-pointer"
+                                  title="이 문제를 다른 카테고리나 폴더로 이동"
+                                >
+                                  <ArrowRight size={11} />
+                                  <span>이동</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenPreview(item.drive_id)}
+                                  className="p-1 rounded-lg hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                                  title="문제 미리보기"
+                                >
+                                  <Eye size={13} />
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteBankItem(item)}
+                                  className="p-1 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                  title="이 카테고리에서 삭제"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* 쌍둥이 아코디언 영역 */}
+                            {isBankTwinExpanded && bankTwins.length > 0 && (
+                              <div className="ml-7 my-1 p-2 bg-gradient-to-r from-purple-50/90 to-indigo-50/70 border border-purple-200/90 rounded-xl space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                                <div className="text-[10px] font-black text-purple-800 px-1.5 pb-1 border-b border-purple-100 flex items-center justify-between">
+                                  <span className="flex items-center gap-1">
+                                    <Sparkles size={11} className="text-purple-600" />
+                                    <span>연동된 쌍둥이 문제 ({bankTwins.length}회차)</span>
+                                  </span>
+                                  <span className="text-[9px] text-purple-500 font-medium">눈(미리보기) 클릭 시 팝업</span>
+                                </div>
+
+                                {bankTwins.map(tw => (
+                                  <div
+                                    key={tw.roundName}
+                                    onClick={() => handleOpenPreview(tw.item.drive_id)}
+                                    className="flex items-center justify-between px-2.5 py-1.5 bg-white hover:bg-purple-100/60 border border-purple-100 rounded-lg cursor-pointer transition-all text-xs shadow-2xs"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="px-1.5 py-0.5 bg-purple-600 text-white rounded text-[9px] font-black shrink-0">
+                                        {tw.roundName} 쌍둥이
+                                      </span>
+                                      <span className="font-bold text-slate-700 truncate text-[11px]">
+                                        {tw.item.name}
+                                      </span>
+                                      {tw.item.answer && (
+                                        <span className="text-[10px] text-purple-700 font-bold shrink-0 bg-purple-100 px-1 py-0.2 rounded">
+                                          답: {tw.item.answer}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <Eye size={12} className="text-purple-600 shrink-0" />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderRawTree = (nodes: ExamLibraryNode[], depth = 0, parentPath: string[] = []) => {
     return (
       <div className={`space-y-1 ${depth > 0 ? 'ml-3 pl-2.5 border-l border-slate-200' : ''}`}>

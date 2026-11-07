@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import {
+  CheckSquare,
+  Square,
   X,
   Search,
   Folder,
@@ -46,8 +48,19 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [searchKeyword, setSearchKeyword] = useState('');
 
-  // 선택된 파일 상태
-  const [selectedFile, setSelectedFile] = useState<ExamLibraryNode | null>(null);
+  // 🌟 다중 파일 선택 상태 (드라이브ID -> 파일노드)
+  const [selectedFilesMap, setSelectedFilesMap] = useState<Map<string, ExamLibraryNode>>(new Map());
+  const selectedFile = useMemo(() => {
+    const list = Array.from(selectedFilesMap.values());
+    return list.length === 1 ? list[0] : (list[0] || null);
+  }, [selectedFilesMap]);
+
+  // 🌟 변경 파일 스마트 자동 감지 상태
+  const [isScanningChanges, setIsScanningChanges] = useState(false);
+  const [scannedAlert, setScannedAlert] = useState<string | null>(null);
+
+  // 🌟 일괄 동기화 결과 상태
+  const [batchApplyResult, setBatchApplyResult] = useState<any>(null);
 
   // 검토 결과 상태 (inspect)
   const [isInspecting, setIsInspecting] = useState(false);
@@ -66,7 +79,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
     if (isOpen) {
       loadTree(selectedGrade);
       setStep('select');
-      setSelectedFile(null);
+      setSelectedFilesMap(new Map());
       setInspectData(null);
       setInspectError(null);
       setApplyResult(null);
@@ -131,6 +144,124 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
       (item) => item.file.name.toLowerCase().includes(kw) || item.path.toLowerCase().includes(kw)
     );
   }, [flattenedFiles, searchKeyword]);
+
+  // 🌟 단일 파일 체크 토글
+  const toggleSelectFile = (file: ExamLibraryNode) => {
+    setSelectedFilesMap(prev => {
+      const next = new Map(prev);
+      if (next.has(file.drive_id)) {
+        next.delete(file.drive_id);
+      } else {
+        next.set(file.drive_id, file);
+      }
+      return next;
+    });
+  };
+
+  // 🌟 폴더 내 모든 파일 일괄 선택/해제 토글
+  const toggleSelectFolder = (folderNode: ExamLibraryNode) => {
+    const filesToToggle: ExamLibraryNode[] = [];
+    const collectFiles = (n: ExamLibraryNode) => {
+      if (n.type === 'file') filesToToggle.push(n);
+      if (n.subFolders) n.subFolders.forEach(collectFiles);
+      if (n.files) n.files.forEach(collectFiles);
+    };
+    collectFiles(folderNode);
+
+    setSelectedFilesMap(prev => {
+      const next = new Map(prev);
+      const allSelected = filesToToggle.every(f => next.has(f.drive_id));
+      if (allSelected) {
+        filesToToggle.forEach(f => next.delete(f.drive_id));
+      } else {
+        filesToToggle.forEach(f => next.set(f.drive_id, f));
+      }
+      return next;
+    });
+  };
+
+  // 🌟 스마트 감지: 구글 드라이브 변경 파일 자동 스캔
+  const handleSmartScan = async () => {
+    setIsScanningChanges(true);
+    setScannedAlert(null);
+    setInspectError(null);
+
+    try {
+      const res = await fetch('/api/drive/library/precision-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'scan_changes',
+          grade: selectedGrade,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.changedFiles)) {
+        if (data.changedFiles.length === 0) {
+          setScannedAlert('✨ 최근 구글 드라이브에서 수정되거나 변경된 파일이 없습니다. (모두 최신 상태)');
+          return;
+        }
+
+        // 감지된 파일들을 트리에서 매핑하여 자동 체크
+        const changedMap = new Map<string, ExamLibraryNode>();
+        const driveIdSet = new Set(data.changedFiles.map((c: any) => c.drive_id));
+
+        flattenedFiles.forEach(({ file }) => {
+          if (driveIdSet.has(file.drive_id)) {
+            changedMap.set(file.drive_id, file);
+          }
+        });
+
+        setSelectedFilesMap(changedMap);
+        setScannedAlert(`⚡ 구글 드라이브에서 변경/수정된 파일 ${changedMap.size}개가 자동 감지되어 선택되었습니다!`);
+      } else {
+        setInspectError(data.error || '변경 감지 실패');
+      }
+    } catch (e: any) {
+      setInspectError('스캔 중 네트워크 오류가 발생했습니다.');
+    } finally {
+      setIsScanningChanges(false);
+    }
+  };
+
+  // 🌟 일괄 교체 및 자동 재채점 실행 (Apply Batch)
+  const handleApplyBatch = async () => {
+    const filesList = Array.from(selectedFilesMap.values());
+    if (filesList.length === 0) return;
+    setIsApplying(true);
+
+    try {
+      const res = await fetch('/api/drive/library/precision-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'apply_batch',
+          files: filesList.map(f => ({
+            targetDriveId: f.drive_id,
+            fileName: f.name,
+            parentId: f.parent_id,
+            grade: f.grade || selectedGrade,
+          })),
+          autoRegrade,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setBatchApplyResult(data);
+        setStep('result');
+        if (onSuccess) {
+          onSuccess(`${data.processedCount || filesList.length}개 파일이 성공적으로 도미노 동기화되었습니다.`);
+        }
+      } else {
+        alert(`일괄 적용 실패: ${data.error || '알 수 없는 오류'}`);
+      }
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e?.message || '일괄 적용에 실패했습니다.'}`);
+    } finally {
+      setIsApplying(false);
+    }
+  };
 
   // 구글 드라이브 최신 감지 및 검토 실행
   const handleInspect = async () => {
@@ -217,7 +348,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black text-slate-900 tracking-tight">라이브러리 단일 파일 세밀수정</h2>
+                <h2 className="text-xl font-black text-slate-900 tracking-tight">라이브러리 파일 정밀 세밀수정 (단일/다중 일괄)</h2>
                 <span className="px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-extrabold text-[11px] uppercase tracking-wider">
                   Precision Sync & Auto-Grading
                 </span>
@@ -250,7 +381,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                     key={g}
                     onClick={() => {
                       setSelectedGrade(g);
-                      setSelectedFile(null);
+                      setSelectedFilesMap(new Map());
                     }}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all ${
                       selectedGrade === g
@@ -263,17 +394,52 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                 ))}
               </div>
 
-              <div className="relative w-full sm:w-72">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="파일명 또는 폴더명 빠른 검색..."
-                  value={searchKeyword}
-                  onChange={(e) => setSearchKeyword(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-500 focus:bg-white transition-colors"
-                />
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                {/* 🌟 스마트 변경 파일 자동 감지 버튼 */}
+                <button
+                  type="button"
+                  disabled={isScanningChanges}
+                  onClick={handleSmartScan}
+                  className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-indigo-600 hover:from-amber-600 hover:to-indigo-700 text-white rounded-2xl text-xs font-black shadow-md shadow-amber-500/20 flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                  title="구글 드라이브의 실제 파일 수정일시를 비교하여 변경된 파일들만 싹 감지해 체크합니다"
+                >
+                  {isScanningChanges ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  <span>{isScanningChanges ? '변경 파일 스캔 중...' : '⚡ 변경된 파일 자동 감지'}</span>
+                </button>
+
+                {selectedFilesMap.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFilesMap(new Map())}
+                    className="px-2.5 py-2 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-500 rounded-2xl text-xs font-bold transition-colors cursor-pointer shrink-0"
+                  >
+                    선택 해제 ({selectedFilesMap.size})
+                  </button>
+                )}
+
+                <div className="relative w-full sm:w-64">
+                  <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="파일명 또는 폴더명 빠른 검색..."
+                    value={searchKeyword}
+                    onChange={(e) => setSearchKeyword(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-500 focus:bg-white transition-colors"
+                  />
+                </div>
               </div>
             </div>
+
+            {/* 🌟 스마트 스캔 결과 안내 배지 */}
+            {scannedAlert && (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200/80 flex items-center justify-between gap-3 text-indigo-900 text-xs font-bold animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={16} className="text-indigo-600 shrink-0" />
+                  <span>{scannedAlert}</span>
+                </div>
+                <button onClick={() => setScannedAlert(null)} className="text-indigo-400 hover:text-indigo-600 text-xs">✕</button>
+              </div>
+            )}
 
             {/* 에러 알림창 */}
             {inspectError && (
@@ -305,24 +471,29 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                       searchResults.map(({ file, path }) => (
                         <div
                           key={file.drive_id}
-                          onClick={() => setSelectedFile(file)}
+                          onClick={() => toggleSelectFile(file)}
                           className={`p-3 rounded-2xl cursor-pointer border transition-all flex items-center justify-between ${
-                            selectedFile?.drive_id === file.drive_id
+                            selectedFilesMap.has(file.drive_id)
                               ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-100'
                               : 'bg-white hover:bg-slate-100 border-slate-200/70 text-slate-700'
                           }`}
                         >
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <FileText size={16} className={selectedFile?.drive_id === file.drive_id ? 'text-indigo-200' : 'text-slate-400'} />
+                            {selectedFilesMap.has(file.drive_id) ? (
+                              <CheckSquare size={16} className="text-white shrink-0" />
+                            ) : (
+                              <Square size={16} className="text-slate-400 shrink-0" />
+                            )}
+                            <FileText size={16} className={selectedFilesMap.has(file.drive_id) ? 'text-indigo-200' : 'text-slate-400'} />
                             <div className="truncate">
                               <p className="text-xs font-black truncate">{file.name}</p>
-                              <p className={`text-[10px] truncate ${selectedFile?.drive_id === file.drive_id ? 'text-indigo-100' : 'text-slate-400'}`}>
+                              <p className={`text-[10px] truncate ${selectedFilesMap.has(file.drive_id) ? 'text-indigo-100' : 'text-slate-400'}`}>
                                 {path || '루트 폴더'}
                               </p>
                             </div>
                           </div>
                           <span className={`text-[10px] font-black px-2 py-0.5 rounded-lg shrink-0 ${
-                            selectedFile?.drive_id === file.drive_id ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+                            selectedFilesMap.has(file.drive_id) ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
                           }`}>
                             {file.grade || selectedGrade}
                           </span>
@@ -339,23 +510,80 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                         node={node}
                         expandedFolders={expandedFolders}
                         toggleFolder={toggleFolder}
-                        selectedFile={selectedFile}
-                        onSelectFile={setSelectedFile}
+                        selectedFilesMap={selectedFilesMap}
+                        onToggleSelectFile={toggleSelectFile}
+                        onToggleSelectFolder={toggleSelectFolder}
                       />
                     ))}
                   </div>
                 )}
               </div>
 
-              {/* 우측: 선택 파일 정보 패널 */}
+              {/* 우측: 선택 파일 정보 패널 (다중/단일 완벽 대응) */}
               <div className="md:col-span-5 flex flex-col justify-between bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
                 <div>
-                  <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-1.5">
-                    <FileCheck size={14} className="text-indigo-600" />
-                    선택된 파일 정보
-                  </h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                      <FileCheck size={14} className="text-indigo-600" />
+                      선택된 파일 정보
+                    </h3>
+                    {selectedFilesMap.size > 0 && (
+                      <span className="px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[11px] font-black">
+                        총 {selectedFilesMap.size}개 파일
+                      </span>
+                    )}
+                  </div>
 
-                  {selectedFile ? (
+                  {selectedFilesMap.size > 1 ? (
+                    /* 🌟 다중 선택 상태 */
+                    <div className="space-y-4">
+                      <div className="p-4 bg-indigo-50/70 rounded-2xl border border-indigo-200/80">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-black text-indigo-900">다중 일괄 수정 모드</span>
+                          <span className="text-xs font-black text-indigo-700">{selectedFilesMap.size}개 선택됨</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          선택한 파일들을 한 번에 구글 드라이브 최신 파일로 교체하고, 연관 시험지 및 성적까지 도미노 자동 연동합니다.
+                        </p>
+                      </div>
+
+                      {/* 선택된 파일 목록 스크롤 박스 */}
+                      <div className="border border-slate-200 rounded-2xl p-2 max-h-[220px] overflow-y-auto space-y-1.5 bg-slate-50/50">
+                        {Array.from(selectedFilesMap.values()).map((f, idx) => (
+                          <div key={f.drive_id} className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200/70 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="w-4 h-4 rounded bg-slate-100 text-slate-500 text-[10px] font-bold flex items-center justify-center shrink-0">
+                                {idx + 1}
+                              </span>
+                              <span className="font-bold text-slate-700 truncate">{f.name}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleSelectFile(f)}
+                              className="text-slate-400 hover:text-rose-500 p-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* 자동 재채점 옵션 */}
+                      <label className="flex items-center gap-2.5 p-3 rounded-2xl bg-slate-50 border border-slate-200 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={autoRegrade}
+                          onChange={(e) => setAutoRegrade(e.target.checked)}
+                          className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                        />
+                        <div className="text-xs">
+                          <span className="font-black text-slate-800">정답 변경 시 학생 성적 자동 재채점</span>
+                          <p className="text-[10px] text-slate-400">영향받는 제출 답안의 점수를 자동으로 재계산합니다.</p>
+                        </div>
+                      </label>
+                    </div>
+                  ) : selectedFile ? (
+                    /* 단일 선택 상태 (기존 정밀 정보) */
                     <div className="space-y-4">
                       <div className="p-4 bg-indigo-50/60 rounded-2xl border border-indigo-100">
                         <span className="text-[10px] font-black uppercase text-indigo-500 tracking-wider">File Name</span>
@@ -392,29 +620,50 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                     <div className="h-56 flex flex-col items-center justify-center text-center p-6 text-slate-400">
                       <FileText size={36} className="text-slate-300 mb-2 stroke-1" />
                       <p className="text-xs font-bold">좌측 목록에서 교체할 파일을 선택해 주세요.</p>
-                      <p className="text-[11px] text-slate-400 mt-1">예: 모의평가 01.html, 개별질문 5.html 등</p>
+                      <p className="text-[11px] text-slate-400 mt-1">상단의 <strong>[⚡ 변경된 파일 자동 감지]</strong>를 누르면 편리합니다.</p>
                     </div>
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  disabled={!selectedFile || isInspecting}
-                  onClick={handleInspect}
-                  className="w-full mt-6 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-black text-sm rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 transition-all active:scale-[0.98]"
-                >
-                  {isInspecting ? (
-                    <>
-                      <RefreshCw size={18} className="animate-spin" />
-                      드라이브 최신 파일 스캔 중...
-                    </>
-                  ) : (
-                    <>
-                      구글 드라이브 최신 감지 및 검토
-                      <ArrowRight size={18} />
-                    </>
-                  )}
-                </button>
+                {selectedFilesMap.size > 1 ? (
+                  <button
+                    type="button"
+                    disabled={isApplying}
+                    onClick={handleApplyBatch}
+                    className="w-full mt-6 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-black text-sm rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    {isApplying ? (
+                      <>
+                        <RefreshCw size={18} className="animate-spin" />
+                        {selectedFilesMap.size}개 파일 일괄 동기화 적용 중...
+                      </>
+                    ) : (
+                      <>
+                        선택한 {selectedFilesMap.size}개 파일 일괄 동기화 시작
+                        <ArrowRight size={18} />
+                      </>
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!selectedFile || isInspecting}
+                    onClick={handleInspect}
+                    className="w-full mt-6 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-black text-sm rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    {isInspecting ? (
+                      <>
+                        <RefreshCw size={18} className="animate-spin" />
+                        드라이브 최신 파일 스캔 중...
+                      </>
+                    ) : (
+                      <>
+                        구글 드라이브 최신 감지 및 검토
+                        <ArrowRight size={18} />
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -590,7 +839,9 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
         {/* ======================================================== */}
         {/* STEP 3: 결과 화면 및 성적 변동 리포트 (4-1) */}
         {/* ======================================================== */}
-        {step === 'result' && applyResult && (
+        {step === 'result' && (batchApplyResult || applyResult) && (() => {
+    const resData = batchApplyResult || applyResult;
+    return (
           <div className="flex-1 flex flex-col min-h-0 p-8 space-y-6 overflow-y-auto">
             
             {/* 상단 축하 배너 */}
@@ -609,13 +860,13 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
 
               <div className="flex items-center gap-2">
                 <span className="px-3 py-1 bg-white border border-emerald-200 rounded-xl text-xs font-black text-emerald-800">
-                  원천DB {applyResult.updatedBankCount}건
+                  원천DB {resData.updatedBankCount}건
                 </span>
                 <span className="px-3 py-1 bg-white border border-emerald-200 rounded-xl text-xs font-black text-emerald-800">
-                  시험지 {applyResult.updatedExamsCount}건
+                  시험지 {resData.updatedExamsCount}건
                 </span>
                 <span className="px-3 py-1 bg-white border border-emerald-200 rounded-xl text-xs font-black text-emerald-800">
-                  재채점 {applyResult.regradedSubmissionsCount}건
+                  재채점 {resData.regradedSubmissionsCount}건
                 </span>
               </div>
             </div>
@@ -626,7 +877,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                 <div className="flex items-center gap-2">
                   <Award size={18} className="text-violet-600" />
                   <h4 className="text-sm font-black text-slate-900">
-                    학생 성적 변동 리포트 ({applyResult.scoreChanges ? applyResult.scoreChanges.length : 0}명 변동)
+                    학생 성적 변동 리포트 ({resData.scoreChanges ? resData.scoreChanges.length : 0}명 변동)
                   </h4>
                 </div>
                 <span className="text-[11px] font-bold text-slate-400">
@@ -634,7 +885,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                 </span>
               </div>
 
-              {applyResult.scoreChanges && applyResult.scoreChanges.length > 0 ? (
+              {resData.scoreChanges && resData.scoreChanges.length > 0 ? (
                 <div className="flex-1 overflow-y-auto border border-slate-100 rounded-2xl">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 tracking-wider sticky top-0 border-b border-slate-100">
@@ -647,7 +898,7 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
-                      {applyResult.scoreChanges.map((item: any, i: number) => {
+                      {resData.scoreChanges.map((item: any, i: number) => {
                         const isUp = item.diff > 0;
                         return (
                           <tr key={i} className="hover:bg-slate-50/70 transition-colors">
@@ -706,7 +957,8 @@ export default function PrecisionSyncModal({ isOpen, onClose, onSuccess }: Preci
               </button>
             </div>
           </div>
-        )}
+        );
+      })()}
 
       </div>
     </div>
@@ -718,18 +970,20 @@ function TreeNodeItem({
   node,
   expandedFolders,
   toggleFolder,
-  selectedFile,
-  onSelectFile,
+  selectedFilesMap,
+  onToggleSelectFile,
+  onToggleSelectFolder,
 }: {
   node: ExamLibraryNode;
   expandedFolders: Set<string>;
   toggleFolder: (id: string) => void;
-  selectedFile: ExamLibraryNode | null;
-  onSelectFile: (file: ExamLibraryNode) => void;
+  selectedFilesMap: Map<string, ExamLibraryNode>;
+  onToggleSelectFile: (file: ExamLibraryNode) => void;
+  onToggleSelectFolder: (folder: ExamLibraryNode) => void;
 }) {
   const isFolder = node.type === 'folder';
   const isExpanded = expandedFolders.has(node.id);
-  const isSelected = selectedFile?.drive_id === node.drive_id;
+  const isSelected = selectedFilesMap.has(node.drive_id);
 
   if (isFolder) {
     const hasChildren = (node.subFolders && node.subFolders.length > 0) || (node.files && node.files.length > 0);
@@ -738,21 +992,36 @@ function TreeNodeItem({
       <div className="space-y-0.5">
         <div
           onClick={() => toggleFolder(node.id)}
-          className="flex items-center gap-1.5 p-1.5 rounded-xl hover:bg-slate-200/60 cursor-pointer text-slate-700 text-xs font-bold transition-colors select-none"
+          className="flex items-center justify-between p-1.5 rounded-xl hover:bg-slate-200/60 cursor-pointer text-slate-700 text-xs font-bold transition-colors select-none group"
         >
-          {hasChildren ? (
-            isExpanded ? <ChevronDown size={14} className="text-slate-400 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 shrink-0" />
-          ) : (
-            <span className="w-3.5 inline-block shrink-0" />
-          )}
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            {hasChildren ? (
+              isExpanded ? <ChevronDown size={14} className="text-slate-400 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 shrink-0" />
+            ) : (
+              <span className="w-3.5 inline-block shrink-0" />
+            )}
 
-          {isExpanded ? (
-            <FolderOpen size={16} className="text-indigo-500 shrink-0" />
-          ) : (
-            <Folder size={16} className="text-indigo-400 shrink-0" />
-          )}
+            {isExpanded ? (
+              <FolderOpen size={16} className="text-indigo-500 shrink-0" />
+            ) : (
+              <Folder size={16} className="text-indigo-400 shrink-0" />
+            )}
 
-          <span className="truncate">{node.name}</span>
+            <span className="truncate">{node.name}</span>
+          </div>
+
+          {/* 폴더 전체 선택 버튼 */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleSelectFolder(node);
+            }}
+            className="px-2 py-0.5 rounded-lg text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:bg-white border border-transparent hover:border-slate-200 transition-all opacity-0 group-hover:opacity-100"
+            title="이 폴더의 모든 파일을 선택/해제합니다"
+          >
+            폴더 전체 선택
+          </button>
         </div>
 
         {isExpanded && hasChildren && (
@@ -763,8 +1032,9 @@ function TreeNodeItem({
                 node={sub}
                 expandedFolders={expandedFolders}
                 toggleFolder={toggleFolder}
-                selectedFile={selectedFile}
-                onSelectFile={onSelectFile}
+                selectedFilesMap={selectedFilesMap}
+                onToggleSelectFile={onToggleSelectFile}
+                onToggleSelectFolder={onToggleSelectFolder}
               />
             ))}
             {node.files?.map((f) => (
@@ -773,8 +1043,9 @@ function TreeNodeItem({
                 node={f}
                 expandedFolders={expandedFolders}
                 toggleFolder={toggleFolder}
-                selectedFile={selectedFile}
-                onSelectFile={onSelectFile}
+                selectedFilesMap={selectedFilesMap}
+                onToggleSelectFile={onToggleSelectFile}
+                onToggleSelectFolder={onToggleSelectFolder}
               />
             ))}
           </div>
@@ -783,10 +1054,10 @@ function TreeNodeItem({
     );
   }
 
-  // 파일 노드
+  // 파일 노드 (체크박스 지원)
   return (
     <div
-      onClick={() => onSelectFile(node)}
+      onClick={() => onToggleSelectFile(node)}
       className={`flex items-center justify-between p-2 rounded-xl cursor-pointer text-xs font-bold transition-all ${
         isSelected
           ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100'
@@ -794,11 +1065,16 @@ function TreeNodeItem({
       }`}
     >
       <div className="flex items-center gap-2 truncate min-w-0">
-        <FileText size={15} className={isSelected ? 'text-indigo-200' : 'text-slate-400'} />
+        {isSelected ? (
+          <CheckSquare size={15} className="text-white shrink-0" />
+        ) : (
+          <Square size={15} className="text-slate-400 hover:text-indigo-500 shrink-0" />
+        )}
+        <FileText size={15} className={isSelected ? 'text-indigo-200' : 'text-slate-400 shrink-0'} />
         <span className="truncate">{node.name}</span>
       </div>
       {node.question_image_drive_id && (
-        <span className={`text-[10px] px-1.5 py-0.5 rounded ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-500'}`}>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-500'}`}>
           PNG
         </span>
       )}
