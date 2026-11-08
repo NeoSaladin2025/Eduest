@@ -94,6 +94,17 @@ export default function ReviewTestModal({
   const [dbSavedMessage, setDbSavedMessage] = useState<string | null>(null);
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
 
+  // 🌟 키보드 ESC 단축키 지원 (최대화 시 먼저 원래 크기로 복원)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isMaximized) {
+        setIsMaximized(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMaximized]);
+
   // 🌟 [오라버니 기획 v3] 문항 네비게이션 필터 & 서랍/슬림 모드 상태
   const [navFilter, setNavFilter] = useState<'all' | 'unanswered' | 'unknown' | 'answered'>('all');
   const [navViewMode, setNavViewMode] = useState<'drawer' | 'slim'>('drawer');
@@ -853,11 +864,11 @@ export default function ReviewTestModal({
 
   return (
     <div className={`fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-300 ${
-      isMaximized ? 'p-0 sm:p-2' : 'p-3 md:p-6'
+      isMaximized ? 'p-2 sm:p-5 md:p-8' : 'p-3 md:p-6'
     }`}>
       <div className={`bg-[#0b0f19] border border-white/10 flex flex-col overflow-hidden shadow-3xl text-white transition-all duration-200 ${
         isMaximized 
-          ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[36px]' 
+          ? 'w-full h-full max-w-[94vw] max-h-[92vh] rounded-[24px] sm:rounded-[36px] border-violet-500/30 ring-1 ring-violet-500/20' 
           : 'max-w-6xl w-full h-[92vh] rounded-[36px] md:rounded-[48px]'
       }`}>
         
@@ -866,10 +877,10 @@ export default function ReviewTestModal({
           <div className="flex-1 flex flex-col overflow-hidden">
             
             {/* 상단 헤더 바 */}
-            <div className="p-4 md:p-6 border-b border-white/10 bg-slate-900/60 flex flex-wrap items-center justify-between gap-4">
+            <div className="p-4 md:p-6 border-b border-white/10 bg-slate-900/80 flex items-center justify-between gap-4 shrink-0">
               
               {/* 타이틀 & 문항 번호 */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
                 <button
                   onClick={() => {
                     if (confirm('테스트를 중단하고 나가시겠습니까? 작성 중인 답안은 사라집니다.')) {
@@ -915,8 +926,12 @@ export default function ReviewTestModal({
                 <button
                   type="button"
                   onClick={() => setIsMaximized(prev => !prev)}
-                  className="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
-                  title={isMaximized ? "창 크기 원래대로" : "창 크기 최대화 (태블릿 넓게 보기)"}
+                  className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all cursor-pointer ${
+                    isMaximized
+                      ? 'bg-violet-600/30 hover:bg-violet-600/50 text-violet-300 hover:text-white border border-violet-500/50 shadow-md shadow-violet-500/20'
+                      : 'bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white border border-white/5'
+                  }`}
+                  title={isMaximized ? "창 크기 원래대로 (ESC)" : "창 크기 최대화 (넓게 보기)"}
                 >
                   {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                 </button>

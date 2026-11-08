@@ -1420,6 +1420,22 @@ export default function StudentTest2View({
     }
   };
 
+  // 🌟 원본 해설 모달 키보드 ESC 단축키 지원 (최대화 시 먼저 원래 크기로 복원, 이후 모달 닫기)
+  useEffect(() => {
+    if (!solutionModalFileId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isSolutionMaximized) {
+          setIsSolutionMaximized(false);
+        } else {
+          setSolutionModalFileId(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [solutionModalFileId, isSolutionMaximized]);
+
   // 7. 원본 라이브러리 해설 보기 모달 열기 (오답 연속 슬라이더 지원)
   const handleOpenSolution = async (
     driveId: string,
@@ -3793,11 +3809,11 @@ export default function StudentTest2View({
       ───────────────────────────────────────────────────────────── */}
       {solutionModalFileId && (
         <div className={`fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-200 ${
-          isSolutionMaximized ? 'p-0 sm:p-2' : 'p-3 sm:p-4'
+          isSolutionMaximized ? 'p-2 sm:p-5 md:p-8' : 'p-3 sm:p-4'
         }`}>
           <div className={`bg-[#0f172a] border border-white/10 flex flex-col overflow-hidden shadow-3xl transition-all duration-200 ${
             isSolutionMaximized 
-              ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[28px]' 
+              ? 'w-full h-full max-w-[94vw] max-h-[92vh] rounded-[24px] sm:rounded-[32px] border-violet-500/30 ring-1 ring-violet-500/20' 
               : 'max-w-4xl w-full h-[88vh] rounded-[32px] sm:rounded-[36px]'
           }`}>
             {/* 상단 헤더: 오답 연속 슬라이더 네비게이션 */}
@@ -3857,8 +3873,12 @@ export default function StudentTest2View({
                 <button
                   type="button"
                   onClick={() => setIsSolutionMaximized(prev => !prev)}
-                  className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors shrink-0 cursor-pointer"
-                  title={isSolutionMaximized ? '창 크기 원래대로' : '창 크기 최대화 (태블릿 넓게 보기)'}
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all shrink-0 cursor-pointer ${
+                    isSolutionMaximized
+                      ? 'bg-violet-600/30 hover:bg-violet-600/50 text-violet-300 hover:text-white border border-violet-500/50 shadow-md shadow-violet-500/20'
+                      : 'bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white border border-white/5'
+                  }`}
+                  title={isSolutionMaximized ? '창 크기 원래대로 (ESC)' : '창 크기 최대화 (넓게 보기)'}
                 >
                   {isSolutionMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
                 </button>

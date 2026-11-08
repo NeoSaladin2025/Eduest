@@ -98,23 +98,38 @@ export default function ReviewSolutionModal({
     };
   }, [currentItem]);
 
+  // 🌟 키보드 ESC 단축키 지원 (최대화 시 먼저 원래 크기로 복원, 이후 닫기)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isMaximized) {
+          setIsMaximized(false);
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMaximized, onClose]);
+
   if (!currentItem) return null;
 
   return (
     <div className={`fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center animate-in fade-in duration-200 ${
-      isMaximized ? 'p-0 sm:p-2' : 'p-3 md:p-6'
+      isMaximized ? 'p-2 sm:p-5 md:p-8' : 'p-3 md:p-6'
     }`}>
       <div className={`bg-[#0f172a] border border-white/10 flex flex-col overflow-hidden shadow-3xl transition-all duration-200 ${
         isMaximized 
-          ? 'w-full h-full sm:h-[98vh] sm:max-w-[98vw] rounded-none sm:rounded-[28px]' 
+          ? 'w-full h-full max-w-[94vw] max-h-[92vh] rounded-[24px] sm:rounded-[32px] border-indigo-500/30 ring-1 ring-indigo-500/20' 
           : 'max-w-5xl w-full h-[90vh] rounded-[32px] md:rounded-[40px]'
       }`}>
         
         {/* 상단 헤더 바 */}
-        <div className="p-4 md:p-5 border-b border-white/10 bg-slate-900/80 flex flex-wrap items-center justify-between gap-3">
+        <div className="p-4 md:p-5 border-b border-white/10 bg-slate-900/90 flex items-center justify-between gap-3 shrink-0">
           
           {/* 타이틀 및 메타정보 */}
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
             <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
               <BookOpen size={20} />
             </div>
@@ -137,7 +152,7 @@ export default function ReviewSolutionModal({
           </div>
 
           {/* 중앙: 해설 / 문제 탭 전환 토글 */}
-          <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10">
+          <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10 shrink-0">
             <button
               onClick={() => setActiveTab('solution')}
               className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-black transition-all ${
@@ -163,7 +178,7 @@ export default function ReviewSolutionModal({
           </div>
 
           {/* 우측: 문항 네비게이션 및 창 크기 조절 & 닫기 버튼 */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {items.length > 1 && (
               <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5">
                 <button
@@ -191,8 +206,12 @@ export default function ReviewSolutionModal({
             {/* 창 크기 최대화 토글 버튼 */}
             <button
               onClick={() => setIsMaximized(prev => !prev)}
-              className="w-9 h-9 rounded-xl bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
-              title={isMaximized ? '창 크기 원래대로' : '창 크기 최대화 (태블릿 넓게 보기)'}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
+                isMaximized 
+                  ? 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 hover:text-white border border-indigo-500/50 shadow-md shadow-indigo-500/20' 
+                  : 'bg-white/5 hover:bg-white/15 text-slate-300 hover:text-white border border-white/5'
+              }`}
+              title={isMaximized ? '창 크기 원래대로 (ESC)' : '창 크기 최대화 (넓게 보기)'}
             >
               {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
