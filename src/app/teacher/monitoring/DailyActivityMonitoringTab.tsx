@@ -145,6 +145,10 @@ export default function DailyActivityMonitoringTab({
   const [liveModalOpen, setLiveModalOpen] = useState(false);
   const [liveModalLoading, setLiveModalLoading] = useState(false);
 
+  // 🌟 [오라버니 요청] 상태 동기화 실시간 로딩 및 토스트 피드백 상태
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncToastMessage, setSyncToastMessage] = useState<string | null>(null);
+
   // 9분 자동로그아웃 설정 불러오기
   useEffect(() => {
     fetch('/api/student/session-guard-config')
@@ -312,14 +316,13 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     }
   }, []);
 
-  // 🌟 [최초 로드 및 수동 동기화] DB에서 이미 시험 중(TESTING / AWAY)인 학생 상태 및 proctor-state 즉시 수집
+  // 🌟 [최초 로드 및 수동 동기화] DB 전수 스캔 및 시험 종료 학생 좀비 상태 정화
   const fetchActiveTestingStudents = useCallback(async () => {
     try {
       const [studentsRes, proctorRes] = await Promise.all([
         supabase
           .from('students')
-          .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at')
-          .in('test_status', ['TESTING', 'AWAY']),
+          .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at'),
         fetch('/api/test2/proctor-state')
           .then((r) => r.json())
           .catch(() => ({ states: {} })),
@@ -332,7 +335,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
         setLiveMap((prev) => {
           const next = { ...prev };
           data.forEach((s: any) => {
-            const isAway = s.test_status === 'AWAY';
+            const isTesting = s.test_status === 'TESTING' || s.test_status === 'AWAY';
             const pState = activeStates[s.id] || {};
             const examTitle = pState.exam_title || '';
             const bundleTitle = pState.bundle_title || '';
@@ -340,27 +343,50 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const qIdx = pState.question_idx !== undefined ? pState.question_idx : 0;
             const totalQ = pState.total_questions !== undefined ? pState.total_questions : 0;
 
-            next[s.id] = {
-              ...(next[s.id] || {}),
-              student_id: s.id,
-              student_name: s.name,
-              student_grade: s.grade,
-              mode: 'test',
-              location_title: `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
-              is_away: isAway,
-              exam_id: pState.exam_id,
-              exam_title: examTitle,
-              bundle_title: bundleTitle,
-              round: round,
-              question_idx: qIdx,
-              total_questions: totalQ,
-              test_status: s.test_status,
-              test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
-              duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
-              test_duration_min: pState.test_duration_min !== undefined ? pState.test_duration_min : s.test_duration_min,
-              entered_at: Date.now(),
-              updated_at: s.updated_at || new Date().toISOString(),
-            };
+            if (isTesting) {
+              next[s.id] = {
+                ...(next[s.id] || {}),
+                student_id: s.id,
+                student_name: s.name,
+                student_grade: s.grade,
+                mode: 'test',
+                location_title: `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
+                is_away: s.test_status === 'AWAY',
+                exam_id: pState.exam_id,
+                exam_title: examTitle,
+                bundle_title: bundleTitle,
+                round: round,
+                question_idx: qIdx,
+                total_questions: totalQ,
+                test_status: s.test_status,
+                test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
+                duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
+                test_duration_min: pState.test_duration_min !== undefined ? pState.test_duration_min : s.test_duration_min,
+                entered_at: next[s.id]?.entered_at || Date.now(),
+                updated_at: s.updated_at || new Date().toISOString(),
+              };
+            } else {
+              // 🌟 [치명적 결함 해결!] 시험이 종료된 학생(FINISHED 또는 IDLE)은 기존의 'mode: test' 상태를 즉각 해제하여 카드 정화!
+              if (next[s.id]?.mode === 'test') {
+                next[s.id] = {
+                  ...(next[s.id] || {}),
+                  student_id: s.id,
+                  student_name: s.name,
+                  student_grade: s.grade,
+                  mode: 'idle',
+                  location_title: s.test_status === 'FINISHED' ? '시험 제출 완료 (복귀 대기)' : '학습 대기 중',
+                  is_away: false,
+                  exam_id: undefined,
+                  exam_title: undefined,
+                  bundle_title: undefined,
+                  question_idx: undefined,
+                  total_questions: undefined,
+                  test_remaining_sec: undefined,
+                  test_status: s.test_status,
+                  updated_at: s.updated_at || new Date().toISOString(),
+                };
+              }
+            }
           });
           return next;
         });
@@ -533,21 +559,34 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     };
   }, [playAlertSound, triggerOsNotification]);
 
-  // 전체 학생 상태 새로고침 핑 전송
-  const handleRequestPing = () => {
-    if (channelRef.current) {
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'ping_students',
-        payload: { timestamp: Date.now() },
-      });
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'ping_proctor',
-        payload: { timestamp: Date.now() },
-      });
+  // 전체 학생 상태 새로고침 핑 전송 (비동기 및 실시간 피드백 보장)
+  const handleRequestPing = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    setSyncToastMessage('학생 실시간 상태를 동기화하고 있습니다...');
+
+    try {
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'ping_students',
+          payload: { timestamp: Date.now() },
+        });
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'ping_proctor',
+          payload: { timestamp: Date.now() },
+        });
+      }
+      await fetchActiveTestingStudents();
+      setSyncToastMessage('✨ 실시간 상태 동기화가 완료되었습니다!');
+    } catch (err) {
+      console.error('상태 동기화 중 오류:', err);
+      setSyncToastMessage('⚠️ 동기화 중 일부 오류가 발생했습니다.');
+    } finally {
+      setTimeout(() => setIsSyncing(false), 600);
+      setTimeout(() => setSyncToastMessage(null), 3000);
     }
-    fetchActiveTestingStudents();
   };
 
   // 🌟 [사용자 요청] 9분 자동로그아웃 개별 학생 토글 핸들러
@@ -826,11 +865,16 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           {/* 실시간 핑 새로고침 */}
           <button
             onClick={handleRequestPing}
-            className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all border border-slate-200"
-            title="접속 중인 모든 학생에게 즉각 현재 상태 보고 요청"
+            disabled={isSyncing}
+            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all border ${
+              isSyncing
+                ? 'bg-indigo-50 text-indigo-600 border-indigo-200 cursor-wait'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200 cursor-pointer active:scale-95'
+            }`}
+            title="접속 중인 모든 학생에게 즉각 현재 상태 보고 요청 및 DB 전수 동기화"
           >
-            <RefreshCw size={15} />
-            <span>상태 동기화</span>
+            <RefreshCw size={15} className={isSyncing ? 'animate-spin text-indigo-600' : ''} />
+            <span>{isSyncing ? '동기화 중...' : '상태 동기화'}</span>
           </button>
         </div>
       </div>

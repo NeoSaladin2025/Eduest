@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, 
+  Users, UserPlus, Search, ExternalLink, Trash2, GraduationCap, FolderLock, 
   Loader2 as LoaderIcon, Copy, Check, Lock, Unlock, Settings2, X, CheckSquare, Square, KeyRound,
   ChevronRight, ChevronDown, Folder, FolderOpen, MinusSquare, Sparkles, ArrowRight,
   Edit2, CheckCircle2, AlertCircle, RefreshCw, BarChart3
@@ -163,6 +163,274 @@ export default function StudentManagerMain() {
   const [targetSaving, setTargetSaving] = useState(false);
 
   // ----------------------------------------------------
+  // 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 상태 및 핸들러
+  const [isBatchFolderModalOpen, setIsBatchFolderModalOpen] = useState(false);
+  const [batchSelectedStudentIds, setBatchSelectedStudentIds] = useState<Set<string>>(new Set());
+  const [batchStudentGradeFilter, setBatchStudentGradeFilter] = useState<string>('고2');
+  const [batchStudentSearch, setBatchStudentSearch] = useState<string>('');
+  
+  const [batchLibraryGrade, setBatchLibraryGrade] = useState<string>('고2');
+  const [batchTreeRoots, setBatchTreeRoots] = useState<FolderNode[]>([]);
+  const [batchAllTreeIds, setBatchAllTreeIds] = useState<string[]>([]);
+  const [batchSelectedFolderIds, setBatchSelectedFolderIds] = useState<Set<string>>(new Set());
+  const [batchExpandedNodes, setBatchExpandedNodes] = useState<Set<string>>(new Set());
+  const [batchLoading, setBatchLoading] = useState<boolean>(false);
+  const [batchSaving, setBatchSaving] = useState<boolean>(false);
+  const [batchMode, setBatchMode] = useState<'ADD' | 'OVERWRITE'>('ADD');
+  const [batchToastMsg, setBatchToastMsg] = useState<string | null>(null);
+
+  // 일괄 모달용 라이브러리 폴더 트리 불러오기
+  const fetchBatchLibraryTree = async (targetGrade: string) => {
+    setBatchLoading(true);
+    try {
+      const res = await fetch(`/api/drive/library?grade=${encodeURIComponent(targetGrade)}`);
+      const data = await res.json();
+      const folders = (data.items || []).filter((item: any) => item.type === 'folder');
+      const roots = buildFolderTree(folders, targetGrade);
+      setBatchTreeRoots(roots);
+
+      const allIds: string[] = [];
+      const collectIds = (nodes: FolderNode[]) => {
+        nodes.forEach(n => {
+          allIds.push(n.drive_id);
+          if (n.children && n.children.length > 0) collectIds(n.children);
+        });
+      };
+      collectIds(roots);
+      setBatchAllTreeIds(allIds);
+
+      // 기본적으로 1~2단계 펼쳐두기
+      const defaultExpanded = new Set<string>();
+      roots.forEach(r => {
+        defaultExpanded.add(r.drive_id);
+        (r.children || []).forEach(c => defaultExpanded.add(c.drive_id));
+      });
+      setBatchExpandedNodes(defaultExpanded);
+    } catch (err) {
+      console.error('Failed to load batch library tree:', err);
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  // 일괄 모달 열기 핸들러
+  const openBatchFolderModal = () => {
+    const initialGrade = (selectedGradeFilter && selectedGradeFilter !== '전체') ? selectedGradeFilter : '고2';
+    setBatchStudentGradeFilter(initialGrade);
+    setBatchLibraryGrade(initialGrade);
+
+    if (selectedStudentIds.size > 0) {
+      setBatchSelectedStudentIds(new Set(selectedStudentIds));
+    } else {
+      const gradeStudentIds = students.filter(s => s.grade.startsWith(initialGrade)).map(s => s.id);
+      setBatchSelectedStudentIds(new Set(gradeStudentIds));
+    }
+
+    setBatchSelectedFolderIds(new Set());
+    setBatchMode('ADD');
+    setIsBatchFolderModalOpen(true);
+    fetchBatchLibraryTree(initialGrade);
+  };
+
+  // 일괄 모달 내 트리 노드 펼침 토글
+  const toggleBatchExpand = (nodeId: string) => {
+    setBatchExpandedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  };
+
+  // 일괄 모달 내 폴더 노드 선택 토글
+  const toggleBatchNodeSelection = (node: FolderNode) => {
+    const descendantIds = getAllDescendantIds(node);
+    const checkState = getNodeCheckState(node, Array.from(batchSelectedFolderIds));
+    const shouldSelectAll = checkState !== 'all';
+
+    setBatchSelectedFolderIds(prev => {
+      const next = new Set(prev);
+      if (shouldSelectAll) {
+        descendantIds.forEach(id => next.add(id));
+      } else {
+        descendantIds.forEach(id => next.delete(id));
+      }
+      return next;
+    });
+  };
+
+  // 일괄 모달 내 폴더 전체 선택/해제
+  const handleToggleBatchSelectAllFolders = () => {
+    if (batchSelectedFolderIds.size === batchAllTreeIds.length) {
+      setBatchSelectedFolderIds(new Set());
+    } else {
+      setBatchSelectedFolderIds(new Set(batchAllTreeIds));
+    }
+  };
+
+  // 일괄 모달 내 학생 필터링
+  const batchFilteredStudents = useMemo(() => {
+    return students.filter(s => {
+      const matchesGrade = batchStudentGradeFilter === 'ALL' || s.grade.startsWith(batchStudentGradeFilter);
+      const matchesSearch = !batchStudentSearch.trim() || 
+        s.name.toLowerCase().includes(batchStudentSearch.toLowerCase()) ||
+        s.grade.toLowerCase().includes(batchStudentSearch.toLowerCase());
+      return matchesGrade && matchesSearch;
+    });
+  }, [students, batchStudentGradeFilter, batchStudentSearch]);
+
+  // 일괄 권한 최종 저장 핸들러
+  const handleApplyBatchFolderPermissions = async () => {
+    if (batchSelectedStudentIds.size === 0) {
+      alert('권한을 부여할 대상 학생을 1명 이상 선택해주세요.');
+      return;
+    }
+    if (batchSelectedFolderIds.size === 0) {
+      alert('오픈할 라이브러리 폴더를 1개 이상 선택해주세요.');
+      return;
+    }
+
+    setBatchSaving(true);
+    try {
+      const targetIds = Array.from(batchSelectedStudentIds);
+      const folderIds = Array.from(batchSelectedFolderIds);
+
+      const res = await fetch('/api/drive/library', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentIds: targetIds,
+          unlockedFolders: folderIds,
+          mode: batchMode,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || '일괄 권한 저장에 실패했습니다.');
+      }
+
+      // 프론트엔드 상태 실시간 업데이트
+      setStudents(prev => prev.map(s => {
+        if (batchSelectedStudentIds.has(s.id)) {
+          if (batchMode === 'OVERWRITE') {
+            return { ...s, unlocked_folders: folderIds };
+          } else {
+            const currentList = Array.isArray(s.unlocked_folders) ? s.unlocked_folders : [];
+            const merged = Array.from(new Set([...currentList, ...folderIds]));
+            return { ...s, unlocked_folders: merged };
+          }
+        }
+        return s;
+      }));
+
+      setIsBatchFolderModalOpen(false);
+
+      const studentNames = students.filter(s => batchSelectedStudentIds.has(s.id)).map(s => s.name);
+      const nameSummary = studentNames.length <= 3 
+        ? studentNames.join(', ') 
+        : `${studentNames.slice(0, 3).join(', ')} 외 ${studentNames.length - 3}명`;
+
+      const msg = `🎉 ${nameSummary} 학생(${studentNames.length}명)에게 ${folderIds.length}개 폴더 권한이 일괄 오픈되었습니다!`;
+      setBatchToastMsg(msg);
+      setTimeout(() => setBatchToastMsg(null), 4000);
+    } catch (err: any) {
+      console.error('일괄 권한 저장 오류:', err);
+      alert(err.message || '일괄 권한 저장 중 오류가 발생했습니다.');
+    } finally {
+      setBatchSaving(false);
+    }
+  };
+
+  // 일괄 모달용 계층형 트리 렌더러
+  const renderBatchTreeNode = (node: FolderNode, depth: number = 0) => {
+    const isExpanded = batchExpandedNodes.has(node.drive_id);
+    const checkState = getNodeCheckState(node, Array.from(batchSelectedFolderIds));
+    const hasChildren = node.children.length > 0;
+
+    return (
+      <div key={node.drive_id} className="w-full">
+        <div 
+          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all select-none border ${
+            depth === 0
+              ? checkState === 'all'
+                ? 'bg-indigo-50/90 border-indigo-300 shadow-xs'
+                : checkState === 'some'
+                ? 'bg-indigo-50/40 border-indigo-200'
+                : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+              : checkState === 'all'
+              ? 'bg-indigo-50/70 border-indigo-200'
+              : checkState === 'some'
+              ? 'bg-indigo-50/30 border-indigo-100'
+              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200'
+          }`}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleBatchExpand(node.drive_id);
+              }}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-all shrink-0 cursor-pointer"
+            >
+              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
+          ) : (
+            <div className="w-5 shrink-0" />
+          )}
+
+          <div 
+            onClick={() => toggleBatchNodeSelection(node)}
+            className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer"
+          >
+            {checkState === 'all' ? (
+              <CheckSquare size={18} className="text-indigo-600 shrink-0" />
+            ) : checkState === 'some' ? (
+              <MinusSquare size={18} className="text-indigo-500 shrink-0" />
+            ) : (
+              <Square size={18} className="text-slate-300 shrink-0" />
+            )}
+
+            {hasChildren ? (
+              isExpanded ? (
+                <FolderOpen size={17} className="text-amber-500 shrink-0" />
+              ) : (
+                <Folder size={17} className="text-amber-500 shrink-0" />
+              )
+            ) : (
+              <Folder size={15} className="text-slate-400 shrink-0" />
+            )}
+
+            <span 
+              className={`truncate text-xs ${
+                depth === 0 
+                  ? 'font-black text-slate-800' 
+                  : depth === 1 
+                  ? 'font-bold text-slate-700' 
+                  : 'font-semibold text-slate-600'
+              } ${checkState === 'all' ? 'text-indigo-900 font-black' : ''}`}
+            >
+              {node.name}
+            </span>
+
+            {hasChildren && (
+              <span className="ml-auto text-[10px] font-bold text-slate-400 bg-white/80 border border-slate-200 px-2 py-0.5 rounded-full shrink-0">
+                하위 {node.children.length}개
+              </span>
+            )}
+          </div>
+        </div>
+
+        {hasChildren && isExpanded && (
+          <div className="pl-3.5 ml-2.5 border-l-2 border-slate-200/80 mt-1 space-y-1">
+            {node.children.map(child => renderBatchTreeNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // 🌟 [신규 기능] 2. 전체 1학년 일괄 진급 모달 상태
   // ----------------------------------------------------
   const [isPromoteModalOpen, setIsPromoteModalOpen] = useState(false);
@@ -1304,16 +1572,29 @@ export default function StudentManagerMain() {
               ))}
             </div>
 
-            {/* 🌟 학년 일괄 진급 & 선택 변경 모드 툴바 */}
+            {/* 🌟 학년 일괄 진급 & 일괄 폴더 권한 & 선택 변경 모드 툴바 */}
             <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1">
-              <button
-                type="button"
-                onClick={() => setIsPromoteModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-2xl font-black text-xs shadow-md shadow-indigo-100 transition-all hover:scale-[1.02] active:scale-[0.98]"
-              >
-                <Sparkles size={14} />
-                전체 1학년 일괄 진급
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsPromoteModalOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-2xl font-black text-xs shadow-md shadow-indigo-100 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  <Sparkles size={14} />
+                  전체 1학년 일괄 진급
+                </button>
+
+                {/* 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 버튼 */}
+                <button
+                  type="button"
+                  onClick={openBatchFolderModal}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 text-white rounded-2xl font-black text-xs shadow-md shadow-violet-100 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                  title="원하는 학년/학생들에게 특정 폴더 접근 권한을 한 번에 일괄 부여합니다."
+                >
+                  <FolderLock size={14} />
+                  폴더 권한
+                </button>
+              </div>
 
               <button
                 type="button"

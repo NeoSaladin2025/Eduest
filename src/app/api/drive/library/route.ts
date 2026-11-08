@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   }
 }
 
-// 2️⃣ 학생의 개별 회차 권한(배열) 저장하기
+// 2️⃣ 학생의 개별 또는 다중 일괄 회차 권한(배열) 저장하기 (단일 studentId & 다중 studentIds, ADD / OVERWRITE 모드 지원)
 export async function PATCH(request: Request) {
   try {
     // 🛡️ 관리자 권한 확인 (외부 무단 호출 차단)
@@ -65,23 +65,69 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: '관리자 권한이 필요합니다. (로그인 필요)' }, { status: 401 });
     }
 
-    const { studentId, unlockedFolders } = await request.json();
+    const body = await request.json();
+    const { studentId, studentIds, unlockedFolders, mode = 'ADD' } = body;
 
-    if (!studentId || !Array.isArray(unlockedFolders)) {
-      return NextResponse.json({ error: 'Invalid parameters' }, { status: 400 });
+    const targetStudentIds: string[] = Array.isArray(studentIds)
+      ? studentIds.filter(Boolean)
+      : (studentId ? [studentId] : []);
+
+    if (targetStudentIds.length === 0 || !Array.isArray(unlockedFolders)) {
+      return NextResponse.json({ error: 'Invalid parameters: studentIds and unlockedFolders are required' }, { status: 400 });
     }
 
-    const { data, error } = await supabase
+    // [단일 학생 + OVERWRITE] 기본 레거시 케이스 빠른 처리
+    if (targetStudentIds.length === 1 && mode === 'OVERWRITE') {
+      const { data, error } = await supabase
+        .from('students')
+        .update({ unlocked_folders: unlockedFolders })
+        .eq('id', targetStudentIds[0])
+        .select('id, unlocked_folders');
+
+      if (error) throw error;
+      return NextResponse.json({ success: true, data, updatedCount: 1 });
+    }
+
+    // [다중 학생 OVERWRITE 모드: 선택된 폴더 목록으로 일괄 덮어쓰기]
+    if (mode === 'OVERWRITE') {
+      const { data, error } = await supabase
+        .from('students')
+        .update({ unlocked_folders: unlockedFolders })
+        .in('id', targetStudentIds)
+        .select('id, unlocked_folders');
+
+      if (error) throw error;
+      return NextResponse.json({ success: true, data, updatedCount: data?.length || 0 });
+    }
+
+    // [기본 모드: ADD 모드 - 기존 권한에 선택된 폴더 합집합(Union) 추가]
+    const { data: existingStudents, error: fetchErr } = await supabase
       .from('students')
-      .update({ 
-        unlocked_folders: unlockedFolders
-      })
-      .eq('id', studentId)
-      .select('id, unlocked_folders');
+      .select('id, unlocked_folders')
+      .in('id', targetStudentIds);
 
-    if (error) throw error;
+    if (fetchErr) throw fetchErr;
 
-    return NextResponse.json({ success: true, data });
+    const updatePromises = (existingStudents || []).map(async (student: any) => {
+      const currentList: string[] = Array.isArray(student.unlocked_folders) ? student.unlocked_folders : [];
+      const mergedSet = new Set<string>([...currentList, ...unlockedFolders]);
+      const mergedList = Array.from(mergedSet);
+
+      return supabase
+        .from('students')
+        .update({ unlocked_folders: mergedList })
+        .eq('id', student.id)
+        .select('id, unlocked_folders');
+    });
+
+    const results = await Promise.all(updatePromises);
+    const updatedStudents = results.map(r => r.data?.[0]).filter(Boolean);
+
+    return NextResponse.json({
+      success: true,
+      updatedCount: updatedStudents.length,
+      data: updatedStudents
+    });
   } catch (error: any) {
     console.error('Permission Update Error:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
