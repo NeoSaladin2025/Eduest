@@ -2517,31 +2517,34 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {/* 🌟 [오라버니 기획] 회차 진행 상태 및 임시저장(몇회차 몇번 풀이 중) 정밀 뱃지 */}
+                          {/* 🌟 [오라버니 기획 v2.0] 총 회차 기준 엄격 표기 (5회차 중 N회차 완료 / N회차 M번 풀이 중) */}
                           {(() => {
                             const parsed = parseExamRoundAndBaseTitle(exam.title);
                             const roundNum = exam.wrong_round || parsed.currentRound || 1;
                             const tConfig = exam.treasure_config;
-                            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                            // 보물회수 코스는 기본 5회차 코스
+                            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
                             const roundHistory = (exam.submission as any)?.round_history || [];
                             const completedRounds = roundHistory.length > 0
                               ? roundHistory.length
-                              : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                              : (isSubmitted ? 1 : 0);
                             const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
                             const currentActiveRound = hasTempProgress
                               ? (tempProg?.round || roundNum)
                               : (completedRounds < repeatRounds ? completedRounds + 1 : completedRounds);
                             const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
 
+                            // 1) 전 코스 완주 (실제로 설정된 총 회차를 모두 마친 경우)
                             if (isAllCompleted) {
                               return (
                                 <span className="flex items-center gap-1.5 text-xs font-black text-amber-300 bg-amber-500/25 px-3 py-1 rounded-full border border-amber-400/50 shadow-md">
                                   <Sparkles size={12} className="fill-amber-300 text-amber-300" />
-                                  🏆 {repeatRounds}회차 전 코스 완주
+                                  🏆 {repeatRounds}회차 전 코스 완주 (ALL CLEAR)
                                 </span>
                               );
                             }
 
+                            // 2) 문제 풀다가 멈춘 경우 (임시저장)
                             if (hasTempProgress) {
                               return (
                                 <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
@@ -2551,15 +2554,17 @@ export default function StudentTest2View({
                               );
                             }
 
+                            // 3) 특정 회차 완료 (예: 5회차 중 1회차 완료)
                             if (completedRounds > 0) {
                               return (
-                                <span className="flex items-center gap-1 text-xs font-bold text-emerald-300 bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-400/30">
+                                <span className="flex items-center gap-1 text-xs font-bold text-emerald-300 bg-emerald-500/20 px-3 py-1 rounded-full border border-emerald-400/40">
                                   <CheckCircle2 size={13} />
-                                  💎 {completedRounds}/{repeatRounds}회차 완료 ({exam.submission?.score}점)
+                                  💎 {repeatRounds}회차 중 {completedRounds}회차 완료 ({exam.submission?.score}점)
                                 </span>
                               );
                             }
 
+                            // 4) 1회차 시작 전
                             return (
                               <span className="text-[11px] font-black text-amber-400/80 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20">
                                 제 1회차 도전 대기
@@ -2572,11 +2577,11 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
-                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
                           const roundHistory = (exam.submission as any)?.round_history || [];
                           const completedRounds = roundHistory.length > 0
                             ? roundHistory.length
-                            : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                            : (isSubmitted ? 1 : 0);
                           const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
                           const currentActiveRound = hasTempProgress
                             ? (tempProg?.round || roundNum)
@@ -2594,14 +2599,14 @@ export default function StudentTest2View({
                               <div className="mb-1.5 flex items-center gap-1.5 flex-wrap">
                                 <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
                                   <Sparkles size={10} className="fill-amber-300 text-amber-300" />
-                                  <span>💎 보물회수 {isAllCompleted ? `${repeatRounds}회차 완주` : `${currentActiveRound}회차 코스`}</span>
+                                  <span>
+                                    💎 보물회수 {isAllCompleted ? `${repeatRounds}회차 완주` : `${repeatRounds}회차 중 ${completedRounds > 0 ? `${completedRounds}회차 완료` : '1회차 대기'}`}
+                                  </span>
                                   <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                 </span>
-                                {repeatRounds > 1 && (
-                                  <span className="text-[10px] text-amber-300/80 font-bold">
-                                    (총 {repeatRounds}회 중 {completedRounds}회 완료)
-                                  </span>
-                                )}
+                                <span className="text-[10px] text-amber-300/80 font-bold">
+                                  (총 {repeatRounds}회 코스)
+                                </span>
                               </div>
                               <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2" title={cleanDisplayTitle}>
                                 {cleanDisplayTitle}
@@ -2733,11 +2738,11 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
-                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
                           const roundHistory = (exam.submission as any)?.round_history || [];
                           const completedRounds = roundHistory.length > 0
                             ? roundHistory.length
-                            : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                            : (isSubmitted ? 1 : 0);
                           const hasNextRound = completedRounds < repeatRounds;
                           const nextRound = completedRounds + 1;
                           const currentActiveRound = hasTempProgress
@@ -4151,7 +4156,7 @@ export default function StudentTest2View({
                   </div>
                 )}
 
-                {/* 4. 🌟 [오라버니 기획] 문항별 전 회차 소요시간 속도 리커버리 트래커 (Speed Recovery Matrix) */}
+                {/* 4. 🌟 [오라버니 기획 v2.0] 일체형 데이터 라벨 꺾은선 차트 (Line Chart with Data Labels) */}
                 <div className="bg-slate-900/80 border border-violet-500/20 rounded-3xl p-5 md:p-6 shadow-xl space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-4">
                     <div>
@@ -4162,21 +4167,21 @@ export default function StudentTest2View({
                         </h4>
                       </div>
                       <p className="text-xs text-slate-400 mt-1">
-                        단순 평균 비교 대신, 회차를 거듭하며 내 두뇌가 얼마나 빨라졌는지(우하향 📉) 문항별 단축 궤적을 추적합니다.
+                        숫자와 그래프가 하나로 결합된 일체형 차트입니다. 회차를 거듭하며 내 두뇌가 얼마나 빨라졌는지(우하향 📉) 확인해보세요.
                       </p>
                     </div>
 
                     <div className="flex items-center gap-2 text-[11px] font-bold shrink-0">
-                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
-                        📉 우하향: 속도 단축 (마스터)
+                      <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                        📉 우하향: 속도 단축 (두뇌 마스터)
                       </span>
-                      <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                      <span className="px-2.5 py-1 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
                         ➡️ 수평: 안정 페이스
                       </span>
                     </div>
                   </div>
 
-                  {/* 전 회차 히스토리 수집 및 매트릭스 테이블 */}
+                  {/* 전 회차 히스토리 수집 및 일체형 꺾은선 차트 렌더링 */}
                   {(() => {
                     const rawRoundHistory = (submissionResult as any)?.round_history;
                     let roundsList: Array<{ round: number; answers: any }> = [];
@@ -4186,7 +4191,6 @@ export default function StudentTest2View({
                         round: Number(h.round) || i + 1,
                         answers: h.answers || {},
                       }));
-                      // 현재 회차가 히스토리에 누락되었으면 추가
                       if (!roundsList.some((r) => r.round === currentRound)) {
                         roundsList.push({ round: currentRound, answers: submissionResult.answers || {} });
                       }
@@ -4196,171 +4200,248 @@ export default function StudentTest2View({
                     roundsList.sort((a, b) => a.round - b.round);
 
                     return (
-                      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60">
-                        <table className="w-full text-xs text-left border-collapse">
-                          <thead className="bg-white/5 text-slate-300 font-black border-b border-white/10">
-                            <tr>
-                              <th className="p-3.5 text-center w-16">문항</th>
-                              {Array.from({ length: repeatRounds }).map((_, rIdx) => {
-                                const r = rIdx + 1;
-                                const hasData = roundsList.some((item) => item.round === r);
-                                return (
-                                  <th key={r} className="p-3 text-center border-l border-white/5">
-                                    <div className="flex flex-col items-center">
-                                      <span className={hasData ? 'text-amber-300' : 'text-slate-500'}>
-                                        {r}회차
-                                      </span>
-                                      <span className="text-[10px] font-medium text-slate-400">
-                                        {hasData ? '풀이 완료' : '대기'}
-                                      </span>
-                                    </div>
-                                  </th>
-                                );
-                              })}
-                              <th className="p-3 text-center border-l border-white/5 w-32">속도 궤적 (추이)</th>
-                              <th className="p-3 text-center border-l border-white/5 w-44">리커버리 판정</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-white/5">
-                            {questions.map((q, qIdx) => {
-                              // 각 회차별 소요시간(초) 추출
-                              const secList: number[] = [];
-                              const statusList: Array<{ has: boolean; sec: number; isCorrect: boolean }> = [];
-
-                              Array.from({ length: repeatRounds }).map((_, rIdx) => {
-                                const rNum = rIdx + 1;
-                                const roundObj = roundsList.find((item) => item.round === rNum);
-                                if (!roundObj) {
-                                  statusList.push({ has: false, sec: 0, isCorrect: false });
-                                  return;
-                                }
-                                const ans = roundObj.answers?.[q.id];
-                                const s = Number(ans?.time_spent_sec) || 0;
-                                const isCorr = ans?.is_correct === true;
-                                if (s > 0) secList.push(s);
-                                statusList.push({ has: true, sec: s, isCorrect: isCorr });
-                              });
-
-                              const hasMultiple = secList.length >= 2;
-                              const firstSec = secList[0] || 0;
-                              const latestSec = secList[secList.length - 1] || 0;
-                              const diffSec = firstSec - latestSec; // 양수면 속도 단축 (우하향)
-                              const isSpeedRunner = firstSec > 0 && latestSec > 0 && latestSec <= firstSec * 0.6;
-                              const isImproved = diffSec > 5;
-                              const isSlowed = diffSec < -5;
-
-                              // SVG 스파크라인 점 계산
-                              const maxS = Math.max(...secList, 1);
-                              const svgPoints = secList.map((sec, sIdx) => {
-                                const x = (sIdx / (Math.max(secList.length - 1, 1))) * 76 + 7;
-                                const y = 22 - (sec / maxS) * 16;
-                                return { x, y, sec };
-                              });
-                              const polylineStr = svgPoints.map((p) => `${p.x},${p.y}`).join(' ');
-
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 overflow-hidden">
+                        {/* 차트 상단 회차 가이드 축 */}
+                        <div className="grid grid-cols-12 gap-2 px-4 py-3 bg-white/5 border-b border-white/10 text-xs font-black text-slate-300">
+                          <div className="col-span-2 sm:col-span-1 text-center">문항</div>
+                          <div className="col-span-7 sm:col-span-8 flex justify-between px-6 sm:px-10 text-[11px] text-amber-300/90 font-bold">
+                            {Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                              const r = rIdx + 1;
+                              const hasData = roundsList.some((item) => item.round === r);
                               return (
-                                <tr key={q.id} className="hover:bg-white/5 transition-colors">
-                                  <td className="p-3.5 text-center font-black text-white bg-white/2">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <span>{qIdx + 1}번</span>
-                                      {isSpeedRunner && (
-                                        <span title="속도 40% 이상 초고속 단축 달성!">⚡</span>
-                                      )}
-                                    </div>
-                                  </td>
-
-                                  {/* 회차별 소요시간 셀 */}
-                                  {statusList.map((st, sIdx) => {
-                                    if (!st.has) {
-                                      return (
-                                        <td key={sIdx} className="p-3 text-center border-l border-white/5 text-slate-600">
-                                          <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-slate-500">
-                                            🕒 대기
-                                          </span>
-                                        </td>
-                                      );
-                                    }
-                                    return (
-                                      <td key={sIdx} className="p-3 text-center border-l border-white/5 font-mono">
-                                        <div className="flex flex-col items-center gap-0.5">
-                                          {st.sec > 0 ? (
-                                            <span className="text-xs font-bold text-slate-200">
-                                              {st.sec}초
-                                            </span>
-                                          ) : (
-                                            <span className="text-[10px] text-slate-400 bg-white/5 px-1.5 py-0.5 rounded font-sans">
-                                              지필 채점
-                                            </span>
-                                          )}
-                                          <span className={`text-[9px] font-sans font-bold ${st.isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                            {st.isCorrect ? '정답' : '오답'}
-                                          </span>
-                                        </div>
-                                      </td>
-                                    );
-                                  })}
-
-                                  {/* 꺾은선 속도 궤적 (SVG Sparkline) */}
-                                  <td className="p-2 text-center border-l border-white/5">
-                                    {hasMultiple ? (
-                                      <div className="flex items-center justify-center">
-                                        <svg width="90" height="28" className="overflow-visible">
-                                          <polyline
-                                            fill="none"
-                                            stroke={isImproved ? '#10B981' : isSlowed ? '#F59E0B' : '#06B6D4'}
-                                            strokeWidth="2.5"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            points={polylineStr}
-                                          />
-                                          {svgPoints.map((pt, pIdx) => (
-                                            <circle
-                                              key={pIdx}
-                                              cx={pt.x}
-                                              cy={pt.y}
-                                              r="3"
-                                              fill={isImproved ? '#10B981' : isSlowed ? '#F59E0B' : '#06B6D4'}
-                                              stroke="#0f172a"
-                                              strokeWidth="1.5"
-                                            />
-                                          ))}
-                                        </svg>
-                                      </div>
-                                    ) : (
-                                      <span className="text-[10px] text-slate-500 font-sans">
-                                        기준 회차 기록
-                                      </span>
-                                    )}
-                                  </td>
-
-                                  {/* 리커버리 판정 뱃지 */}
-                                  <td className="p-3 text-center border-l border-white/5">
-                                    {hasMultiple ? (
-                                      isImproved ? (
-                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-xs">
-                                          <Sparkles size={11} className="fill-emerald-400 text-emerald-400" />
-                                          ⚡ {diffSec}s 단축 {isSpeedRunner ? '(마스터)' : ''}
-                                        </span>
-                                      ) : isSlowed ? (
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                          ⚠️ 계산 점검 (+{Math.abs(diffSec)}s)
-                                        </span>
-                                      ) : (
-                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                                          🎯 안정적 페이스
-                                        </span>
-                                      )
-                                    ) : (
-                                      <span className="text-[10px] text-slate-400">
-                                        다음 회차 비교 대기
-                                      </span>
-                                    )}
-                                  </td>
-                                </tr>
+                                <span key={r} className={hasData ? 'text-amber-300' : 'text-slate-500'}>
+                                  제 {r}회차
+                                </span>
                               );
                             })}
-                          </tbody>
-                        </table>
+                          </div>
+                          <div className="col-span-3 text-center">최종 리커버리 판정</div>
+                        </div>
+
+                        {/* 각 문항별 일체형 꺾은선 차트 행 */}
+                        <div className="divide-y divide-white/5">
+                          {questions.map((q, qIdx) => {
+                            // 각 회차별 소요시간(초) 추출
+                            const secList: number[] = [];
+                            const statusList: Array<{ round: number; has: boolean; sec: number; isCorrect: boolean }> = [];
+
+                            Array.from({ length: repeatRounds }).forEach((_, rIdx) => {
+                              const rNum = rIdx + 1;
+                              const roundObj = roundsList.find((item) => item.round === rNum);
+                              if (!roundObj) {
+                                statusList.push({ round: rNum, has: false, sec: 0, isCorrect: false });
+                                return;
+                              }
+                              const ans = roundObj.answers?.[q.id];
+                              const s = Number(ans?.time_spent_sec) || 0;
+                              const isCorr = ans?.is_correct === true;
+                              if (s > 0) secList.push(s);
+                              statusList.push({ round: rNum, has: true, sec: s, isCorrect: isCorr });
+                            });
+
+                            const hasMultiple = secList.length >= 2;
+                            const firstSec = secList[0] || 0;
+                            const latestSec = secList[secList.length - 1] || 0;
+                            const diffSec = firstSec - latestSec; // 양수면 속도 단축 (우하향)
+                            const isSpeedRunner = firstSec > 0 && latestSec > 0 && latestSec <= firstSec * 0.6;
+                            const isImproved = diffSec > 5;
+                            const isSlowed = diffSec < -5;
+
+                            // SVG 좌표 계산 (너비 500 기준, 좌우 여백 35px)
+                            const chartWidth = 500;
+                            const leftPad = 35;
+                            const rightPad = 35;
+                            const usableWidth = chartWidth - leftPad - rightPad;
+                            const maxS = Math.max(...secList, 1);
+                            const minS = Math.min(...secList, 0);
+
+                            const calcX = (rIdx: number) => {
+                              return leftPad + (rIdx * (usableWidth / Math.max(repeatRounds - 1, 1)));
+                            };
+
+                            const calcY = (sec: number) => {
+                              if (sec <= 0) return 32;
+                              // 시간이 길면 위쪽(16px), 짧으면 아래쪽(46px) ➔ 우하향 궤적
+                              const norm = (sec - minS) / Math.max(maxS - minS, 1);
+                              return 46 - Math.max(0, Math.min(28, norm * 28));
+                            };
+
+                            // 완료된 점들 좌표
+                            const activePoints = statusList
+                              .filter((st) => st.has && st.sec > 0)
+                              .map((st) => ({
+                                round: st.round,
+                                x: calcX(st.round - 1),
+                                y: calcY(st.sec),
+                                sec: st.sec,
+                                isCorrect: st.isCorrect,
+                              }));
+
+                            const polylinePoints = activePoints.map((pt) => `${pt.x},${pt.y}`).join(' ');
+
+                            return (
+                              <div
+                                key={q.id}
+                                className="grid grid-cols-12 gap-2 items-center px-4 py-3 hover:bg-white/5 transition-colors"
+                              >
+                                {/* 좌측 문항 번호 */}
+                                <div className="col-span-2 sm:col-span-1 text-center font-black text-white flex items-center justify-center gap-1">
+                                  <span className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center text-xs">
+                                    {qIdx + 1}
+                                  </span>
+                                  {isSpeedRunner && (
+                                    <span title="속도 40% 이상 초고속 단축 달성!" className="text-amber-400 animate-bounce">
+                                      ⚡
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* 중앙 일체형 꺾은선 차트 (가로로 시원하게 펼쳐지고 점마다 숫자 박힘!) */}
+                                <div className="col-span-7 sm:col-span-8 flex items-center justify-center py-1">
+                                  <svg
+                                    viewBox={`0 0 ${chartWidth} 64`}
+                                    className="w-full h-16 overflow-visible"
+                                    preserveAspectRatio="none"
+                                  >
+                                    {/* 세로 기준 가이드 점선 라인 */}
+                                    {Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                                      const x = calcX(rIdx);
+                                      return (
+                                        <line
+                                          key={rIdx}
+                                          x1={x}
+                                          y1={8}
+                                          x2={x}
+                                          y2={56}
+                                          stroke="rgba(255,255,255,0.08)"
+                                          strokeDasharray="2 3"
+                                        />
+                                      );
+                                    })}
+
+                                    {/* 실선 꺾은선 궤적 (숫자들을 이어주는 역동적인 선) */}
+                                    {activePoints.length >= 2 && (
+                                      <polyline
+                                        fill="none"
+                                        stroke={isImproved ? '#10B981' : isSlowed ? '#F59E0B' : '#06B6D4'}
+                                        strokeWidth="3.5"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        points={polylinePoints}
+                                        className="drop-shadow-md"
+                                      />
+                                    )}
+
+                                    {/* 미완료 회차 대기 점선 가이드 */}
+                                    {activePoints.length > 0 && activePoints.length < repeatRounds && (
+                                      <line
+                                        x1={activePoints[activePoints.length - 1].x}
+                                        y1={activePoints[activePoints.length - 1].y}
+                                        x2={calcX(activePoints.length)}
+                                        y2={32}
+                                        stroke="#475569"
+                                        strokeWidth="1.5"
+                                        strokeDasharray="4 4"
+                                      />
+                                    )}
+
+                                    {/* 미응시 회차 지점 표출 (대기 원) */}
+                                    {statusList.map((st) => {
+                                      if (st.has && st.sec > 0) return null;
+                                      const x = calcX(st.round - 1);
+                                      return (
+                                        <g key={st.round}>
+                                          <circle
+                                            cx={x}
+                                            cy={32}
+                                            r="4.5"
+                                            fill="none"
+                                            stroke="#475569"
+                                            strokeDasharray="2 2"
+                                          />
+                                          <text
+                                            x={x}
+                                            y={23}
+                                            textAnchor="middle"
+                                            fill="#64748b"
+                                            fontSize="9.5"
+                                            fontWeight="bold"
+                                          >
+                                            대기
+                                          </text>
+                                        </g>
+                                      );
+                                    })}
+
+                                    {/* 🌟 [오라버니 핵심 요청] 점마다 숫자 라벨 직접 표출! */}
+                                    {activePoints.map((pt) => (
+                                      <g key={pt.round}>
+                                        {/* 점 외곽 글로우 링 */}
+                                        <circle
+                                          cx={pt.x}
+                                          cy={pt.y}
+                                          r="5.5"
+                                          fill={pt.isCorrect ? '#10B981' : '#F43F5E'}
+                                          stroke="#020617"
+                                          strokeWidth="2.5"
+                                        />
+                                        {/* 점 위 소요시간 숫자 라벨 (선명한 흰색) */}
+                                        <text
+                                          x={pt.x}
+                                          y={pt.y - 9}
+                                          textAnchor="middle"
+                                          fill="#ffffff"
+                                          fontSize="11.5"
+                                          fontWeight="900"
+                                          fontFamily="monospace"
+                                          className="drop-shadow-sm select-none"
+                                        >
+                                          {pt.sec}초
+                                        </text>
+                                        {/* 점 아래 정오답 태그 */}
+                                        <text
+                                          x={pt.x}
+                                          y={pt.y + 16}
+                                          textAnchor="middle"
+                                          fill={pt.isCorrect ? '#34d399' : '#fb7185'}
+                                          fontSize="9.5"
+                                          fontWeight="bold"
+                                          className="select-none"
+                                        >
+                                          {pt.isCorrect ? '정답' : '오답'}
+                                        </text>
+                                      </g>
+                                    ))}
+                                  </svg>
+                                </div>
+
+                                {/* 우측 최종 리커버리 판정 뱃지 */}
+                                <div className="col-span-3 text-center">
+                                  {hasMultiple ? (
+                                    isImproved ? (
+                                      <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-xs">
+                                        <Sparkles size={12} className="fill-emerald-400 text-emerald-400" />
+                                        ⚡ {diffSec}s 단축 {isSpeedRunner ? '(마스터)' : ''}
+                                      </span>
+                                    ) : isSlowed ? (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                        ⚠️ 계산 점검 (+{Math.abs(diffSec)}s)
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                        🎯 안정적 페이스
+                                      </span>
+                                    )
+                                  ) : (
+                                    <span className="text-xs text-slate-400 font-medium">
+                                      다음 회차 비교 대기
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     );
                   })()}
