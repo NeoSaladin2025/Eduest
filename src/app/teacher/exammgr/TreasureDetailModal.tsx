@@ -268,7 +268,7 @@ export default function TreasureDetailModal({
   // 풀이 사진 모달 상태
   const [viewProofModal, setViewProofModal] = useState<{ url: string; title: string } | null>(null);
 
-  // KPI 요약 지표 계산
+  // KPI 요약 지표 계산 (선생님 채점 / 시간 미기록 스마트 폴백 완벽 지원)
   const kpiStats = useMemo(() => {
     const originalItem = roundChain.find((c) => c.isOriginal) || roundChain[0];
     const latestItem = roundChain[roundChain.length - 1];
@@ -279,7 +279,9 @@ export default function TreasureDetailModal({
 
     const firstSpent = originalItem?.totalSpentSec ?? 0;
     const latestSpent = latestItem?.totalSpentSec ?? 0;
-    const timeDiff = firstSpent - latestSpent; // 양수면 단축됨
+    const isOriginalTimeMeasured = firstSpent > 0;
+    const isLatestTimeMeasured = latestSpent > 0;
+    const timeDiff = firstSpent - latestSpent; // 원본 시간이 있을 때 양수면 단축됨
 
     const completedRounds = roundChain.filter((c) => c.submission !== null).length;
 
@@ -289,13 +291,20 @@ export default function TreasureDetailModal({
         ? Math.round((latestItem.correctCount / latestItem.totalQuestions) * 100)
         : 0;
 
+    // 여유 시간 계산 (제한시간 대비)
+    const latestLimitSec = (latestItem?.durationMin || 0) * 60;
+    const spareSec = latestLimitSec > 0 ? Math.max(0, latestLimitSec - latestSpent) : 0;
+
     return {
       firstScore,
       latestScore,
       scoreDiff,
       firstSpent,
       latestSpent,
+      isOriginalTimeMeasured,
+      isLatestTimeMeasured,
       timeDiff,
+      spareSec,
       completedRounds,
       totalRounds: roundChain.length,
       recoveryRate,
@@ -478,17 +487,23 @@ export default function TreasureDetailModal({
             </span>
           </div>
 
-          {/* 소요 시간 단축량 */}
+          {/* 소요 시간 단축량 (선생님 채점 / 시간 미기록 스마트 폴백) */}
           <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs">
             <span className="text-[11px] font-bold text-slate-400 block flex items-center gap-1">
               <Clock size={12} className="text-amber-500" />
-              타임어택 단축량
+              {kpiStats.isOriginalTimeMeasured ? '타임어택 단축량' : '타임어택 여유 완주'}
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-black text-slate-800">
-                {formatDuration(kpiStats.latestSpent)}
+                {kpiStats.isOriginalTimeMeasured
+                  ? formatDuration(kpiStats.latestSpent)
+                  : kpiStats.spareSec > 0
+                  ? `${formatDuration(kpiStats.spareSec)} 여유`
+                  : kpiStats.isLatestTimeMeasured
+                  ? formatDuration(kpiStats.latestSpent)
+                  : '지필 채점'}
               </span>
-              {roundChain.length > 1 && kpiStats.firstSpent > 0 && (
+              {kpiStats.isOriginalTimeMeasured && roundChain.length > 1 ? (
                 <span
                   className={`text-xs font-black px-1.5 py-0.2 rounded ${
                     kpiStats.timeDiff > 0
@@ -498,10 +513,17 @@ export default function TreasureDetailModal({
                 >
                   {kpiStats.timeDiff > 0 ? `-${formatDuration(kpiStats.timeDiff)} 단축` : '+시간 증가'}
                 </span>
-              )}
+              ) : !kpiStats.isOriginalTimeMeasured && kpiStats.spareSec > 0 ? (
+                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 flex items-center gap-0.5">
+                  <Zap size={10} className="fill-emerald-600 text-emerald-600" />
+                  쾌속 완주
+                </span>
+              ) : null}
             </div>
             <span className="text-[10px] text-amber-700 font-semibold block mt-0.5">
-              제한시간 대비 여유 완주
+              {kpiStats.isOriginalTimeMeasured
+                ? (kpiStats.timeDiff > 0 ? '최초 대비 속도 향상!' : '신중하게 오답 복습')
+                : (kpiStats.isLatestTimeMeasured ? `설정 제한시간 대비 여유 완주` : '선생님 수동 채점 (시간 미측정)')}
             </span>
           </div>
 
@@ -527,22 +549,62 @@ export default function TreasureDetailModal({
           </div>
         </div>
 
-        {/* ======================= 3. 회차 선택 네비게이션 탭 ======================= */}
-        <div className="px-6 py-2.5 bg-white border-b border-slate-200 flex items-center justify-between gap-3 overflow-x-auto shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-black text-slate-400 uppercase tracking-wider shrink-0 mr-1 flex items-center gap-1">
-              <Target size={13} className="text-violet-600" />
-              회차 선택:
-            </span>
+        {/* ======================= 3. 회차 선택 네비게이션 탭 (버그 1 & 2 해결: flex-wrap 칩 그리드 + 상단 요약 분리) ======================= */}
+        <div className="bg-white border-b border-slate-200 shrink-0">
+          {/* 선택 회차 실시간 상태 서브 스트립 (독립 분리로 텍스트 겹침 원천 차단) */}
+          <div className="px-6 py-2 bg-slate-50/80 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-black text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                <Target size={13} className="text-violet-600" />
+                선택 보기:
+              </span>
+              <span className="font-bold text-slate-800 bg-white px-2.5 py-0.5 rounded-md border border-slate-200 shadow-2xs">
+                {activeTab === 'matrix' ? '📈 회차별 통합 비교 뷰 (Matrix)' : selectedChainItem?.roundLabel}
+              </span>
+            </div>
+
+            {selectedChainItem && activeTab !== 'matrix' && (
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <span className="flex items-center gap-1 font-bold text-slate-600">
+                  <Clock size={12} className="text-violet-600" />
+                  제한: {selectedChainItem.durationMin > 0 ? `${selectedChainItem.durationMin}분` : '자율'}
+                </span>
+                <span className="text-slate-300">|</span>
+                <span className="flex items-center gap-1 font-bold text-slate-600">
+                  <Zap size={12} className="text-amber-500" />
+                  사용:{' '}
+                  {selectedChainItem.totalSpentSec > 0 ? (
+                    formatDuration(selectedChainItem.totalSpentSec)
+                  ) : (
+                    <span className="text-[10px] text-slate-400 bg-slate-200/70 px-1.5 py-0.2 rounded font-medium">
+                      지필 채점 (미측정)
+                    </span>
+                  )}
+                </span>
+                {selectedChainItem.submittedAt && (
+                  <>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-[11px] text-slate-400">
+                      제출: {new Date(selectedChainItem.submittedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 회차 선택 칩 그리드 (flex-wrap으로 가로 스크롤바 드래그 없이 한눈에 파악) */}
+          <div className="px-6 py-3 flex flex-wrap items-center gap-2">
             {roundChain.map((item) => {
               const isActive = activeTab === item.keyId;
               const hasSub = item.submission !== null;
+              const isZeroTime = item.totalSpentSec <= 0;
               return (
                 <button
                   key={item.keyId}
                   type="button"
                   onClick={() => setActiveTab(item.keyId)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
                     isActive
                       ? 'bg-violet-600 text-white shadow-md shadow-violet-600/25 scale-[1.02]'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60'
@@ -556,6 +618,17 @@ export default function TreasureDetailModal({
                     <RotateCcw size={12} />
                   )}
                   <span>{item.roundLabel}</span>
+
+                  {item.isOriginal && isZeroTime && hasSub && (
+                    <span
+                      className={`text-[9px] px-1 py-0.2 rounded font-medium ${
+                        isActive ? 'bg-violet-700/80 text-violet-100' : 'bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      지필
+                    </span>
+                  )}
+
                   {hasSub ? (
                     <span
                       className={`ml-1 text-[10px] px-1.5 py-0.2 rounded-md font-bold ${
@@ -580,7 +653,7 @@ export default function TreasureDetailModal({
               <button
                 type="button"
                 onClick={() => setActiveTab('matrix')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
                   activeTab === 'matrix'
                     ? 'bg-slate-900 text-white shadow-md shadow-slate-900/25 scale-[1.02]'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60'
@@ -591,29 +664,6 @@ export default function TreasureDetailModal({
               </button>
             )}
           </div>
-
-          {/* 우측 간단한 회차 정보 표시 */}
-          {selectedChainItem && activeTab !== 'matrix' && (
-            <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500 shrink-0">
-              <span className="flex items-center gap-1 font-bold text-slate-600">
-                <Clock size={13} className="text-violet-600" />
-                제한: {selectedChainItem.durationMin > 0 ? `${selectedChainItem.durationMin}분` : '자율'}
-              </span>
-              <span className="text-slate-300">|</span>
-              <span className="flex items-center gap-1 font-bold text-slate-600">
-                <Zap size={13} className="text-amber-500" />
-                사용: {formatDuration(selectedChainItem.totalSpentSec)}
-              </span>
-              {selectedChainItem.submittedAt && (
-                <>
-                  <span className="text-slate-300">|</span>
-                  <span className="text-[11px] text-slate-400">
-                    제출: {new Date(selectedChainItem.submittedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </>
-              )}
-            </div>
-          )}
         </div>
 
         {/* ======================= 4. 본문 스크롤 영역 ======================= */}
@@ -726,98 +776,139 @@ export default function TreasureDetailModal({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {/* 원본 시험지(또는 첫 회차)의 문항 수를 기준으로 비교 매트릭스 생성 */}
-                      {Array.from({
-                        length: Math.max(...roundChain.map((r) => r.exam.questions?.length || 0), 1),
-                      }).map((_, qIndex) => {
-                        // 각 회차별 해당 번호의 정답 여부 및 소요시간 수집
-                        const roundStatuses = roundChain.map((r) => {
-                          const q = r.exam.questions?.[qIndex];
-                          if (!q) return null;
-                          const ans = r.submission?.answers?.[q.id];
-                          if (!ans) return { exists: true, solved: false, isCorrect: false, sec: 0 };
-                          return {
-                            exists: true,
-                            solved: true,
-                            isCorrect: Boolean(ans.is_correct),
-                            isUnknown: ans.user_answer === '모름' || ans.user_answer === 'unknown',
-                            sec: Number(ans.time_spent_sec) || 0,
-                          };
+                      {/* 원본 시험지 문항을 기준으로 스마트 1:1 매칭 비교 매트릭스 생성 (버그 3 해결: 1~7번 엉뚱 기입 원천 차단) */}
+                      {(() => {
+                        const baseItem =
+                          roundChain.find((r) => r.isOriginal) ||
+                          [...roundChain].sort((a, b) => (b.exam.questions?.length || 0) - (a.exam.questions?.length || 0))[0];
+                        const baseQuestions = baseItem?.exam?.questions || [];
+
+                        return baseQuestions.map((baseQ, qIndex) => {
+                          // 각 회차별 baseQ와 1:1 연결되는 문항(parent_question_id 또는 id) 탐색
+                          const roundStatuses = roundChain.map((r) => {
+                            let matchedQ: ExamQuestion | undefined;
+                            if (r.keyId === baseItem.keyId || r.exam.id === baseItem.exam.id) {
+                              matchedQ = r.exam.questions?.[qIndex] || baseQ;
+                            } else {
+                              // 보물회수 또는 오답 회차: baseQ의 id를 parent_question_id로 가지거나 일치하는 문항 매칭
+                              matchedQ = r.exam.questions?.find((tq: any) => {
+                                if (
+                                  tq.parent_question_id &&
+                                  (tq.parent_question_id === baseQ.id ||
+                                    tq.parent_question_id === (baseQ as any).parent_question_id)
+                                ) {
+                                  return true;
+                                }
+                                if (tq.id === baseQ.id) return true;
+                                const baseNum = baseQ.question_number ?? (qIndex + 1);
+                                if (tq.is_twin && tq.question_number !== undefined && tq.question_number === baseNum) {
+                                  if (!tq.folder_name || tq.folder_name === (baseQ as any).folder_name) return true;
+                                }
+                                if (tq.name && baseQ.name && tq.name.includes(baseQ.name)) return true;
+                                return false;
+                              });
+                            }
+
+                            if (!matchedQ) return null; // 이 회차에는 해당 문항이 출제되지 않음 (미출제)
+
+                            const ans =
+                              r.submission?.answers?.[matchedQ.id] ||
+                              r.submission?.answers?.[baseQ.id];
+
+                            if (!ans) return { exists: true, solved: false, isCorrect: false, sec: 0 };
+                            return {
+                              exists: true,
+                              solved: true,
+                              isCorrect: Boolean(ans.is_correct),
+                              isUnknown: ans.user_answer === '모름' || ans.user_answer === 'unknown',
+                              sec: Number(ans.time_spent_sec) || 0,
+                            };
+                          });
+
+                          const firstStatus = roundStatuses[0];
+                          const nonOriginalStatuses = roundStatuses.slice(1).filter((st) => st && st.solved);
+                          const anyRecovered = nonOriginalStatuses.some((st) => st?.isCorrect);
+                          const latestTreasureStatus = nonOriginalStatuses[nonOriginalStatuses.length - 1];
+
+                          // 보물회수 상태 판별
+                          const isOriginallyCorrect = firstStatus?.solved && firstStatus?.isCorrect;
+                          const isRecovered = !isOriginallyCorrect && anyRecovered;
+                          const isStillWrong = !isOriginallyCorrect && (!latestTreasureStatus || !latestTreasureStatus.isCorrect);
+
+                          return (
+                            <tr key={baseQ.id || qIndex} className="hover:bg-slate-50 transition-colors">
+                              <td className="p-3 text-center font-black text-slate-700 bg-slate-50/50">
+                                {baseQ.question_number ?? qIndex + 1}번
+                              </td>
+
+                              {roundStatuses.map((st, sIdx) => {
+                                if (!st || !st.exists) {
+                                  return (
+                                    <td key={sIdx} className="p-3 text-center text-slate-300 border-l border-slate-100 font-bold">
+                                      -
+                                    </td>
+                                  );
+                                }
+                                if (!st.solved) {
+                                  return (
+                                    <td key={sIdx} className="p-3 text-center text-slate-400 border-l border-slate-100">
+                                      <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded">미응시</span>
+                                    </td>
+                                  );
+                                }
+                                return (
+                                  <td key={sIdx} className="p-3 text-center border-l border-slate-100">
+                                    <div className="flex flex-col items-center gap-0.5">
+                                      {st.isCorrect ? (
+                                        <span className="inline-flex items-center gap-1 text-emerald-700 font-black bg-emerald-100 px-2 py-0.5 rounded-full text-[11px]">
+                                          <CheckCircle2 size={12} />
+                                          정답
+                                        </span>
+                                      ) : st.isUnknown ? (
+                                        <span className="inline-flex items-center gap-1 text-amber-700 font-black bg-amber-100 px-2 py-0.5 rounded-full text-[11px]">
+                                          <HelpCircle size={12} />
+                                          모름
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 text-rose-700 font-black bg-rose-100 px-2 py-0.5 rounded-full text-[11px]">
+                                          <XCircle size={12} />
+                                          오답
+                                        </span>
+                                      )}
+                                      <span className="text-[10px] font-mono text-slate-400">
+                                        {st.sec > 0 ? (
+                                          `${st.sec}초 소요`
+                                        ) : (
+                                          <span className="text-[9px] text-slate-400 bg-slate-100 px-1 py-0.2 rounded font-sans">
+                                            지필 채점
+                                          </span>
+                                        )}
+                                      </span>
+                                    </div>
+                                  </td>
+                                );
+                              })}
+
+                              <td className="p-3 text-center border-l border-slate-100">
+                                {isRecovered ? (
+                                  <span className="inline-flex items-center gap-1 text-amber-900 bg-amber-100 border border-amber-300 font-black px-2.5 py-1 rounded-xl text-[11px] shadow-2xs animate-pulse">
+                                    <Sparkles size={11} className="fill-amber-500 text-amber-500" />
+                                    💎 회수 완료!
+                                  </span>
+                                ) : isStillWrong ? (
+                                  <span className="inline-flex items-center gap-1 text-rose-800 bg-rose-100/80 font-black px-2 py-0.5 rounded-lg text-[10px]">
+                                    🔄 추가 회수 필요
+                                  </span>
+                                ) : (
+                                  <span className="text-emerald-700 font-bold text-[10px] bg-emerald-50 px-2 py-0.5 rounded">
+                                    ✓ 최초 정답
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
                         });
-
-                        const firstStatus = roundStatuses[0];
-                        const latestStatus = roundStatuses[roundStatuses.length - 1];
-                        const isRecovered =
-                          firstStatus && !firstStatus.isCorrect && latestStatus && latestStatus.isCorrect;
-                        const isStillWrong = latestStatus && !latestStatus.isCorrect;
-
-                        return (
-                          <tr key={qIndex} className="hover:bg-slate-50 transition-colors">
-                            <td className="p-3 text-center font-black text-slate-700 bg-slate-50/50">
-                              {qIndex + 1}번
-                            </td>
-
-                            {roundStatuses.map((st, sIdx) => {
-                              if (!st || !st.exists) {
-                                return (
-                                  <td key={sIdx} className="p-3 text-center text-slate-300 border-l border-slate-100">
-                                    -
-                                  </td>
-                                );
-                              }
-                              if (!st.solved) {
-                                return (
-                                  <td key={sIdx} className="p-3 text-center text-slate-400 border-l border-slate-100">
-                                    <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded">미응시</span>
-                                  </td>
-                                );
-                              }
-                              return (
-                                <td key={sIdx} className="p-3 text-center border-l border-slate-100">
-                                  <div className="flex flex-col items-center gap-0.5">
-                                    {st.isCorrect ? (
-                                      <span className="inline-flex items-center gap-1 text-emerald-700 font-black bg-emerald-100 px-2 py-0.5 rounded-full text-[11px]">
-                                        <CheckCircle2 size={12} />
-                                        정답
-                                      </span>
-                                    ) : st.isUnknown ? (
-                                      <span className="inline-flex items-center gap-1 text-amber-700 font-black bg-amber-100 px-2 py-0.5 rounded-full text-[11px]">
-                                        <HelpCircle size={12} />
-                                        모름
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center gap-1 text-rose-700 font-black bg-rose-100 px-2 py-0.5 rounded-full text-[11px]">
-                                        <XCircle size={12} />
-                                        오답
-                                      </span>
-                                    )}
-                                    <span className="text-[10px] font-mono text-slate-400">
-                                      {st.sec}초 소요
-                                    </span>
-                                  </div>
-                                </td>
-                              );
-                            })}
-
-                            <td className="p-3 text-center border-l border-slate-100">
-                              {isRecovered ? (
-                                <span className="inline-flex items-center gap-1 text-amber-900 bg-amber-100 border border-amber-300 font-black px-2.5 py-1 rounded-xl text-[11px] shadow-2xs animate-pulse">
-                                  <Sparkles size={11} className="fill-amber-500 text-amber-500" />
-                                  💎 회수 완료!
-                                </span>
-                              ) : isStillWrong ? (
-                                <span className="inline-flex items-center gap-1 text-rose-800 bg-rose-100/80 font-black px-2 py-0.5 rounded-lg text-[10px]">
-                                  🔄 추가 회수 필요
-                                </span>
-                              ) : (
-                                <span className="text-emerald-700 font-bold text-[10px] bg-emerald-50 px-2 py-0.5 rounded">
-                                  ✓ 최초 정답
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -854,7 +945,13 @@ export default function TreasureDetailModal({
                       <div className="p-3 bg-violet-50/60 rounded-2xl border border-violet-100 flex items-center justify-between">
                         <span className="text-xs text-violet-900 font-bold">실제 총 소요 시간</span>
                         <span className="text-base font-black text-violet-700 font-mono">
-                          {formatDuration(selectedChainItem.totalSpentSec)}
+                          {selectedChainItem.totalSpentSec > 0 ? (
+                            formatDuration(selectedChainItem.totalSpentSec)
+                          ) : (
+                            <span className="text-xs text-slate-400 font-sans font-bold">
+                              📝 지필 채점 (시간 미측정)
+                            </span>
+                          )}
                         </span>
                       </div>
 
@@ -863,8 +960,14 @@ export default function TreasureDetailModal({
                         <div className="p-3 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center justify-between">
                           <span className="text-xs text-emerald-900 font-bold">남은 시간 (여유 완주)</span>
                           <span className="text-sm font-black text-emerald-700 font-mono">
-                            {formatDuration(
-                              Math.max(0, selectedChainItem.durationMin * 60 - selectedChainItem.totalSpentSec)
+                            {selectedChainItem.totalSpentSec > 0 ? (
+                              formatDuration(
+                                Math.max(0, selectedChainItem.durationMin * 60 - selectedChainItem.totalSpentSec)
+                              )
+                            ) : (
+                              <span className="text-xs text-slate-400 font-sans font-medium">
+                                - (지필 수동 채점)
+                              </span>
                             )}
                           </span>
                         </div>
@@ -873,11 +976,17 @@ export default function TreasureDetailModal({
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-400 font-medium text-center">
-                    문항당 평균 소요: <strong className="text-slate-700 font-black">{currentQuestionsWithStats.avgSec}초</strong>
+                    {currentQuestionsWithStats.totalSec > 0 ? (
+                      <>
+                        문항당 평균 소요: <strong className="text-slate-700 font-black">{currentQuestionsWithStats.avgSec}초</strong>
+                      </>
+                    ) : (
+                      <span className="text-slate-400 font-bold">지필 시험지로 문항별 시간 기록이 없습니다</span>
+                    )}
                   </div>
                 </div>
 
-                {/* 차트 2: 문항별 풀이 소요 시간 (초) 바 히스토그램 */}
+                {/* 차트 2: 문항별 풀이 소요 시간 (초) 바 히스토그램 (선생님 채점 스마트 폴백) */}
                 <div className="lg:col-span-2 bg-white p-5 rounded-3xl border border-slate-200 shadow-xs flex flex-col justify-between">
                   <div>
                     <div className="flex items-center justify-between mb-2">
@@ -886,75 +995,95 @@ export default function TreasureDetailModal({
                         <span className="text-sm font-black text-slate-800">문항별 풀이 소요 시간 (초)</span>
                       </div>
                       <span className="text-[11px] text-slate-400 font-medium">
-                        점선: 평균 {currentQuestionsWithStats.avgSec}초
+                        {currentQuestionsWithStats.totalSec > 0
+                          ? `점선: 평균 ${currentQuestionsWithStats.avgSec}초`
+                          : '지필 평가 안내'}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400 mb-4">
-                      평균 대비 1.5배 이상 걸린 문항은 <span className="text-amber-600 font-bold">시간 지체(취약)</span>로 표시됩니다
+                      {currentQuestionsWithStats.totalSec > 0 ? (
+                        <>
+                          평균 대비 1.5배 이상 걸린 문항은 <span className="text-amber-600 font-bold">시간 지체(취약)</span>로 표시됩니다
+                        </>
+                      ) : (
+                        '선생님 수동 채점 회차는 지필 평가로 진행되어 실시간 소요 시간이 측정되지 않습니다'
+                      )}
                     </p>
 
-                    {/* 막대 차트 영역 */}
-                    <div className="relative pt-4 pb-2">
-                      {/* 평균 기준선 (가로 점선) */}
-                      <div className="h-32 flex items-end gap-2 sm:gap-3 px-2 border-b border-slate-200 relative">
-                        {/* 평균 점선 라인 */}
-                        {currentQuestionsWithStats.maxSec > 0 && (
-                          <div
-                            className="absolute left-0 right-0 border-b-2 border-dashed border-violet-300 pointer-events-none z-10"
-                            style={{
-                              bottom: `${Math.min(
-                                95,
-                                (currentQuestionsWithStats.avgSec / currentQuestionsWithStats.maxSec) * 100
-                              )}%`,
-                            }}
-                          >
-                            <span className="absolute right-1 -top-4 text-[9px] font-bold text-violet-600 bg-violet-50 px-1 rounded">
-                              평균 {currentQuestionsWithStats.avgSec}s
-                            </span>
-                          </div>
-                        )}
-
-                        {currentQuestionsWithStats.items.map((it) => {
-                          const barHeight =
-                            currentQuestionsWithStats.maxSec > 0
-                              ? Math.max(10, Math.min(100, (it.spentSec / currentQuestionsWithStats.maxSec) * 100))
-                              : 10;
-                          const isSlow = it.spentSec > currentQuestionsWithStats.avgSec * 1.5;
-
-                          return (
-                            <div key={it.q.id} className="flex-1 flex flex-col items-center h-full justify-end group">
-                              <span className="text-[10px] font-mono font-bold text-slate-500 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {it.spentSec}s
-                              </span>
-                              <div
-                                className={`w-full max-w-[36px] rounded-t-lg transition-all duration-500 relative ${
-                                  !it.isCorrect
-                                    ? 'bg-rose-400 group-hover:bg-rose-500'
-                                    : isSlow
-                                    ? 'bg-amber-400 group-hover:bg-amber-500'
-                                    : 'bg-emerald-400 group-hover:bg-emerald-500'
-                                }`}
-                                style={{ height: `${barHeight}%` }}
-                                title={`${it.idx + 1}번 문항: ${it.spentSec}초 소요 (${it.isCorrect ? '정답' : '오답'})`}
-                              >
-                                {isSlow && (
-                                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-[9px] font-black text-amber-600">
-                                    ⚠️
-                                  </span>
-                                )}
-                              </div>
-                              <span
-                                className={`text-[11px] font-black mt-1.5 ${
-                                  it.isCorrect ? 'text-slate-700' : 'text-rose-600'
-                                }`}
-                              >
-                                {it.idx + 1}
+                    {/* 막대 차트 영역 (시간 미측정 시 우아한 대체 카드) */}
+                    {currentQuestionsWithStats.totalSec > 0 ? (
+                      <div className="relative pt-4 pb-2">
+                        {/* 평균 기준선 (가로 점선) */}
+                        <div className="h-32 flex items-end gap-2 sm:gap-3 px-2 border-b border-slate-200 relative">
+                          {/* 평균 점선 라인 */}
+                          {currentQuestionsWithStats.maxSec > 0 && (
+                            <div
+                              className="absolute left-0 right-0 border-b-2 border-dashed border-violet-300 pointer-events-none z-10"
+                              style={{
+                                bottom: `${Math.min(
+                                  95,
+                                  (currentQuestionsWithStats.avgSec / currentQuestionsWithStats.maxSec) * 100
+                                )}%`,
+                              }}
+                            >
+                              <span className="absolute right-1 -top-4 text-[9px] font-bold text-violet-600 bg-violet-50 px-1 rounded">
+                                평균 {currentQuestionsWithStats.avgSec}s
                               </span>
                             </div>
-                          );
-                        })}
+                          )}
+
+                          {currentQuestionsWithStats.items.map((it) => {
+                            const barHeight =
+                              currentQuestionsWithStats.maxSec > 0
+                                ? Math.max(10, Math.min(100, (it.spentSec / currentQuestionsWithStats.maxSec) * 100))
+                                : 10;
+                            const isSlow = it.spentSec > currentQuestionsWithStats.avgSec * 1.5;
+
+                            return (
+                              <div key={it.q.id} className="flex-1 flex flex-col items-center h-full justify-end group">
+                                <span className="text-[10px] font-mono font-bold text-slate-500 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  {it.spentSec}s
+                                </span>
+                                <div
+                                  className={`w-full max-w-[36px] rounded-t-lg transition-all duration-500 relative ${
+                                    !it.isCorrect
+                                      ? 'bg-rose-400 group-hover:bg-rose-500'
+                                      : isSlow
+                                      ? 'bg-amber-400 group-hover:bg-amber-500'
+                                      : 'bg-emerald-400 group-hover:bg-emerald-500'
+                                  }`}
+                                  style={{ height: `${barHeight}%` }}
+                                  title={`${it.idx + 1}번 문항: ${it.spentSec}초 소요 (${it.isCorrect ? '정답' : '오답'})`}
+                                >
+                                  {isSlow && (
+                                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 text-[9px] font-black text-amber-600">
+                                      ⚠️
+                                    </span>
+                                  )}
+                                </div>
+                                <span
+                                  className={`text-[11px] font-black mt-1.5 ${
+                                    it.isCorrect ? 'text-slate-700' : 'text-rose-600'
+                                  }`}
+                                >
+                                  {it.idx + 1}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="h-32 flex flex-col items-center justify-center text-center p-4 bg-slate-50/70 rounded-2xl border border-dashed border-slate-200">
+                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 mb-1.5">
+                          <Clock size={16} />
+                        </div>
+                        <p className="text-xs font-black text-slate-700">지필 평가 응시 회차 (시간 미측정)</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5 max-w-sm">
+                          선생님께서 직접 채점하신 지필 평가 시험지는 문항별 실시간 소요 시간이 기록되지 않습니다.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-center gap-4 pt-3 text-[11px] text-slate-500 border-t border-slate-100">
@@ -1033,21 +1162,27 @@ export default function TreasureDetailModal({
                               {isCorrect ? '맞음 ⭕' : isUnknown ? '모름 ❓' : '틀림 ❌'}
                             </span>
 
-                            {/* 문항별 소요시간 & 속도 평가 뱃지 */}
-                            <span
-                              className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
-                                isSlow
-                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                  : isFast
-                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                  : 'bg-slate-50 text-slate-700 border-slate-200'
-                              }`}
-                            >
-                              <Clock size={11} />
-                              {spentSec}초
-                              {isSlow && <span className="text-[10px] text-amber-600 font-black">[지체]</span>}
-                              {isFast && <span className="text-[10px] text-emerald-600 font-black">[빠름⚡]</span>}
-                            </span>
+                            {/* 문항별 소요시간 & 속도 평가 뱃지 (시간 미측정 스마트 폴백) */}
+                            {spentSec > 0 ? (
+                              <span
+                                className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
+                                  isSlow
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                    : isFast
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : 'bg-slate-50 text-slate-700 border-slate-200'
+                                }`}
+                              >
+                                <Clock size={11} />
+                                {spentSec}초
+                                {isSlow && <span className="text-[10px] text-amber-600 font-black">[지체]</span>}
+                                {isFast && <span className="text-[10px] text-emerald-600 font-black">[빠름⚡]</span>}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg border bg-slate-100 text-slate-500 border-slate-200 flex items-center gap-1">
+                                📝 지필 채점
+                              </span>
+                            )}
                           </div>
 
                           {/* 해설 보기 및 채점 토글 버튼 */}

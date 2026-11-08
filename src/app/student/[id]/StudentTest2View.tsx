@@ -34,7 +34,10 @@ import {
   Minus,
   Info,
   FileText,
-  Bell
+  Bell,
+  TrendingUp,
+  BarChart2,
+  Target
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
@@ -3746,10 +3749,15 @@ export default function StudentTest2View({
             </div>
           </div>
 
-          {/* 💎 보물회수 다음 회차 도전 / 완주 배너 */}
+          {/* 💎 [학생 전용] 보물회수 전 회차 정복 리포트 대시보드 (v1.1) */}
           {(() => {
-            const isTreasure = Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled);
+            const isTreasure = Boolean(
+              (currentExam as any).is_treasure_hunt ||
+              (currentExam as any).treasure_config?.enabled ||
+              currentExam.title.includes('보물회수')
+            );
             if (!isTreasure) return null;
+
             const tConfig = (currentExam as any).treasure_config;
             const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
             const hasNextRound = currentRound < repeatRounds;
@@ -3763,61 +3771,309 @@ export default function StudentTest2View({
               tConfig?.variable_reductions
             );
 
-            if (hasNextRound) {
-              return (
-                <div className="bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-600/20 border-2 border-amber-400/50 rounded-[32px] p-6 md:p-8 shadow-2xl backdrop-blur-3xl flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden group">
-                  <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-amber-400/10 rounded-full blur-2xl pointer-events-none group-hover:scale-125 transition-transform" />
-                  <div className="flex items-center gap-4 relative z-10">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 text-slate-950 flex items-center justify-center font-black text-2xl shadow-xl shadow-amber-500/30 shrink-0">
-                      💎
+            // 시간 및 문항별 통계 계산
+            const answers = submissionResult.answers || {};
+            const questions = currentExam.questions || [];
+            let totalSpentSec = 0;
+            const questionStats = questions.map((q, idx) => {
+              const ansInfo = answers[q.id];
+              const sec = Number(ansInfo?.time_spent_sec) || 0;
+              totalSpentSec += sec;
+              const isCorrect = ansInfo?.is_correct === true;
+              return { q, idx, sec, isCorrect, ansInfo };
+            });
+
+            const isTimeMeasured = totalSpentSec > 0;
+            const avgSec = questionStats.length > 0 && isTimeMeasured ? Math.round(totalSpentSec / questionStats.length) : 0;
+            const maxSec = Math.max(...questionStats.map((s) => s.sec), 1);
+
+            // 제한시간 대비 여유시간 (선생님 채점 스마트 폴백)
+            const limitMin = currentExam.duration_min || tConfig?.base_duration_min || 0;
+            const limitSec = limitMin * 60;
+            const spareSec = limitSec > 0 && isTimeMeasured ? Math.max(0, limitSec - totalSpentSec) : 0;
+
+            const recoveryRate = submissionResult.total_questions > 0
+              ? Math.round((submissionResult.correct_count / submissionResult.total_questions) * 100)
+              : 0;
+
+            // 오답 정복 MVP 문항 선발 (오라버니 채택 안건 2)
+            const correctStats = questionStats.filter((s) => s.isCorrect);
+            const mvpItem = isTimeMeasured
+              ? [...correctStats].sort((a, b) => a.sec - b.sec)[0] || correctStats[0]
+              : correctStats[0];
+
+            const formatSec = (sec: number) => {
+              if (!sec || isNaN(sec) || sec <= 0) return '0초';
+              const m = Math.floor(sec / 60);
+              const s = Math.round(sec % 60);
+              if (m > 0 && s > 0) return `${m}분 ${s}초`;
+              if (m > 0) return `${m}분`;
+              return `${s}초`;
+            };
+
+            return (
+              <div className="space-y-6">
+                {/* 1. 명예의 전당 보물 마스터 트로피 배지 (오라버니 채택 안건 1) */}
+                {!hasNextRound ? (
+                  <div className="bg-gradient-to-r from-amber-500/25 via-yellow-500/20 to-amber-600/25 border-2 border-amber-400/60 rounded-[32px] p-6 md:p-8 shadow-2xl backdrop-blur-3xl relative overflow-hidden flex flex-col md:flex-row items-center gap-6">
+                    <div
+                      className="w-20 h-20 rounded-3xl bg-gradient-to-tr from-amber-400 via-yellow-300 to-amber-500 text-slate-950 flex items-center justify-center text-4xl shadow-2xl shadow-amber-500/40 shrink-0 animate-bounce"
+                      style={{ animationDuration: '3s' }}
+                    >
+                      🏆
                     </div>
-                    <div className="text-left space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2.5 py-0.5 rounded-full bg-amber-400/25 text-amber-200 font-black text-[11px] border border-amber-400/40 flex items-center gap-1 shadow-sm">
-                          <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
-                          보물회수 코스 진행 중
+                    <div className="text-center md:text-left space-y-1.5 flex-1">
+                      <div className="flex flex-wrap items-center justify-center md:justify-start gap-2">
+                        <span className="px-3 py-1 rounded-full bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-md">
+                          명예의 전당 등극
                         </span>
-                        <span className="text-xs font-bold text-slate-300">
-                          현재 <strong className="text-amber-300">{currentRound}회차</strong> 완료 / 총 <strong>{repeatRounds}회차</strong>
+                        <span className="text-xs font-bold text-amber-200">
+                          {repeatRounds}회차 전 코스 완주 마스터 훈장 수여
                         </span>
                       </div>
-                      <h4 className="text-xl md:text-2xl font-black text-amber-200">
-                        제 {nextRound}회차 타임어택 도전 준비 완료!
-                      </h4>
-                      <p className="text-xs text-amber-200/80 font-medium leading-relaxed">
-                        {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) ? '🔀 문항 순서가 새롭게 믹싱(셔플)되며, ' : ''}
-                        {tConfig?.time_attack_mode && tConfig.time_attack_mode !== 'fixed'
-                          ? `⏱️ 다음 회차 제한시간은 ${nextDuration > 0 ? `${nextDuration}분` : '무제한'}으로 타임어택이 적용됩니다.`
-                          : '오답을 완벽히 내 것으로 만들 때까지 반복 회수해 보세요!'}
+                      <h3 className="text-2xl md:text-3xl font-black text-white">
+                        축하합니다! 보물 마스터 골드 훈장을 획득했습니다!
+                      </h3>
+                      <p className="text-xs md:text-sm text-amber-100/80 font-medium leading-relaxed">
+                        오답을 끝까지 포기하지 않고 집요하게 반복하여 마침내 모든 보물을 완벽히 회수했습니다!
                       </p>
                     </div>
                   </div>
+                ) : (
+                  <div className="bg-gradient-to-r from-amber-500/20 via-yellow-500/15 to-amber-600/20 border-2 border-amber-400/50 rounded-[32px] p-6 md:p-8 shadow-2xl backdrop-blur-3xl flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden group">
+                    <div className="absolute -right-10 -bottom-10 w-48 h-48 bg-amber-400/10 rounded-full blur-2xl pointer-events-none group-hover:scale-125 transition-transform" />
+                    <div className="flex items-center gap-4 relative z-10">
+                      <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 via-yellow-400 to-amber-300 text-slate-950 flex items-center justify-center font-black text-2xl shadow-xl shadow-amber-500/30 shrink-0">
+                        💎
+                      </div>
+                      <div className="text-left space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-full bg-amber-400/25 text-amber-200 font-black text-[11px] border border-amber-400/40 flex items-center gap-1 shadow-sm">
+                            <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
+                            보물회수 코스 진행 중
+                          </span>
+                          <span className="text-xs font-bold text-slate-300">
+                            현재 <strong className="text-amber-300">{currentRound}회차</strong> 완료 / 총 <strong>{repeatRounds}회차</strong>
+                          </span>
+                        </div>
+                        <h4 className="text-xl md:text-2xl font-black text-amber-200">
+                          제 {nextRound}회차 타임어택 도전 준비 완료!
+                        </h4>
+                        <p className="text-xs text-amber-200/80 font-medium leading-relaxed">
+                          {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) ? '🔀 문항 순서가 새롭게 믹싱(셔플)되며, ' : ''}
+                          {tConfig?.time_attack_mode && tConfig.time_attack_mode !== 'fixed'
+                            ? `⏱️ 다음 회차 제한시간은 ${nextDuration > 0 ? `${nextDuration}분` : '무제한'}으로 타임어택이 적용됩니다.`
+                            : '오답을 완벽히 내 것으로 만들 때까지 반복 회수해 보세요!'}
+                        </p>
+                      </div>
+                    </div>
 
-                  <button
-                    onClick={() => {
-                      handleStartExam(currentExam.id, currentBundle, nextRound, true);
-                    }}
-                    className="w-full md:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-base shadow-xl shadow-amber-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer relative z-10"
-                  >
-                    <Sparkles size={18} className="fill-slate-950" />
-                    <span>제 {nextRound}회차 보물회수 시작 ({nextDuration > 0 ? `${nextDuration}분` : '자율'})</span>
-                    <ArrowRight size={18} />
-                  </button>
-                </div>
-              );
-            }
+                    <button
+                      onClick={() => {
+                        handleStartExam(currentExam.id, currentBundle, nextRound, true);
+                      }}
+                      className="w-full md:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-base shadow-xl shadow-amber-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer relative z-10"
+                    >
+                      <Sparkles size={18} className="fill-slate-950" />
+                      <span>제 {nextRound}회차 보물회수 시작 ({nextDuration > 0 ? `${nextDuration}분` : '자율'})</span>
+                      <ArrowRight size={18} />
+                    </button>
+                  </div>
+                )}
 
-            return (
-              <div className="bg-gradient-to-r from-emerald-500/20 via-teal-500/15 to-emerald-600/20 border-2 border-emerald-400/50 rounded-[32px] p-8 text-center space-y-3 shadow-2xl backdrop-blur-3xl relative overflow-hidden">
-                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-400 to-teal-300 text-slate-950 text-3xl shadow-xl shadow-emerald-500/20 mb-1">
-                  🏆
+                {/* 2. 보물회수 핵심 4대 성장 지표 카드 */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+                  {/* 진행 회차 */}
+                  <div className="bg-slate-900/80 border border-violet-500/20 p-4 md:p-5 rounded-3xl shadow-xl space-y-1">
+                    <span className="text-[11px] font-black text-slate-400 flex items-center gap-1.5">
+                      <Target size={14} className="text-violet-400" />
+                      진행 회차
+                    </span>
+                    <div className="flex items-baseline gap-2 pt-1">
+                      <span className="text-2xl md:text-3xl font-black text-white">
+                        {currentRound}
+                      </span>
+                      <span className="text-xs font-bold text-slate-400">
+                        / {repeatRounds}회차 {!hasNextRound ? '완주 🏆' : '진행 중'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-violet-300 font-medium">
+                      {!hasNextRound ? '전 코스 완벽 마스터!' : `다음 회차 도전 가능`}
+                    </p>
+                  </div>
+
+                  {/* 점수 현황 */}
+                  <div className="bg-slate-900/80 border border-violet-500/20 p-4 md:p-5 rounded-3xl shadow-xl space-y-1">
+                    <span className="text-[11px] font-black text-slate-400 flex items-center gap-1.5">
+                      <TrendingUp size={14} className="text-emerald-400" />
+                      성장 점수
+                    </span>
+                    <div className="flex items-baseline gap-2 pt-1">
+                      <span className="text-2xl md:text-3xl font-black text-emerald-400">
+                        {submissionResult.score}점
+                      </span>
+                      {submissionResult.score === 100 && (
+                        <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                          만점 🎯
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-emerald-400/80 font-medium">
+                      정답 {submissionResult.correct_count}문항 / 총 {submissionResult.total_questions}문항
+                    </p>
+                  </div>
+
+                  {/* 타임어택 여유 완주 (선생님 채점 스마트 폴백 반영) */}
+                  <div className="bg-slate-900/80 border border-violet-500/20 p-4 md:p-5 rounded-3xl shadow-xl space-y-1">
+                    <span className="text-[11px] font-black text-slate-400 flex items-center gap-1.5">
+                      <Clock size={14} className="text-amber-400" />
+                      {isTimeMeasured ? '타임어택 완주' : '지필 평가 채점'}
+                    </span>
+                    <div className="flex items-baseline gap-2 pt-1">
+                      <span className="text-2xl md:text-3xl font-black text-amber-300">
+                        {isTimeMeasured
+                          ? spareSec > 0
+                            ? `${formatSec(spareSec)} 여유`
+                            : formatSec(totalSpentSec)
+                          : '지필 응시'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-amber-300/80 font-medium">
+                      {isTimeMeasured
+                        ? limitMin > 0
+                          ? `제한 ${limitMin}분 중 ${formatSec(totalSpentSec)} 완주`
+                          : '자율 응시 완료'
+                        : '선생님 수동 채점 (시간 미측정)'}
+                    </p>
+                  </div>
+
+                  {/* 오답 회수 성공률 */}
+                  <div className="bg-slate-900/80 border border-violet-500/20 p-4 md:p-5 rounded-3xl shadow-xl space-y-1">
+                    <span className="text-[11px] font-black text-slate-400 flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-rose-400" />
+                      오답 회수율
+                    </span>
+                    <div className="flex items-baseline gap-2 pt-1">
+                      <span className="text-2xl md:text-3xl font-black text-rose-300">
+                        {recoveryRate}%
+                      </span>
+                      {recoveryRate === 100 && (
+                        <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300">
+                          ALL CLEAR 💎
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-rose-300/80 font-medium">
+                      {recoveryRate === 100
+                        ? '모든 오답 완전 정복!'
+                        : `${submissionResult.total_questions - submissionResult.correct_count}문항 추가 복습 권장`}
+                    </p>
+                  </div>
                 </div>
-                <h4 className="text-2xl font-black text-emerald-200">
-                  축하합니다! {repeatRounds}회차 보물회수 코스를 전량 완주했습니다!
-                </h4>
-                <p className="text-sm text-emerald-200/80 max-w-lg mx-auto font-medium">
-                  오답은 가장 값진 보물입니다. 반복과 타임어택을 통해 오답을 완벽히 정복했습니다!
-                </p>
+
+                {/* 3. 🔥 오답 정복 MVP 문항 하이라이트 카드 (오라버니 채택 안건 2) */}
+                {mvpItem && (
+                  <div className="bg-gradient-to-r from-violet-950/70 via-indigo-950/70 to-slate-900/80 border border-violet-500/30 rounded-3xl p-5 md:p-6 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-400 to-orange-500 text-slate-950 flex items-center justify-center font-black text-xl shadow-lg shadow-orange-500/30 shrink-0">
+                        🔥
+                      </div>
+                      <div className="text-left space-y-0.5">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 rounded-md bg-amber-400/20 text-amber-300 font-black text-[11px] border border-amber-400/30">
+                            오답 정복 MVP 문항
+                          </span>
+                          <span className="text-xs font-bold text-white">
+                            {mvpItem.idx + 1}번 문항 완벽 정복!
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-300 font-medium">
+                          {isTimeMeasured
+                            ? `풀이 소요시간 ${mvpItem.sec}초를 기록하며 이번 회차에서 가장 눈부신 극복을 이뤄냈습니다!`
+                            : `이전 오답의 약점을 완벽하게 보완하여 정답으로 수호했습니다!`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="px-4 py-2 rounded-2xl bg-white/5 border border-white/10 text-emerald-400 font-black text-xs flex items-center gap-1.5 shrink-0">
+                      <CheckCircle2 size={14} />
+                      정답 수호 성공
+                    </div>
+                  </div>
+                )}
+
+                {/* 4. 문항별 풀이 소요 시간 (초) 반응형 바 차트 (오라버니 채택 안건 3) */}
+                <div className="bg-slate-900/80 border border-violet-500/20 rounded-3xl p-5 md:p-6 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BarChart2 size={16} className="text-violet-400" />
+                      <h4 className="text-sm md:text-base font-black text-white">문항별 풀이 소요 시간 (초)</h4>
+                    </div>
+                    <span className="text-xs font-medium text-slate-400">
+                      {isTimeMeasured ? `문항 평균: ${avgSec}초` : '지필 평가 회차'}
+                    </span>
+                  </div>
+
+                  {isTimeMeasured ? (
+                    <div className="relative pt-4 pb-2">
+                      <div className="h-28 flex items-end gap-1.5 sm:gap-2 px-1 border-b border-white/10 relative">
+                        {/* 평균 기준선 */}
+                        {maxSec > 0 && (
+                          <div
+                            className="absolute left-0 right-0 border-b border-dashed border-violet-400/60 pointer-events-none z-10"
+                            style={{ bottom: `${Math.min(95, (avgSec / maxSec) * 100)}%` }}
+                          >
+                            <span className="absolute right-1 -top-3.5 text-[9px] font-bold text-violet-300 bg-violet-950/80 px-1 rounded">
+                              평균 {avgSec}s
+                            </span>
+                          </div>
+                        )}
+
+                        {questionStats.map((st) => {
+                          const barH = maxSec > 0 ? Math.max(12, Math.min(100, (st.sec / maxSec) * 100)) : 12;
+                          const isSlow = st.sec > avgSec * 1.5;
+                          return (
+                            <div key={st.q.id} className="flex-1 flex flex-col items-center h-full justify-end group min-w-0">
+                              <span className="text-[9px] font-mono text-slate-400 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {st.sec}s
+                              </span>
+                              <div
+                                className={`w-full max-w-[32px] rounded-t-md transition-all duration-500 relative ${
+                                  !st.isCorrect
+                                    ? 'bg-rose-500/80 group-hover:bg-rose-400'
+                                    : isSlow
+                                    ? 'bg-amber-400/80 group-hover:bg-amber-300'
+                                    : 'bg-emerald-400/80 group-hover:bg-emerald-300'
+                                }`}
+                                style={{ height: `${barH}%` }}
+                                title={`${st.idx + 1}번: ${st.sec}초 (${st.isCorrect ? '정답' : '오답'})`}
+                              />
+                              <span className={`text-[10px] font-bold mt-1.5 ${st.isCorrect ? 'text-slate-400' : 'text-rose-400'}`}>
+                                {st.idx + 1}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="flex items-center justify-center gap-4 pt-3 text-[10px] text-slate-400">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400"></span> 정답 (안정)
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-400"></span> 시간 지체 (주의)
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-rose-400"></span> 오답 문항
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-28 flex flex-col items-center justify-center text-center p-4 bg-white/5 rounded-2xl border border-dashed border-white/10">
+                      <Clock size={18} className="text-slate-400 mb-1" />
+                      <p className="text-xs font-bold text-slate-300">지필 평가로 응시된 시험지입니다</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">선생님 채점 시험은 문항별 실시간 풀이 시간이 기록되지 않습니다.</p>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -3887,7 +4143,9 @@ export default function StudentTest2View({
                           </div>
 
                           <div className="flex items-center gap-2.5 text-xs">
-                            <span className="text-slate-400 font-mono">⏱️ {spentSec}초 소요</span>
+                            <span className="text-slate-400 font-mono">
+                              {spentSec > 0 ? `⏱️ ${spentSec}초 소요` : '📝 지필 채점'}
+                            </span>
                             {q.solution_drive_id && canShowSolution && (
                               <button
                                 type="button"
