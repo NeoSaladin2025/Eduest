@@ -374,11 +374,13 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                   student_name: s.name,
                   student_grade: s.grade,
                   mode: 'idle',
+                  sub_detail: undefined,
                   location_title: s.test_status === 'FINISHED' ? '시험 제출 완료 (복귀 대기)' : '학습 대기 중',
                   is_away: false,
                   exam_id: undefined,
                   exam_title: undefined,
                   bundle_title: undefined,
+                  round: undefined,
                   question_idx: undefined,
                   total_questions: undefined,
                   test_remaining_sec: undefined,
@@ -424,13 +426,33 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       }
       prevAwayMapRef.current[p.student_id] = p.is_away;
 
-      setLiveMap((prev) => ({
-        ...prev,
-        [p.student_id]: {
-          ...(prev[p.student_id] || {}),
-          ...p,
-        },
-      }));
+      setLiveMap((prev) => {
+        const existing = prev[p.student_id];
+        // 🌟 [핵심 방어벽] 학생이 시험 진행 중(test_status === 'TESTING' 또는 exam_id 존재)일 때,
+        // 부모 컴포넌트의 단순 activity_sync('응시 대기' or '시험지 목록 탐색 중')가
+        // 시험 제목, 회차, 문항 진행률, test_status를 덮어쓰지 못하도록 안전하게 보호!
+        const isCurrentTesting = existing && (existing.test_status === 'TESTING' || existing.exam_id) && existing.mode === 'test';
+
+        if (isCurrentTesting && p.mode === 'test') {
+          return {
+            ...prev,
+            [p.student_id]: {
+              ...existing,
+              is_away: p.is_away,
+              away_started_at: p.away_started_at,
+              updated_at: p.updated_at || new Date().toISOString(),
+            },
+          };
+        }
+
+        return {
+          ...prev,
+          [p.student_id]: {
+            ...(existing || {}),
+            ...p,
+          },
+        };
+      });
     });
 
     // 2. 시험 활동 브로드캐스트 수신 (시험 중인 학생 자동 동기화)
@@ -741,7 +763,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
         offlineCount++;
       } else if (act.is_away) {
         awayCount++;
-      } else if ((act.mode === 'test' || act.test_status === 'TESTING') && !isUnlimited) {
+      } else if (act.mode === 'test' || act.test_status === 'TESTING') {
         testingCount++;
       } else {
         onlineCount++;
@@ -1069,7 +1091,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const isUnlimited =
               (act?.duration_min !== undefined && act.duration_min <= 0) ||
               (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
-            const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale;
+            const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isStale;
             const isOnline = act && !isAway && !isTesting && !isStale;
 
             // 머문 시간 (로컬 타이머 연산: ms)

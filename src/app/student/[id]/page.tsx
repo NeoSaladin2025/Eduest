@@ -256,8 +256,23 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const isAwayRef = useRef<boolean>(false);
   const awayStartedAtRef = useRef<number | undefined>(undefined);
 
+  // 🌟 [시험 응시 상태 연동] 자식 시험 컴포넌트(StudentTest2View)의 실시간 응시 상태
+  const [testActivity, setTestActivity] = useState<{
+    isTaking: boolean;
+    examTitle?: string;
+    round?: number;
+    questionIdx?: number;
+    totalQuestions?: number;
+  }>({ isTaking: false });
+
   const computeCurrentLocation = useCallback(() => {
     if (mode === 'test') {
+      if (testActivity.isTaking) {
+        return {
+          title: `시험: ${testActivity.examTitle || '테스트 진행 중'}`,
+          subDetail: testActivity.round ? `시험 응시 중 (${testActivity.round}회차)` : '시험 응시 중',
+        };
+      }
       return {
         title: '시험(Test) > 시험지 목록 탐색 중',
         subDetail: '응시 대기',
@@ -315,7 +330,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       title: '에듀이스트 홈',
       subDetail: undefined,
     };
-  }, [mode, showReviewer, currentActiveFolder, currentPath, selectedRecord, selectedTab]);
+  }, [mode, showReviewer, currentActiveFolder, currentPath, selectedRecord, selectedTab, testActivity]);
 
   const sendActivityBroadcast = useCallback((forceImmediate = false, overrideAway?: boolean) => {
     if (!student?.id || !proctorChannelRef.current) return;
@@ -991,6 +1006,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentFolderId={student?.drive_folder_id}
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
+                onTestActivityChange={setTestActivity}
               />
             ) : mode === 'homework' ? (
               /* 🌟 [1번 스샷 반영] 부여받은 숙제 확인 화면 (최근 숙제 및 히스토리) */

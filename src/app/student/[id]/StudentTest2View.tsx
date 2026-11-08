@@ -50,6 +50,13 @@ interface StudentTest2ViewProps {
   studentFolderId?: string;
   reviewData?: StudentReviewData;
   onUpdateReviewData?: (data: StudentReviewData) => void;
+  onTestActivityChange?: (info: {
+    isTaking: boolean;
+    examTitle?: string;
+    round?: number;
+    questionIdx?: number;
+    totalQuestions?: number;
+  }) => void;
 }
 
 // ⚡ 브라우저 초고속 이미지 리사이징 & 압축 (가로/세로 최대 1200px, JPEG 0.70 퀄리티)
@@ -171,6 +178,7 @@ export default function StudentTest2View({
   studentFolderId,
   reviewData,
   onUpdateReviewData,
+  onTestActivityChange,
 }: StudentTest2ViewProps) {
   // 모드: 목록('list') | 응시 중('taking') | 결과/채점 보기('result')
   const [viewMode, setViewMode] = useState<'list' | 'taking' | 'result'>('list');
@@ -615,26 +623,33 @@ export default function StudentTest2View({
 
   // 실시간 모니터링 상태 전송 헬퍼 (Broadcast + DB sync)
   const broadcastProctorStatus = useCallback(
-    (status: 'TESTING' | 'AWAY' | 'PAUSED' | 'FINISHED', overrideTime?: number) => {
-      if (!currentExam) return;
+    (
+      status: 'TESTING' | 'AWAY' | 'PAUSED' | 'FINISHED',
+      overrideTime?: number,
+      overrideRound?: number,
+      overrideExam?: any
+    ) => {
+      const activeExam = overrideExam || currentExam;
+      if (!activeExam) return;
       const curTime = overrideTime !== undefined ? overrideTime : timeLeft;
-      const isLockdownActive = getExamLockdownActive(currentExam);
+      const isLockdownActive = getExamLockdownActive(activeExam);
+      const activeRound = overrideRound !== undefined ? overrideRound : currentRound;
 
       const payload = {
         student_id: studentId,
         student_name: studentName,
         student_grade: studentGrade,
-        exam_id: currentExam.id,
-        exam_title: currentExam.title,
+        exam_id: activeExam.id,
+        exam_title: activeExam.title,
         bundle_id: currentBundle?.id || null,
         bundle_title: currentBundle?.title || null,
-        round: currentRound,
+        round: activeRound,
         question_idx: currentQuestionIndex + 1,
-        total_questions: currentExam.questions.length,
+        total_questions: activeExam.questions ? activeExam.questions.length : 0,
         test_status: status,
         test_remaining_sec: curTime,
-        duration_min: currentExam.duration_min ?? 0,
-        test_duration_min: currentExam.duration_min ?? 0,
+        duration_min: activeExam.duration_min ?? 0,
+        test_duration_min: activeExam.duration_min ?? 0,
         enable_lockdown: isLockdownActive,
         updated_at: new Date().toISOString(),
       };
@@ -654,7 +669,7 @@ export default function StudentTest2View({
         .update({
           test_status: status,
           test_remaining_sec: curTime,
-          test_duration_min: currentExam?.duration_min ?? 0,
+          test_duration_min: activeExam?.duration_min ?? 0,
           last_away_at: status === 'AWAY' ? new Date().toISOString() : undefined,
           updated_at: new Date().toISOString(),
         })
@@ -895,7 +910,9 @@ export default function StudentTest2View({
           setIsPaused(false);
           setViewMode('taking');
 
-          // 시작 상태 알림 (감시 시스템 연동)
+          // 시작 상태 즉시 통지 (감시 시스템 및 교사 모니터링 연동)
+          broadcastProctorStatus('TESTING', initialTime, roundNum, data.exam);
+
           setTimeout(() => {
             supabase
               .from('students')
@@ -908,9 +925,9 @@ export default function StudentTest2View({
               .eq('id', studentId)
               .then();
 
-            // 즉각 상태 브로드캐스트 & 영구 상태 저장
-            broadcastProctorStatus('TESTING', initialTime);
-          }, 200);
+            // 타이머 안정화 후 한 번 더 보증 발송
+            broadcastProctorStatus('TESTING', initialTime, roundNum, data.exam);
+          }, 150);
         }
       } else {
         alert(data.error || '시험지 로드에 실패했습니다.');
@@ -922,6 +939,23 @@ export default function StudentTest2View({
       setLoading(false);
     }
   };
+
+  // 🌟 [부모 대시보드 연동] 현재 시험 응시 상태 변경 시 부모 컴포넌트에 즉시 전파하여 '응시 대기' 오분류 원천 차단
+  useEffect(() => {
+    if (viewMode === 'taking' && currentExam) {
+      onTestActivityChange?.({
+        isTaking: true,
+        examTitle: currentExam.title,
+        round: currentRound,
+        questionIdx: currentQuestionIndex + 1,
+        totalQuestions: currentExam.questions ? currentExam.questions.length : 0,
+      });
+    } else {
+      onTestActivityChange?.({
+        isTaking: false,
+      });
+    }
+  }, [viewMode, currentExam, currentRound, currentQuestionIndex, onTestActivityChange]);
 
   // 3. 타이머 자동 카운트다운 (1초 주기)
   useEffect(() => {
