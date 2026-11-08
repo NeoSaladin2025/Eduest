@@ -306,6 +306,11 @@ export async function GET(req: NextRequest) {
         require_proof_image: e.require_proof_image,
         enable_lockdown: e.enable_lockdown,
         student_overrides: e.student_overrides,
+        is_treasure_hunt: (e as any).is_treasure_hunt,
+        treasure_config: (e as any).treasure_config,
+        base_exam_title: (e as any).base_exam_title,
+        wrong_round: (e as any).wrong_round,
+        is_twin_variant: (e as any).is_twin_variant,
         is_submitted: !!sub,
         submission: sub
           ? {
@@ -318,6 +323,7 @@ export async function GET(req: NextRequest) {
               proof_images: sub.proof_images,
               current_round: sub.current_round || 1,
               completed_rounds: sub.completed_rounds || 1,
+              round_history: (sub as any).round_history || [],
             }
           : null,
       };

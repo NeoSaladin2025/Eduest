@@ -2524,10 +2524,18 @@ export default function StudentTest2View({
                             const tConfig = exam.treasure_config;
                             // 보물회수 코스는 기본 5회차 코스
                             const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
-                            const roundHistory = (exam.submission as any)?.round_history || [];
-                            const completedRounds = roundHistory.length > 0
-                              ? roundHistory.length
-                              : (isSubmitted ? 1 : 0);
+                            const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
+                            const subCurrent = Number((exam.submission as any)?.current_round) || 0;
+                            const historyLen = Array.isArray((exam.submission as any)?.round_history)
+                              ? (exam.submission as any).round_history.length
+                              : 0;
+                            const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
+
+                            // DB 완주 수, 이력 수, 현재 라운드 중 최대값을 신뢰
+                            let completedRounds = Math.max(subCompleted, historyLen);
+                            if (completedRounds === 0 && isSubmitted) {
+                              completedRounds = Math.max(subCurrent, examRound, 1);
+                            }
                             const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
                             const currentActiveRound = hasTempProgress
                               ? (tempProg?.round || roundNum)
@@ -2578,10 +2586,17 @@ export default function StudentTest2View({
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
                           const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
-                          const roundHistory = (exam.submission as any)?.round_history || [];
-                          const completedRounds = roundHistory.length > 0
-                            ? roundHistory.length
-                            : (isSubmitted ? 1 : 0);
+                          const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
+                          const subCurrent = Number((exam.submission as any)?.current_round) || 0;
+                          const historyLen = Array.isArray((exam.submission as any)?.round_history)
+                            ? (exam.submission as any).round_history.length
+                            : 0;
+                          const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
+
+                          let completedRounds = Math.max(subCompleted, historyLen);
+                          if (completedRounds === 0 && isSubmitted) {
+                            completedRounds = Math.max(subCurrent, examRound, 1);
+                          }
                           const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
                           const currentActiveRound = hasTempProgress
                             ? (tempProg?.round || roundNum)
@@ -2739,18 +2754,40 @@ export default function StudentTest2View({
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
                           const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
-                          const roundHistory = (exam.submission as any)?.round_history || [];
-                          const completedRounds = roundHistory.length > 0
-                            ? roundHistory.length
-                            : (isSubmitted ? 1 : 0);
-                          const hasNextRound = completedRounds < repeatRounds;
+                          const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
+                          const subCurrent = Number((exam.submission as any)?.current_round) || 0;
+                          const historyLen = Array.isArray((exam.submission as any)?.round_history)
+                            ? (exam.submission as any).round_history.length
+                            : 0;
+                          const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
+
+                          let completedRounds = Math.max(subCompleted, historyLen);
+                          if (completedRounds === 0 && isSubmitted) {
+                            completedRounds = Math.max(subCurrent, examRound, 1);
+                          }
+                          const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                          const hasNextRound = !isAllCompleted && completedRounds < repeatRounds;
                           const nextRound = completedRounds + 1;
                           const currentActiveRound = hasTempProgress
                             ? (tempProg?.round || roundNum)
                             : nextRound;
                           const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
 
-                          // 1) 1개 이상 회차 완료 + (임시저장 진행 중이거나 다음 회차 대기 중인 경우) ➔ 듀얼 버튼 제공!
+                          // 1) 전 코스 완주 완료 상태 (가장 우선 순위로 완주 정복 리포트 버튼 노출)
+                          if (isAllCompleted) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleStartExam(exam.id, undefined, completedRounds, false)}
+                                className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400/20 via-yellow-500/20 to-amber-500/20 hover:from-amber-400/30 hover:to-amber-500/30 text-amber-200 border border-amber-400/40 shadow-lg shadow-amber-500/10 active:scale-[0.99]"
+                              >
+                                <Sparkles size={16} className="fill-amber-300 text-amber-300" />
+                                <span>🏆 {repeatRounds}회차 전 코스 정복 리포트 보기</span>
+                              </button>
+                            );
+                          }
+
+                          // 2) 1개 이상 회차 완료 + (임시저장 진행 중이거나 다음 회차 대기 중인 경우) ➔ 듀얼 버튼 제공!
                           if (completedRounds > 0 && (hasTempProgress || hasNextRound)) {
                             return (
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -2784,20 +2821,6 @@ export default function StudentTest2View({
                                   </button>
                                 )}
                               </div>
-                            );
-                          }
-
-                          // 2) 전 코스 완주 완료 상태
-                          if (completedRounds >= repeatRounds && isSubmitted) {
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => handleStartExam(exam.id)}
-                                className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400/20 via-yellow-500/20 to-amber-500/20 hover:from-amber-400/30 hover:to-amber-500/30 text-amber-200 border border-amber-400/40 shadow-lg shadow-amber-500/10"
-                              >
-                                <Sparkles size={16} className="fill-amber-300 text-amber-300" />
-                                <span>🏆 {repeatRounds}회차 전 코스 정복 리포트 보기</span>
-                              </button>
                             );
                           }
 
