@@ -2517,26 +2517,71 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {hasTempProgress ? (
-                            <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
-                              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                              응시 중 (임시저장)
-                            </span>
-                          ) : isSubmitted ? (
-                            <span className="flex items-center gap-1 text-xs font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-400/30">
-                              <CheckCircle2 size={13} />
-                              회수 성공 ({exam.submission?.score}점)
-                            </span>
-                          ) : (
-                            <span className="text-[11px] font-black text-amber-400/80 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20">
-                              도전 대기
-                            </span>
-                          )}
+                          {/* 🌟 [오라버니 기획] 회차 진행 상태 및 임시저장(몇회차 몇번 풀이 중) 정밀 뱃지 */}
+                          {(() => {
+                            const parsed = parseExamRoundAndBaseTitle(exam.title);
+                            const roundNum = exam.wrong_round || parsed.currentRound || 1;
+                            const tConfig = exam.treasure_config;
+                            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                            const roundHistory = (exam.submission as any)?.round_history || [];
+                            const completedRounds = roundHistory.length > 0
+                              ? roundHistory.length
+                              : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                            const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                            const currentActiveRound = hasTempProgress
+                              ? (tempProg?.round || roundNum)
+                              : (completedRounds < repeatRounds ? completedRounds + 1 : completedRounds);
+                            const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
+
+                            if (isAllCompleted) {
+                              return (
+                                <span className="flex items-center gap-1.5 text-xs font-black text-amber-300 bg-amber-500/25 px-3 py-1 rounded-full border border-amber-400/50 shadow-md">
+                                  <Sparkles size={12} className="fill-amber-300 text-amber-300" />
+                                  🏆 {repeatRounds}회차 전 코스 완주
+                                </span>
+                              );
+                            }
+
+                            if (hasTempProgress) {
+                              return (
+                                <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
+                                  <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                                  ⏳ {currentActiveRound}회차 {currentQNum}번 풀이 중
+                                </span>
+                              );
+                            }
+
+                            if (completedRounds > 0) {
+                              return (
+                                <span className="flex items-center gap-1 text-xs font-bold text-emerald-300 bg-emerald-500/20 px-2.5 py-0.5 rounded-full border border-emerald-400/30">
+                                  <CheckCircle2 size={13} />
+                                  💎 {completedRounds}/{repeatRounds}회차 완료 ({exam.submission?.score}점)
+                                </span>
+                              );
+                            }
+
+                            return (
+                              <span className="text-[11px] font-black text-amber-400/80 bg-amber-400/10 px-2.5 py-0.5 rounded-full border border-amber-400/20">
+                                제 1회차 도전 대기
+                              </span>
+                            );
+                          })()}
                         </div>
 
                         {(() => {
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
-                          const roundNum = exam.wrong_round || parsed.currentRound;
+                          const roundNum = exam.wrong_round || parsed.currentRound || 1;
+                          const tConfig = exam.treasure_config;
+                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                          const roundHistory = (exam.submission as any)?.round_history || [];
+                          const completedRounds = roundHistory.length > 0
+                            ? roundHistory.length
+                            : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                          const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                          const currentActiveRound = hasTempProgress
+                            ? (tempProg?.round || roundNum)
+                            : (completedRounds < repeatRounds ? completedRounds + 1 : completedRounds);
+
                           const cleanDisplayTitle = parseExamRoundAndBaseTitle(exam.base_exam_title || exam.title).cleanBaseTitle;
                           const isTwinVariant =
                             exam.is_twin_variant !== undefined
@@ -2546,15 +2591,18 @@ export default function StudentTest2View({
 
                           return (
                             <div>
-                              {roundNum > 0 && (
-                                <div className="mb-1.5">
-                                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
-                                    <Sparkles size={10} className="fill-amber-300 text-amber-300" />
-                                    <span>💎 보물회수 {roundNum}회차</span>
-                                    <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
+                              <div className="mb-1.5 flex items-center gap-1.5 flex-wrap">
+                                <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
+                                  <Sparkles size={10} className="fill-amber-300 text-amber-300" />
+                                  <span>💎 보물회수 {isAllCompleted ? `${repeatRounds}회차 완주` : `${currentActiveRound}회차 코스`}</span>
+                                  <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
+                                </span>
+                                {repeatRounds > 1 && (
+                                  <span className="text-[10px] text-amber-300/80 font-bold">
+                                    (총 {repeatRounds}회 중 {completedRounds}회 완료)
                                   </span>
-                                </div>
-                              )}
+                                )}
+                              </div>
                               <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2" title={cleanDisplayTitle}>
                                 {cleanDisplayTitle}
                               </h3>
@@ -2562,19 +2610,52 @@ export default function StudentTest2View({
                                 <span>💎 보물 문항 총 {exam.question_count}문제</span>
                                 <span>•</span>
                                 <span>{exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한'}</span>
-                                {Boolean(exam.treasure_config?.total_rounds || exam.treasure_config?.repeat_rounds) && (
+                                {repeatRounds > 1 && (
                                   <>
                                     <span>•</span>
-                                    <span className="text-amber-200">🔁 총 {exam.treasure_config.total_rounds || exam.treasure_config.repeat_rounds}회차 코스</span>
+                                    <span className="text-amber-200">🔁 총 {repeatRounds}회차 코스</span>
                                   </>
                                 )}
-                                {Boolean(exam.treasure_config?.enable_shuffle || exam.treasure_config?.enable_mixing) && (
+                                {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) && (
                                   <>
                                     <span>•</span>
                                     <span className="text-amber-300">🔀 문항 믹싱</span>
                                   </>
                                 )}
                               </p>
+
+                              {/* 🌟 [오라버니 기획] 회차별 스텝 인디케이터 바 */}
+                              {repeatRounds > 1 && (
+                                <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-white/5 overflow-x-auto pb-1">
+                                  {Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                                    const r = rIdx + 1;
+                                    const isDone = r <= completedRounds;
+                                    const isCurrent = !isAllCompleted && r === currentActiveRound;
+                                    return (
+                                      <div
+                                        key={r}
+                                        className={`px-2.5 py-1 rounded-xl text-[10px] font-black flex items-center gap-1 shrink-0 ${
+                                          isDone
+                                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                            : isCurrent
+                                            ? hasTempProgress
+                                              ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/50 animate-pulse'
+                                              : 'bg-amber-500/25 text-amber-200 border border-amber-400/50'
+                                            : 'bg-white/5 text-slate-500 border border-white/5'
+                                        }`}
+                                      >
+                                        {isDone ? (
+                                          <span>✓ {r}회차</span>
+                                        ) : isCurrent ? (
+                                          hasTempProgress ? <span>⏳ {r}회차</span> : <span>🎯 {r}회차</span>
+                                        ) : (
+                                          <span>🔒 {r}회차</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           );
                         })()}
@@ -2646,32 +2727,101 @@ export default function StudentTest2View({
                         )}
                       </div>
 
+                      {/* 🌟 [오라버니 기획] 스마트 듀얼 액션 버튼 (속도추이 리포트 & 이어풀기/다음회차 직행) */}
                       <div className="pt-6 mt-4 border-t border-white/10">
-                        {hasTempProgress ? (
-                          <button
-                            onClick={() => handleStartExam(exam.id)}
-                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
-                          >
-                            <Play size={16} />
-                            <span>이어서 응시하기 ({(tempProg.current_question_idx ?? 0) + 1}번 문항부터)</span>
-                          </button>
-                        ) : isSubmitted ? (
-                          <button
-                            onClick={() => handleStartExam(exam.id)}
-                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-white/10 hover:bg-white/20 text-white"
-                          >
-                            <Eye size={16} />
-                            <span>회수 결과 & 해설 보기</span>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleStartExam(exam.id)}
-                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]"
-                          >
-                            <Sparkles size={16} className="fill-slate-950" />
-                            <span>💎 보물 회수 도전하기</span>
-                          </button>
-                        )}
+                        {(() => {
+                          const parsed = parseExamRoundAndBaseTitle(exam.title);
+                          const roundNum = exam.wrong_round || parsed.currentRound || 1;
+                          const tConfig = exam.treasure_config;
+                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
+                          const roundHistory = (exam.submission as any)?.round_history || [];
+                          const completedRounds = roundHistory.length > 0
+                            ? roundHistory.length
+                            : (isSubmitted ? roundNum : (roundNum > 1 ? roundNum - 1 : 0));
+                          const hasNextRound = completedRounds < repeatRounds;
+                          const nextRound = completedRounds + 1;
+                          const currentActiveRound = hasTempProgress
+                            ? (tempProg?.round || roundNum)
+                            : nextRound;
+                          const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
+
+                          // 1) 1개 이상 회차 완료 + (임시저장 진행 중이거나 다음 회차 대기 중인 경우) ➔ 듀얼 버튼 제공!
+                          if (completedRounds > 0 && (hasTempProgress || hasNextRound)) {
+                            return (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartExam(exam.id, undefined, completedRounds, false)}
+                                  className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer bg-white/10 hover:bg-white/20 text-violet-200 border border-violet-500/30 shadow-xs"
+                                >
+                                  <BarChart2 size={15} className="text-violet-400" />
+                                  <span>{completedRounds}회차 속도추이 리포트</span>
+                                </button>
+
+                                {hasTempProgress ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartExam(exam.id)}
+                                    className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
+                                  >
+                                    <Play size={15} />
+                                    <span>{currentActiveRound}회차 {currentQNum}번 이어풀기</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartExam(exam.id, undefined, nextRound, true)}
+                                    className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black shadow-lg shadow-amber-500/30 scale-[1.01] active:scale-[0.99] cursor-pointer"
+                                  >
+                                    <Sparkles size={15} className="fill-slate-950" />
+                                    <span>제 {nextRound}회차 시작</span>
+                                    <ArrowRight size={15} />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // 2) 전 코스 완주 완료 상태
+                          if (completedRounds >= repeatRounds && isSubmitted) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleStartExam(exam.id)}
+                                className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400/20 via-yellow-500/20 to-amber-500/20 hover:from-amber-400/30 hover:to-amber-500/30 text-amber-200 border border-amber-400/40 shadow-lg shadow-amber-500/10"
+                              >
+                                <Sparkles size={16} className="fill-amber-300 text-amber-300" />
+                                <span>🏆 {repeatRounds}회차 전 코스 정복 리포트 보기</span>
+                              </button>
+                            );
+                          }
+
+                          // 3) 아직 1회차 미응시 상태인데 임시저장(풀다 나옴)인 경우
+                          if (hasTempProgress) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => handleStartExam(exam.id)}
+                                className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
+                              >
+                                <Play size={16} />
+                                <span>이어서 응시하기 ({currentQNum}번 문항부터)</span>
+                              </button>
+                            );
+                          }
+
+                          // 4) 최초 1회차 도전 대기 상태
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleStartExam(exam.id)}
+                              className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]"
+                            >
+                              <Sparkles size={16} className="fill-slate-950" />
+                              <span>💎 제 1회차 보물 회수 도전하기</span>
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -4001,78 +4151,219 @@ export default function StudentTest2View({
                   </div>
                 )}
 
-                {/* 4. 문항별 풀이 소요 시간 (초) 반응형 바 차트 (오라버니 채택 안건 3) */}
+                {/* 4. 🌟 [오라버니 기획] 문항별 전 회차 소요시간 속도 리커버리 트래커 (Speed Recovery Matrix) */}
                 <div className="bg-slate-900/80 border border-violet-500/20 rounded-3xl p-5 md:p-6 shadow-xl space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <BarChart2 size={16} className="text-violet-400" />
-                      <h4 className="text-sm md:text-base font-black text-white">문항별 풀이 소요 시간 (초)</h4>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <BarChart2 size={18} className="text-violet-400" />
+                        <h4 className="text-base md:text-lg font-black text-white">
+                          💎 문항별 풀이 소요시간 속도 리커버리 트래커
+                        </h4>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        단순 평균 비교 대신, 회차를 거듭하며 내 두뇌가 얼마나 빨라졌는지(우하향 📉) 문항별 단축 궤적을 추적합니다.
+                      </p>
                     </div>
-                    <span className="text-xs font-medium text-slate-400">
-                      {isTimeMeasured ? `문항 평균: ${avgSec}초` : '지필 평가 회차'}
-                    </span>
+
+                    <div className="flex items-center gap-2 text-[11px] font-bold shrink-0">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                        📉 우하향: 속도 단축 (마스터)
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                        ➡️ 수평: 안정 페이스
+                      </span>
+                    </div>
                   </div>
 
-                  {isTimeMeasured ? (
-                    <div className="relative pt-4 pb-2">
-                      <div className="h-28 flex items-end gap-1.5 sm:gap-2 px-1 border-b border-white/10 relative">
-                        {/* 평균 기준선 */}
-                        {maxSec > 0 && (
-                          <div
-                            className="absolute left-0 right-0 border-b border-dashed border-violet-400/60 pointer-events-none z-10"
-                            style={{ bottom: `${Math.min(95, (avgSec / maxSec) * 100)}%` }}
-                          >
-                            <span className="absolute right-1 -top-3.5 text-[9px] font-bold text-violet-300 bg-violet-950/80 px-1 rounded">
-                              평균 {avgSec}s
-                            </span>
-                          </div>
-                        )}
+                  {/* 전 회차 히스토리 수집 및 매트릭스 테이블 */}
+                  {(() => {
+                    const rawRoundHistory = (submissionResult as any)?.round_history;
+                    let roundsList: Array<{ round: number; answers: any }> = [];
 
-                        {questionStats.map((st) => {
-                          const barH = maxSec > 0 ? Math.max(12, Math.min(100, (st.sec / maxSec) * 100)) : 12;
-                          const isSlow = st.sec > avgSec * 1.5;
-                          return (
-                            <div key={st.q.id} className="flex-1 flex flex-col items-center h-full justify-end group min-w-0">
-                              <span className="text-[9px] font-mono text-slate-400 mb-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {st.sec}s
-                              </span>
-                              <div
-                                className={`w-full max-w-[32px] rounded-t-md transition-all duration-500 relative ${
-                                  !st.isCorrect
-                                    ? 'bg-rose-500/80 group-hover:bg-rose-400'
-                                    : isSlow
-                                    ? 'bg-amber-400/80 group-hover:bg-amber-300'
-                                    : 'bg-emerald-400/80 group-hover:bg-emerald-300'
-                                }`}
-                                style={{ height: `${barH}%` }}
-                                title={`${st.idx + 1}번: ${st.sec}초 (${st.isCorrect ? '정답' : '오답'})`}
-                              />
-                              <span className={`text-[10px] font-bold mt-1.5 ${st.isCorrect ? 'text-slate-400' : 'text-rose-400'}`}>
-                                {st.idx + 1}
-                              </span>
-                            </div>
-                          );
-                        })}
+                    if (Array.isArray(rawRoundHistory) && rawRoundHistory.length > 0) {
+                      roundsList = rawRoundHistory.map((h: any, i: number) => ({
+                        round: Number(h.round) || i + 1,
+                        answers: h.answers || {},
+                      }));
+                      // 현재 회차가 히스토리에 누락되었으면 추가
+                      if (!roundsList.some((r) => r.round === currentRound)) {
+                        roundsList.push({ round: currentRound, answers: submissionResult.answers || {} });
+                      }
+                    } else {
+                      roundsList = [{ round: currentRound, answers: submissionResult.answers || {} }];
+                    }
+                    roundsList.sort((a, b) => a.round - b.round);
+
+                    return (
+                      <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60">
+                        <table className="w-full text-xs text-left border-collapse">
+                          <thead className="bg-white/5 text-slate-300 font-black border-b border-white/10">
+                            <tr>
+                              <th className="p-3.5 text-center w-16">문항</th>
+                              {Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                                const r = rIdx + 1;
+                                const hasData = roundsList.some((item) => item.round === r);
+                                return (
+                                  <th key={r} className="p-3 text-center border-l border-white/5">
+                                    <div className="flex flex-col items-center">
+                                      <span className={hasData ? 'text-amber-300' : 'text-slate-500'}>
+                                        {r}회차
+                                      </span>
+                                      <span className="text-[10px] font-medium text-slate-400">
+                                        {hasData ? '풀이 완료' : '대기'}
+                                      </span>
+                                    </div>
+                                  </th>
+                                );
+                              })}
+                              <th className="p-3 text-center border-l border-white/5 w-32">속도 궤적 (추이)</th>
+                              <th className="p-3 text-center border-l border-white/5 w-44">리커버리 판정</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {questions.map((q, qIdx) => {
+                              // 각 회차별 소요시간(초) 추출
+                              const secList: number[] = [];
+                              const statusList: Array<{ has: boolean; sec: number; isCorrect: boolean }> = [];
+
+                              Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                                const rNum = rIdx + 1;
+                                const roundObj = roundsList.find((item) => item.round === rNum);
+                                if (!roundObj) {
+                                  statusList.push({ has: false, sec: 0, isCorrect: false });
+                                  return;
+                                }
+                                const ans = roundObj.answers?.[q.id];
+                                const s = Number(ans?.time_spent_sec) || 0;
+                                const isCorr = ans?.is_correct === true;
+                                if (s > 0) secList.push(s);
+                                statusList.push({ has: true, sec: s, isCorrect: isCorr });
+                              });
+
+                              const hasMultiple = secList.length >= 2;
+                              const firstSec = secList[0] || 0;
+                              const latestSec = secList[secList.length - 1] || 0;
+                              const diffSec = firstSec - latestSec; // 양수면 속도 단축 (우하향)
+                              const isSpeedRunner = firstSec > 0 && latestSec > 0 && latestSec <= firstSec * 0.6;
+                              const isImproved = diffSec > 5;
+                              const isSlowed = diffSec < -5;
+
+                              // SVG 스파크라인 점 계산
+                              const maxS = Math.max(...secList, 1);
+                              const svgPoints = secList.map((sec, sIdx) => {
+                                const x = (sIdx / (Math.max(secList.length - 1, 1))) * 76 + 7;
+                                const y = 22 - (sec / maxS) * 16;
+                                return { x, y, sec };
+                              });
+                              const polylineStr = svgPoints.map((p) => `${p.x},${p.y}`).join(' ');
+
+                              return (
+                                <tr key={q.id} className="hover:bg-white/5 transition-colors">
+                                  <td className="p-3.5 text-center font-black text-white bg-white/2">
+                                    <div className="flex items-center justify-center gap-1">
+                                      <span>{qIdx + 1}번</span>
+                                      {isSpeedRunner && (
+                                        <span title="속도 40% 이상 초고속 단축 달성!">⚡</span>
+                                      )}
+                                    </div>
+                                  </td>
+
+                                  {/* 회차별 소요시간 셀 */}
+                                  {statusList.map((st, sIdx) => {
+                                    if (!st.has) {
+                                      return (
+                                        <td key={sIdx} className="p-3 text-center border-l border-white/5 text-slate-600">
+                                          <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded text-slate-500">
+                                            🕒 대기
+                                          </span>
+                                        </td>
+                                      );
+                                    }
+                                    return (
+                                      <td key={sIdx} className="p-3 text-center border-l border-white/5 font-mono">
+                                        <div className="flex flex-col items-center gap-0.5">
+                                          {st.sec > 0 ? (
+                                            <span className="text-xs font-bold text-slate-200">
+                                              {st.sec}초
+                                            </span>
+                                          ) : (
+                                            <span className="text-[10px] text-slate-400 bg-white/5 px-1.5 py-0.5 rounded font-sans">
+                                              지필 채점
+                                            </span>
+                                          )}
+                                          <span className={`text-[9px] font-sans font-bold ${st.isCorrect ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                            {st.isCorrect ? '정답' : '오답'}
+                                          </span>
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+
+                                  {/* 꺾은선 속도 궤적 (SVG Sparkline) */}
+                                  <td className="p-2 text-center border-l border-white/5">
+                                    {hasMultiple ? (
+                                      <div className="flex items-center justify-center">
+                                        <svg width="90" height="28" className="overflow-visible">
+                                          <polyline
+                                            fill="none"
+                                            stroke={isImproved ? '#10B981' : isSlowed ? '#F59E0B' : '#06B6D4'}
+                                            strokeWidth="2.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            points={polylineStr}
+                                          />
+                                          {svgPoints.map((pt, pIdx) => (
+                                            <circle
+                                              key={pIdx}
+                                              cx={pt.x}
+                                              cy={pt.y}
+                                              r="3"
+                                              fill={isImproved ? '#10B981' : isSlowed ? '#F59E0B' : '#06B6D4'}
+                                              stroke="#0f172a"
+                                              strokeWidth="1.5"
+                                            />
+                                          ))}
+                                        </svg>
+                                      </div>
+                                    ) : (
+                                      <span className="text-[10px] text-slate-500 font-sans">
+                                        기준 회차 기록
+                                      </span>
+                                    )}
+                                  </td>
+
+                                  {/* 리커버리 판정 뱃지 */}
+                                  <td className="p-3 text-center border-l border-white/5">
+                                    {hasMultiple ? (
+                                      isImproved ? (
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-xs">
+                                          <Sparkles size={11} className="fill-emerald-400 text-emerald-400" />
+                                          ⚡ {diffSec}s 단축 {isSpeedRunner ? '(마스터)' : ''}
+                                        </span>
+                                      ) : isSlowed ? (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                          ⚠️ 계산 점검 (+{Math.abs(diffSec)}s)
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                                          🎯 안정적 페이스
+                                        </span>
+                                      )
+                                    ) : (
+                                      <span className="text-[10px] text-slate-400">
+                                        다음 회차 비교 대기
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
-                      <div className="flex items-center justify-center gap-4 pt-3 text-[10px] text-slate-400">
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-emerald-400"></span> 정답 (안정)
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-amber-400"></span> 시간 지체 (주의)
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <span className="w-2 h-2 rounded-full bg-rose-400"></span> 오답 문항
-                        </span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="h-28 flex flex-col items-center justify-center text-center p-4 bg-white/5 rounded-2xl border border-dashed border-white/10">
-                      <Clock size={18} className="text-slate-400 mb-1" />
-                      <p className="text-xs font-bold text-slate-300">지필 평가로 응시된 시험지입니다</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">선생님 채점 시험은 문항별 실시간 풀이 시간이 기록되지 않습니다.</p>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               </div>
             );
