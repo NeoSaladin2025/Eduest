@@ -17,6 +17,7 @@ export interface StudentTempProgress {
   student_id: string;
   student_name?: string;
   answers: Record<string, any>;
+  unknown_questions?: number[];
   current_question_idx?: number;
   total_questions?: number;
   answered_count?: number;
@@ -121,6 +122,8 @@ export async function POST(req: NextRequest) {
       studentId,
       studentName,
       answers,
+      unknownQuestions,
+      unknown_questions,
       currentQuestionIndex,
       totalQuestions,
       timeLeft,
@@ -148,11 +151,18 @@ export async function POST(req: NextRequest) {
     const key = `${examId}_${studentId}`;
     const allMap = await getAllTempProgress();
 
+    const resolvedUnknowns = Array.isArray(unknownQuestions)
+      ? unknownQuestions
+      : Array.isArray(unknown_questions)
+      ? unknown_questions
+      : allMap[key]?.unknown_questions || [];
+
     const progressItem: StudentTempProgress = {
       exam_id: examId,
       student_id: studentId,
       student_name: studentName || allMap[key]?.student_name || "",
       answers: cleanAnswers,
+      unknown_questions: resolvedUnknowns,
       current_question_idx: typeof currentQuestionIndex === "number" ? currentQuestionIndex : allMap[key]?.current_question_idx || 0,
       total_questions: typeof totalQuestions === "number" ? totalQuestions : allMap[key]?.total_questions || 0,
       answered_count: answeredCount,

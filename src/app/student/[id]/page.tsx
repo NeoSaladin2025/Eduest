@@ -265,6 +265,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     totalQuestions?: number;
     isLockdownActive?: boolean;
     saveProgressToDb?: () => Promise<boolean>;
+    exitToExamList?: () => void;
   }>({ isTaking: false });
 
   // 🌟 [오라버니 기획] 상단 슬라이드 다운 글로벌 메뉴 & DB 자동저장 모달 상태
@@ -1046,12 +1047,20 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               <div className="bg-white/5 p-1.5 rounded-2xl border border-white/10 flex items-center gap-1 flex-wrap justify-center">
                 {(menuConfig.test || menuConfig.test2) && (
                   <button
-                    onClick={() => handleSafeChangeMode('test')}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                    onClick={() => {
+                      if (isTakingExam && testActivity?.exitToExamList) {
+                        setIsTopMenuOpen(false);
+                        testActivity.exitToExamList();
+                      } else {
+                        handleSafeChangeMode('test');
+                      }
+                    }}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
                       mode === 'test' ? 'bg-violet-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'
                     }`}
+                    title={isTakingExam ? '시험 목록으로 나가기 (진행 상황 DB 자동 저장)' : 'Test 모드'}
                   >
-                    <FileCheck size={14} /> Test
+                    <FileCheck size={14} /> Test {isTakingExam ? '(목록으로 나가기)' : ''}
                   </button>
                 )}
                 {menuConfig.homework && (

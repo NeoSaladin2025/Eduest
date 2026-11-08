@@ -23,6 +23,7 @@ import {
   Lock,
   Unlock,
   Layers,
+  Play,
   PlayCircle,
   Star,
   Camera,
@@ -60,6 +61,7 @@ interface StudentTest2ViewProps {
     totalQuestions?: number;
     isLockdownActive?: boolean;
     saveProgressToDb?: () => Promise<boolean>;
+    exitToExamList?: () => void;
   }) => void;
 }
 
@@ -197,6 +199,10 @@ export default function StudentTest2View({
   const [examList, setExamList] = useState<any[]>([]);
   const [bundleList, setBundleList] = useState<ExamBundle[]>([]);
   const [dismissedRemindPopups, setDismissedRemindPopups] = useState<boolean>(false);
+
+  // 🌟 [오라버니 기획] 배정된 시험지별 실시간 임시저장(응시 중) 상태 맵 & 뒤로가기 DB 저장 모달 상태
+  const [tempProgressMap, setTempProgressMap] = useState<Record<string, any>>({});
+  const [isSavingExit, setIsSavingExit] = useState<boolean>(false);
 
   // 현재 응시 중인 시험지 & 묶음 정보
   const [currentExam, setCurrentExam] = useState<ExamPaper | null>(null);
@@ -531,13 +537,28 @@ export default function StudentTest2View({
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   };
 
+  // 🌟 [오라버니 기획] 배정된 시험지의 임시저장 상태 맵 로드 함수
+  const loadTempProgressMap = useCallback(async () => {
+    if (!studentId) return;
+    try {
+      const res = await fetch(`/api/test2/temp-progress?studentId=${studentId}`);
+      const data = await res.json();
+      if (data.success && data.progressMap) {
+        setTempProgressMap(data.progressMap);
+      }
+    } catch (e) {
+      console.warn('Failed to load temp progress map:', e);
+    }
+  }, [studentId]);
+
   // 1. 배정된 시험지 및 묶음(카트리지) 목록 불러오기
   const loadAssignedData = useCallback(async () => {
     try {
       setLoading(true);
-      const [examRes, bundleRes] = await Promise.all([
+      const [examRes, bundleRes, tempProgRes] = await Promise.all([
         fetch(`/api/test2/student-exams?studentId=${studentId}`),
         fetch(`/api/test2/bundle?studentId=${studentId}`),
+        fetch(`/api/test2/temp-progress?studentId=${studentId}`).catch(() => null),
       ]);
       const examData = await examRes.json();
       const bundleData = await bundleRes.json();
@@ -547,6 +568,12 @@ export default function StudentTest2View({
       }
       if (bundleData.success) {
         setBundleList(bundleData.bundles || []);
+      }
+      if (tempProgRes) {
+        const tempProgData = await tempProgRes.json().catch(() => null);
+        if (tempProgData?.success && tempProgData?.progressMap) {
+          setTempProgressMap(tempProgData.progressMap);
+        }
       }
 
       // 🌟 [미응시 대기 상태 보장] 목록 화면에 머무를 때는 DB의 과거 유령 상태를 IDLE로 안전하게 초기화
@@ -586,6 +613,13 @@ export default function StudentTest2View({
       loadAssignedData();
     }
   }, [studentId, loadAssignedData]);
+
+  // 🌟 목록 모드로 복귀 시 최신 임시저장 데이터 즉시 재조회
+  useEffect(() => {
+    if (viewMode === 'list') {
+      loadTempProgressMap();
+    }
+  }, [viewMode, loadTempProgressMap]);
 
   // 🚨 [신규] 시험 중 이탈(딴짓) 종료 로그 기록 및 브로드캐스트
   const recordTestAwayReturnLog = useCallback(() => {
@@ -952,6 +986,10 @@ export default function StudentTest2View({
   const saveProgressToDb = useCallback(async (): Promise<boolean> => {
     if (!currentExam || !studentId) return true;
     try {
+      const unknownQuestions = currentExam.questions
+        ?.map((q: any, idx: number) => (userAnswers[q.id] === '모름' ? idx + 1 : null))
+        ?.filter((num: any): num is number => num !== null) || [];
+
       const res = await fetch('/api/test2/temp-progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -960,6 +998,7 @@ export default function StudentTest2View({
           studentId,
           studentName,
           answers: userAnswers,
+          unknownQuestions,
           currentQuestionIndex,
           totalQuestions: currentExam.questions?.length || 0,
           timeLeft,
@@ -982,6 +1021,31 @@ export default function StudentTest2View({
       : Boolean((currentExam as any).enable_lockdown)
     : false;
 
+  // 🚪 [오라버니 기획] 뒤로가기(좌측 상단 [←] 및 우측 메뉴) 안전 종료 & 실시간 DB 영구 저장 핸들러
+  const handleSafeExitExam = useCallback(async () => {
+    if (isLockdownActive) {
+      alert('🔒 실전 시험 모드 잠금이 활성화되어 있습니다.\n시험 응시 중에는 목록으로 나갈 수 없습니다.');
+      return;
+    }
+
+    if (!confirm('시험 응시를 중단하고 시험 목록으로 나가시겠습니까?\n작성 중인 모든 답안과 남은 시간은 클라우드 DB에 안전하게 저장됩니다.')) {
+      return;
+    }
+
+    try {
+      setIsSavingExit(true);
+      broadcastProctorStatus('PAUSED');
+      await saveProgressToDb();
+      await loadTempProgressMap();
+      setViewMode('list');
+    } catch (err) {
+      console.error('Exit save error:', err);
+      setViewMode('list');
+    } finally {
+      setIsSavingExit(false);
+    }
+  }, [isLockdownActive, broadcastProctorStatus, saveProgressToDb, loadTempProgressMap]);
+
   // 🌟 [부모 대시보드 연동] 현재 시험 응시 상태 변경 시 부모 컴포넌트에 즉시 전파하여 '응시 대기' 오분류 원천 차단
   useEffect(() => {
     if (viewMode === 'taking' && currentExam) {
@@ -993,13 +1057,14 @@ export default function StudentTest2View({
         totalQuestions: currentExam.questions ? currentExam.questions.length : 0,
         isLockdownActive,
         saveProgressToDb,
+        exitToExamList: handleSafeExitExam,
       });
     } else {
       onTestActivityChange?.({
         isTaking: false,
       });
     }
-  }, [viewMode, currentExam, currentRound, currentQuestionIndex, isLockdownActive, saveProgressToDb, onTestActivityChange]);
+  }, [viewMode, currentExam, currentRound, currentQuestionIndex, isLockdownActive, saveProgressToDb, handleSafeExitExam, onTestActivityChange]);
 
   // ⌨️ [단축키 M / Esc] 우측 슬라이드 드로어 키보드 단축키
   useEffect(() => {
@@ -1885,10 +1950,34 @@ export default function StudentTest2View({
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {singleExams.map((exam: any) => {
                   const isSubmitted = exam.is_submitted;
+                  const tempProg = tempProgressMap[exam.id];
+                  const hasTempProgress = !isSubmitted && Boolean(
+                    tempProg && (
+                      tempProg.answered_count > 0 ||
+                      (Array.isArray(tempProg.unknown_questions) && tempProg.unknown_questions.length > 0) ||
+                      (tempProg.time_left !== undefined && tempProg.time_left > 0)
+                    )
+                  );
+
+                  const totalQuestions = exam.question_count || tempProg?.total_questions || (exam.questions?.length || 1);
+                  const answeredCount = tempProg?.answered_count || 0;
+                  const unknownCount = Array.isArray(tempProg?.unknown_questions)
+                    ? tempProg.unknown_questions.length
+                    : (tempProg?.answers ? Object.values(tempProg.answers).filter(v => v === '모름').length : 0);
+                  const unansweredCount = Math.max(0, totalQuestions - answeredCount - unknownCount);
+
+                  const answeredPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
+                  const unknownPercent = Math.min(100 - answeredPercent, Math.round((unknownCount / totalQuestions) * 100));
+                  const totalProgressPercent = Math.min(100, Math.round(((answeredCount + unknownCount) / totalQuestions) * 100));
+
                   return (
                     <div
                       key={exam.id}
-                      className="bg-white/5 border border-white/10 hover:border-violet-500/50 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden"
+                      className={`bg-white/5 border rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden ${
+                        hasTempProgress
+                          ? 'border-cyan-500/40 shadow-cyan-500/10'
+                          : 'border-white/10 hover:border-violet-500/50'
+                      }`}
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
@@ -1911,7 +2000,12 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {isSubmitted ? (
+                          {hasTempProgress ? (
+                            <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
+                              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                              응시 중 (임시저장)
+                            </span>
+                          ) : isSubmitted ? (
                             <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
                               <CheckCircle2 size={13} />
                               제출 완료 ({exam.submission?.score}점)
@@ -1933,6 +2027,65 @@ export default function StudentTest2View({
                           </p>
                         </div>
 
+                        {/* 🌟 [오라버니 기획 & 타당성 검토 완료] 비율 기반 연속 스택 프로그레스 바 (200문항 대용량도 100% 칼맞춤) */}
+                        {hasTempProgress && (
+                          <div className="bg-[#090f20]/90 border border-cyan-500/20 rounded-2xl p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-xs font-black text-amber-300">
+                                <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                                  <Clock size={13} />
+                                </div>
+                                <span>
+                                  남은 시간: <span className="font-mono text-sm tracking-wider text-amber-200">
+                                    {exam.duration_min <= 0 ? '자율 학습 (무제한)' : formatRemainingTime(tempProg.time_left ?? (exam.duration_min * 60))}
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-black text-cyan-400 font-mono">
+                                진행률 {totalProgressPercent}% ({answeredCount}/{totalQuestions})
+                              </div>
+                            </div>
+
+                            {/* 단일 연속 스택 바: 0~100% 비율 기반 */}
+                            <div className="w-full bg-slate-800/90 h-3 rounded-full overflow-hidden flex shadow-inner border border-white/5 relative">
+                              {answeredPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-300"
+                                  style={{ width: `${answeredPercent}%` }}
+                                  title={`푼 문제: ${answeredCount}문항`}
+                                />
+                              )}
+                              {unknownPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-amber-400 to-yellow-400 h-full transition-all duration-300"
+                                  style={{ width: `${unknownPercent}%` }}
+                                  title={`모름: ${unknownCount}문항`}
+                                />
+                              )}
+                              <div
+                                className="bg-slate-700/60 h-full flex-1 transition-all duration-300"
+                                title={`안 푼 문제: ${unansweredCount}문항`}
+                              />
+                            </div>
+
+                            {/* 3대 메트릭 피치 칩 */}
+                            <div className="grid grid-cols-3 gap-2 pt-1 text-center text-[11px] font-bold">
+                              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                                <span className="truncate">푼 문제 <b className="font-mono text-emerald-200">{answeredCount}</b></span>
+                              </div>
+                              <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
+                                <span className="truncate">모름 <b className="font-mono text-amber-200">{unknownCount}</b></span>
+                              </div>
+                              <div className="bg-slate-800 border border-slate-700 text-slate-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0"></span>
+                                <span className="truncate">안 푼 문제 <b className="font-mono text-rose-300">{unansweredCount}</b></span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {isSubmitted && exam.submission && (
                           <div className="bg-white/5 rounded-2xl p-3 flex items-center justify-between border border-white/5 text-xs">
                             <span className="text-slate-400 font-bold">채점 결과</span>
@@ -1944,26 +2097,31 @@ export default function StudentTest2View({
                       </div>
 
                       <div className="pt-6 mt-4 border-t border-white/10">
-                        <button
-                          onClick={() => handleStartExam(exam.id)}
-                          className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
-                            isSubmitted
-                              ? 'bg-white/10 hover:bg-white/20 text-white'
-                              : 'bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-600/30'
-                          }`}
-                        >
-                          {isSubmitted ? (
-                            <>
-                              <Eye size={16} />
-                              <span>채점 결과 & 해설 보기</span>
-                            </>
-                          ) : (
-                            <>
-                              <FileCheck size={16} />
-                              <span>시험 시작하기</span>
-                            </>
-                          )}
-                        </button>
+                        {hasTempProgress ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
+                          >
+                            <Play size={16} />
+                            <span>이어서 응시하기 ({(tempProg.current_question_idx ?? 0) + 1}번 문항부터)</span>
+                          </button>
+                        ) : isSubmitted ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                          >
+                            <Eye size={16} />
+                            <span>채점 결과 & 해설 보기</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 text-white shadow-lg shadow-violet-600/30 cursor-pointer"
+                          >
+                            <FileCheck size={16} />
+                            <span>시험 시작하기</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2078,10 +2236,34 @@ export default function StudentTest2View({
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {wrongExams.map((exam: any) => {
                   const isSubmitted = exam.is_submitted;
+                  const tempProg = tempProgressMap[exam.id];
+                  const hasTempProgress = !isSubmitted && Boolean(
+                    tempProg && (
+                      tempProg.answered_count > 0 ||
+                      (Array.isArray(tempProg.unknown_questions) && tempProg.unknown_questions.length > 0) ||
+                      (tempProg.time_left !== undefined && tempProg.time_left > 0)
+                    )
+                  );
+
+                  const totalQuestions = exam.question_count || tempProg?.total_questions || (exam.questions?.length || 1);
+                  const answeredCount = tempProg?.answered_count || 0;
+                  const unknownCount = Array.isArray(tempProg?.unknown_questions)
+                    ? tempProg.unknown_questions.length
+                    : (tempProg?.answers ? Object.values(tempProg.answers).filter(v => v === '모름').length : 0);
+                  const unansweredCount = Math.max(0, totalQuestions - answeredCount - unknownCount);
+
+                  const answeredPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
+                  const unknownPercent = Math.min(100 - answeredPercent, Math.round((unknownCount / totalQuestions) * 100));
+                  const totalProgressPercent = Math.min(100, Math.round(((answeredCount + unknownCount) / totalQuestions) * 100));
+
                   return (
                     <div
                       key={exam.id}
-                      className="bg-white/5 border border-rose-500/30 hover:border-rose-500/60 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden"
+                      className={`bg-white/5 border rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden ${
+                        hasTempProgress
+                          ? 'border-cyan-500/40 shadow-cyan-500/10'
+                          : 'border-rose-500/30 hover:border-rose-500/60'
+                      }`}
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
@@ -2110,7 +2292,12 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {isSubmitted ? (
+                          {hasTempProgress ? (
+                            <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
+                              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                              응시 중 (임시저장)
+                            </span>
+                          ) : isSubmitted ? (
                             <span className="flex items-center gap-1 text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
                               <CheckCircle2 size={13} />
                               제출 완료 ({exam.submission?.score}점)
@@ -2154,6 +2341,63 @@ export default function StudentTest2View({
                           );
                         })()}
 
+                        {/* 🌟 [오라버니 기획 & 타당성 검토 완료] 비율 기반 연속 스택 프로그레스 바 */}
+                        {hasTempProgress && (
+                          <div className="bg-[#090f20]/90 border border-cyan-500/20 rounded-2xl p-4 space-y-3 mt-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-xs font-black text-amber-300">
+                                <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                                  <Clock size={13} />
+                                </div>
+                                <span>
+                                  남은 시간: <span className="font-mono text-sm tracking-wider text-amber-200">
+                                    {exam.duration_min <= 0 ? '자율 학습 (무제한)' : formatRemainingTime(tempProg.time_left ?? (exam.duration_min * 60))}
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-black text-cyan-400 font-mono">
+                                진행률 {totalProgressPercent}% ({answeredCount}/{totalQuestions})
+                              </div>
+                            </div>
+
+                            <div className="w-full bg-slate-800/90 h-3 rounded-full overflow-hidden flex shadow-inner border border-white/5 relative">
+                              {answeredPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-300"
+                                  style={{ width: `${answeredPercent}%` }}
+                                  title={`푼 문제: ${answeredCount}문항`}
+                                />
+                              )}
+                              {unknownPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-amber-400 to-yellow-400 h-full transition-all duration-300"
+                                  style={{ width: `${unknownPercent}%` }}
+                                  title={`모름: ${unknownCount}문항`}
+                                />
+                              )}
+                              <div
+                                className="bg-slate-700/60 h-full flex-1 transition-all duration-300"
+                                title={`안 푼 문제: ${unansweredCount}문항`}
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 pt-1 text-center text-[11px] font-bold">
+                              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                                <span className="truncate">푼 문제 <b className="font-mono text-emerald-200">{answeredCount}</b></span>
+                              </div>
+                              <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
+                                <span className="truncate">모름 <b className="font-mono text-amber-200">{unknownCount}</b></span>
+                              </div>
+                              <div className="bg-slate-800 border border-slate-700 text-slate-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0"></span>
+                                <span className="truncate">안 푼 문제 <b className="font-mono text-rose-300">{unansweredCount}</b></span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {isSubmitted && exam.submission && (
                           <div className="bg-white/5 rounded-2xl p-3 flex items-center justify-between border border-white/5 text-xs">
                             <span className="text-slate-400 font-bold">오답 재채점 결과</span>
@@ -2165,26 +2409,31 @@ export default function StudentTest2View({
                       </div>
 
                       <div className="pt-6 mt-4 border-t border-white/10">
-                        <button
-                          onClick={() => handleStartExam(exam.id)}
-                          className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${
-                            isSubmitted
-                              ? 'bg-white/10 hover:bg-white/20 text-white'
-                              : 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30'
-                          }`}
-                        >
-                          {isSubmitted ? (
-                            <>
-                              <Eye size={16} />
-                              <span>채점 결과 & 해설 보기</span>
-                            </>
-                          ) : (
-                            <>
-                              <RotateCcw size={16} />
-                              <span>오답 다시 풀기</span>
-                            </>
-                          )}
-                        </button>
+                        {hasTempProgress ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
+                          >
+                            <Play size={16} />
+                            <span>이어서 응시하기 ({(tempProg.current_question_idx ?? 0) + 1}번 문항부터)</span>
+                          </button>
+                        ) : isSubmitted ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                          >
+                            <Eye size={16} />
+                            <span>채점 결과 & 해설 보기</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30 cursor-pointer"
+                          >
+                            <RotateCcw size={16} />
+                            <span>오답 다시 풀기</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2214,10 +2463,34 @@ export default function StudentTest2View({
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {treasureExams.map((exam: any) => {
                   const isSubmitted = exam.is_submitted;
+                  const tempProg = tempProgressMap[exam.id];
+                  const hasTempProgress = !isSubmitted && Boolean(
+                    tempProg && (
+                      tempProg.answered_count > 0 ||
+                      (Array.isArray(tempProg.unknown_questions) && tempProg.unknown_questions.length > 0) ||
+                      (tempProg.time_left !== undefined && tempProg.time_left > 0)
+                    )
+                  );
+
+                  const totalQuestions = exam.question_count || tempProg?.total_questions || (exam.questions?.length || 1);
+                  const answeredCount = tempProg?.answered_count || 0;
+                  const unknownCount = Array.isArray(tempProg?.unknown_questions)
+                    ? tempProg.unknown_questions.length
+                    : (tempProg?.answers ? Object.values(tempProg.answers).filter(v => v === '모름').length : 0);
+                  const unansweredCount = Math.max(0, totalQuestions - answeredCount - unknownCount);
+
+                  const answeredPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
+                  const unknownPercent = Math.min(100 - answeredPercent, Math.round((unknownCount / totalQuestions) * 100));
+                  const totalProgressPercent = Math.min(100, Math.round(((answeredCount + unknownCount) / totalQuestions) * 100));
+
                   return (
                     <div
                       key={exam.id}
-                      className="bg-gradient-to-b from-amber-500/10 via-slate-900/60 to-slate-950/80 border border-amber-500/40 hover:border-amber-400/80 rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden ring-1 ring-amber-400/20 hover:ring-amber-400/50 hover:shadow-amber-500/10"
+                      className={`bg-gradient-to-b from-amber-500/10 via-slate-900/60 to-slate-950/80 border rounded-[32px] p-6 shadow-2xl backdrop-blur-3xl transition-all flex flex-col justify-between group relative overflow-hidden ring-1 hover:shadow-amber-500/10 ${
+                        hasTempProgress
+                          ? 'border-cyan-500/40 ring-cyan-400/40 shadow-cyan-500/10'
+                          : 'border-amber-500/40 hover:border-amber-400/80 ring-amber-400/20 hover:ring-amber-400/50'
+                      }`}
                     >
                       <div className="space-y-4">
                         <div className="flex items-center justify-between">
@@ -2241,7 +2514,12 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {isSubmitted ? (
+                          {hasTempProgress ? (
+                            <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
+                              <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                              응시 중 (임시저장)
+                            </span>
+                          ) : isSubmitted ? (
                             <span className="flex items-center gap-1 text-xs font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-400/30">
                               <CheckCircle2 size={13} />
                               회수 성공 ({exam.submission?.score}점)
@@ -2298,6 +2576,63 @@ export default function StudentTest2View({
                           );
                         })()}
 
+                        {/* 🌟 [오라버니 기획 & 타당성 검토 완료] 비율 기반 연속 스택 프로그레스 바 */}
+                        {hasTempProgress && (
+                          <div className="bg-[#090f20]/90 border border-cyan-500/20 rounded-2xl p-4 space-y-3 mt-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-xs font-black text-amber-300">
+                                <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                                  <Clock size={13} />
+                                </div>
+                                <span>
+                                  남은 시간: <span className="font-mono text-sm tracking-wider text-amber-200">
+                                    {exam.duration_min <= 0 ? '자율 학습 (무제한)' : formatRemainingTime(tempProg.time_left ?? (exam.duration_min * 60))}
+                                  </span>
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-black text-cyan-400 font-mono">
+                                진행률 {totalProgressPercent}% ({answeredCount}/{totalQuestions})
+                              </div>
+                            </div>
+
+                            <div className="w-full bg-slate-800/90 h-3 rounded-full overflow-hidden flex shadow-inner border border-white/5 relative">
+                              {answeredPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-300"
+                                  style={{ width: `${answeredPercent}%` }}
+                                  title={`푼 문제: ${answeredCount}문항`}
+                                />
+                              )}
+                              {unknownPercent > 0 && (
+                                <div
+                                  className="bg-gradient-to-r from-amber-400 to-yellow-400 h-full transition-all duration-300"
+                                  style={{ width: `${unknownPercent}%` }}
+                                  title={`모름: ${unknownCount}문항`}
+                                />
+                              )}
+                              <div
+                                className="bg-slate-700/60 h-full flex-1 transition-all duration-300"
+                                title={`안 푼 문제: ${unansweredCount}문항`}
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 pt-1 text-center text-[11px] font-bold">
+                              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                                <span className="truncate">푼 문제 <b className="font-mono text-emerald-200">{answeredCount}</b></span>
+                              </div>
+                              <div className="bg-amber-500/10 border border-amber-500/20 text-amber-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
+                                <span className="truncate">모름 <b className="font-mono text-amber-200">{unknownCount}</b></span>
+                              </div>
+                              <div className="bg-slate-800 border border-slate-700 text-slate-300 py-1.5 rounded-xl flex items-center justify-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0"></span>
+                                <span className="truncate">안 푼 문제 <b className="font-mono text-rose-300">{unansweredCount}</b></span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {isSubmitted && exam.submission && (
                           <div className="bg-amber-500/10 rounded-2xl p-3 flex items-center justify-between border border-amber-400/20 text-xs">
                             <span className="text-amber-200 font-bold">🏆 보물 회수율</span>
@@ -2309,26 +2644,31 @@ export default function StudentTest2View({
                       </div>
 
                       <div className="pt-6 mt-4 border-t border-white/10">
-                        <button
-                          onClick={() => handleStartExam(exam.id)}
-                          className={`w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                            isSubmitted
-                              ? 'bg-white/10 hover:bg-white/20 text-white'
-                              : 'bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]'
-                          }`}
-                        >
-                          {isSubmitted ? (
-                            <>
-                              <Eye size={16} />
-                              <span>회수 결과 & 해설 보기</span>
-                            </>
-                          ) : (
-                            <>
-                              <Sparkles size={16} className="fill-slate-950" />
-                              <span>💎 보물 회수 도전하기</span>
-                            </>
-                          )}
-                        </button>
+                        {hasTempProgress ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
+                          >
+                            <Play size={16} />
+                            <span>이어서 응시하기 ({(tempProg.current_question_idx ?? 0) + 1}번 문항부터)</span>
+                          </button>
+                        ) : isSubmitted ? (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-white/10 hover:bg-white/20 text-white"
+                          >
+                            <Eye size={16} />
+                            <span>회수 결과 & 해설 보기</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStartExam(exam.id)}
+                            className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]"
+                          >
+                            <Sparkles size={16} className="fill-slate-950" />
+                            <span>💎 보물 회수 도전하기</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -2348,15 +2688,11 @@ export default function StudentTest2View({
           {/* 🌟 [오라버니 기획] 초슬림 시험 고정 헤더 바 (높이 압축 & 시험명/남은시간 상단 고정) */}
           <div className="bg-[#0c1222]/90 p-3 md:p-4 rounded-2xl md:rounded-[28px] border border-white/10 backdrop-blur-2xl flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xl shrink-0">
             <div className="flex items-center gap-2.5 w-full sm:w-auto">
+              {/* 🌟 [오라버니 기획] 좌측 상단 [←] 뒤로가기 클릭 시 실시간 클라우드 DB 안전 저장 후 목록 이동 */}
               <button
-                onClick={() => {
-                  if (confirm('시험 응시를 중단하고 목록으로 나가시겠습니까? 작성 중인 답안은 임시 저장됩니다.')) {
-                    broadcastProctorStatus('PAUSED');
-                    setViewMode('list');
-                  }
-                }}
+                onClick={handleSafeExitExam}
                 className="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/15 flex items-center justify-center text-slate-400 hover:text-white transition-colors shrink-0 cursor-pointer"
-                title="목록으로 나가기"
+                title="목록으로 나가기 (풀이 상황 DB 자동 영구 저장)"
               >
                 <ArrowLeft size={18} />
               </button>
@@ -3920,6 +4256,28 @@ export default function StudentTest2View({
           }
         }}
       />
+
+      {/* 🌟 [오라버니 기획] 뒤로가기 클릭 시 실시간 클라우드 DB 저장 모달 */}
+      {isSavingExit && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0e1629] border border-cyan-500/30 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl text-center space-y-4 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center text-2xl shadow-lg shadow-cyan-500/20">
+              <Clock className="animate-spin text-cyan-400" size={32} />
+            </div>
+            <div>
+              <h3 className="text-lg font-black text-white">시험 진행 상황 안전 저장 중...</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                작성하신 답안과 남은 시간을<br />
+                클라우드 DB에 안전하게 저장하고 시험 목록으로 이동합니다.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2 text-xs font-bold text-cyan-300 pt-2">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+              <span>DB 동기화 완료 후 이동합니다...</span>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
