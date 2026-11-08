@@ -263,7 +263,15 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     round?: number;
     questionIdx?: number;
     totalQuestions?: number;
+    isLockdownActive?: boolean;
+    saveProgressToDb?: () => Promise<boolean>;
   }>({ isTaking: false });
+
+  // 🌟 [오라버니 기획] 상단 슬라이드 다운 글로벌 메뉴 & DB 자동저장 모달 상태
+  const [isTopMenuOpen, setIsTopMenuOpen] = useState<boolean>(false);
+  const [isSavingModalOpen, setIsSavingModalOpen] = useState<boolean>(false);
+  const [savingTargetMenu, setSavingTargetMenu] = useState<string>('');
+  const [showLockdownAlertModal, setShowLockdownAlertModal] = useState<boolean>(false);
 
   const computeCurrentLocation = useCallback(() => {
     if (mode === 'test') {
@@ -786,6 +794,52 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     setCurrentPath([]);
   };
 
+  // 🌟 [오라버니 기획] 이탈 잠금 체크 & 자율 학습 시 클라우드 DB 자동 저장 안전 전환
+  const handleSafeChangeMode = async (newMode: typeof mode) => {
+    if (newMode === mode) {
+      setIsTopMenuOpen(false);
+      return;
+    }
+
+    const isTaking = mode === 'test' && Boolean(testActivity?.isTaking);
+
+    if (isTaking) {
+      // 1) 🔒 화면 이탈 방지 잠금이 켜진 시험인 경우 (실전 모의고사/지필평가)
+      if (testActivity?.isLockdownActive) {
+        setIsTopMenuOpen(false);
+        setShowLockdownAlertModal(true);
+        return;
+      }
+
+      // 2) 🔓 자율 학습 시험인 경우: 안내 화면 표출 및 실제 서버 DB 영구 저장 후 안전 이동!
+      const menuLabels: Record<string, string> = {
+        homework: '숙제(Homework)',
+        review: '복습(Review)',
+        library: '라이브러리(Library)',
+        video: '유용한 영상강의',
+        test: '시험(Test)',
+      };
+      setSavingTargetMenu(menuLabels[newMode] || newMode);
+      setIsSavingModalOpen(true);
+      setIsTopMenuOpen(false);
+
+      if (testActivity?.saveProgressToDb) {
+        await testActivity.saveProgressToDb().catch(() => {});
+      }
+
+      setTimeout(() => {
+        setMode(newMode);
+        setCurrentPath([]);
+        setIsSavingModalOpen(false);
+      }, 1200);
+      return;
+    }
+
+    setMode(newMode);
+    setCurrentPath([]);
+    setIsTopMenuOpen(false);
+  };
+
   // 개별 폴더 클릭 핸들러 (계층형 권한 체크)
   const handleLibraryFolderClick = (folder: any) => {
     const isUnlocked = isFolderAccessible(folder, student?.unlocked_folders);
@@ -953,12 +1007,166 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     </div>
   );
 
+  const isTakingExam = mode === 'test' && Boolean(testActivity?.isTaking);
+
   return (
-    <div className="min-h-screen bg-[#020617] p-4 md:p-12 font-sans text-slate-200 overflow-x-hidden">
+    <div className={`min-h-screen bg-[#020617] font-sans text-slate-200 overflow-x-hidden ${isTakingExam ? 'p-2 md:p-3' : 'p-4 md:p-12'}`}>
       {renderSessionGuardModals()}
-      <div className="max-w-[1400px] mx-auto">
+
+      {/* 🌟 [오라버니 기획] 1번 스샷 상단 슬라이드 다운 글로벌 메뉴 오버레이 */}
+      {isTakingExam && (
+        <>
+          <div
+            className={`fixed inset-0 z-40 transition-opacity duration-300 ${
+              isTopMenuOpen ? 'bg-black/70 backdrop-blur-xs pointer-events-auto' : 'bg-transparent pointer-events-none opacity-0'
+            }`}
+            onClick={() => setIsTopMenuOpen(false)}
+          />
+
+          <div
+            className={`fixed top-0 left-0 w-full z-50 bg-[#0c1222]/95 backdrop-blur-2xl border-b border-indigo-500/20 shadow-2xl p-4 md:p-6 transition-all duration-300 ease-out ${
+              isTopMenuOpen ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'
+            }`}
+          >
+            <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center font-black text-lg text-white shadow-lg shadow-violet-500/30">
+                  {student?.name?.charAt(0) || '김'}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg font-black text-white">{student?.name}</span>
+                    <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 font-bold text-xs border border-indigo-500/30">{student?.grade}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">에듀이스트 스마트 러닝 센터 • 학생 포털</p>
+                </div>
+              </div>
+
+              {/* 슬라이드 내비게이션 탭 버튼군 */}
+              <div className="bg-white/5 p-1.5 rounded-2xl border border-white/10 flex items-center gap-1 flex-wrap justify-center">
+                {(menuConfig.test || menuConfig.test2) && (
+                  <button
+                    onClick={() => handleSafeChangeMode('test')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                      mode === 'test' ? 'bg-violet-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <FileCheck size={14} /> Test
+                  </button>
+                )}
+                {menuConfig.homework && (
+                  <button
+                    onClick={() => handleSafeChangeMode('homework')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                      (mode as string) === 'homework' ? 'bg-amber-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <BookOpen size={14} /> 숙제
+                  </button>
+                )}
+                {menuConfig.review && (
+                  <button
+                    onClick={() => handleSafeChangeMode('review')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                      (mode as string) === 'review' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <Database size={14} /> Review
+                  </button>
+                )}
+                {menuConfig.library && (
+                  <button
+                    onClick={() => handleSafeChangeMode('library')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                      (mode as string) === 'library' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <Library size={14} /> Library
+                  </button>
+                )}
+                {menuConfig.video && (
+                  <button
+                    onClick={() => handleSafeChangeMode('video')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                      (mode as string) === 'video' ? 'bg-rose-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <PlaySquare size={14} /> 유용한 영상강의
+                  </button>
+                )}
+              </div>
+
+              <button
+                onClick={() => setIsTopMenuOpen(false)}
+                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white flex items-center justify-center transition-all cursor-pointer"
+                title="메뉴 닫기"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 🌟 [오라버니 기획] 풀이 상황 클라우드 DB 안전 저장 안내 화면 모달 */}
+      {isSavingModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0e1629] border border-cyan-500/30 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl text-center space-y-4 animate-in zoom-in-95 duration-200 relative overflow-hidden">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 mx-auto flex items-center justify-center text-2xl shadow-lg shadow-cyan-500/20">
+              <Loader2 className="animate-spin text-cyan-400" size={30} />
+            </div>
+            <div>
+              <h3 className="text-lg font-black text-white">시험 진행 상황을 안전하게 저장 중입니다...</h3>
+              <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                작성하신 답안 및 풀이 시간이 에듀이스트 클라우드 DB에 영구 보존됩니다.<br />
+                나중에 언제든지 이어서 풀 수 있습니다.
+              </p>
+            </div>
+            <div className="space-y-1.5 pt-2">
+              <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-cyan-500 to-indigo-500 rounded-full animate-pulse w-full" />
+              </div>
+              <div className="flex justify-between text-[11px] font-mono text-slate-400 font-bold">
+                <span>/api/test2/temp-progress</span>
+                <span className="text-cyan-300">{savingTargetMenu} 이동 중...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔒 [이탈 잠금 시험용] 실전 시험 이탈 차단 경고 모달 */}
+      {showLockdownAlertModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#1a0f1d] border border-rose-500/40 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl text-center space-y-4 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 mx-auto flex items-center justify-center text-2xl shadow-lg shadow-rose-500/20">
+              <Lock size={30} className="text-rose-400 animate-pulse" />
+            </div>
+            <div>
+              <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[11px] font-black border border-rose-500/30">
+                🔒 화면 이탈 방지 잠금 가동 중
+              </span>
+              <h3 className="text-lg font-black text-white mt-2">시험 응시 중에는 이동할 수 없습니다</h3>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                이 시험은 실전 지필/모의평가로 설정되어 있어<br />
+                <strong className="text-rose-400">화면 이탈 잠금 모드</strong>가 작동 중입니다.<br />
+                답안을 모두 작성하고 제출한 후에 다른 메뉴로 이동할 수 있습니다.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowLockdownAlertModal(false)}
+              className="w-full py-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition-colors cursor-pointer"
+            >
+              확인하고 시험으로 돌아가기
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className={isTakingExam ? 'w-full' : 'max-w-[1400px] mx-auto'}>
         
-        {!showReviewer && (
+        {/* 평소 홈/목록일 때만 상단 고정 글로벌 메뉴 노출 (시험 중엔 숨김!) */}
+        {!showReviewer && !isTakingExam && (
           <div className="flex justify-center mb-16 animate-in slide-in-from-top-10 duration-700">
             <div className="bg-white/5 p-1.5 rounded-[32px] border border-white/10 backdrop-blur-3xl flex shadow-3xl">
               {(menuConfig.test || menuConfig.test2) && (
@@ -990,14 +1198,19 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           </div>
         )}
 
-        {!showReviewer && (
+        {/* 평소 홈/목록일 때만 학생 이름 타이틀 노출 (시험 중엔 숨김!) */}
+        {!showReviewer && !isTakingExam && (
           <div className="animate-in fade-in zoom-in duration-1000">
             <div className="text-center mb-16 space-y-4">
               <h1 className="text-5xl md:text-7xl font-black italic tracking-tighter uppercase leading-none truncate">
                 {student?.name} <span className="text-slate-800 not-italic">/</span> <span className="text-indigo-500">{student?.grade}</span>
               </h1>
             </div>
+          </div>
+        )}
 
+        {!showReviewer && (
+          <div className="animate-in fade-in zoom-in duration-500">
             {mode === 'test' ? (
               <StudentTest2View
                 studentId={student?.id}
@@ -1006,6 +1219,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentFolderId={student?.drive_folder_id}
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
+                onToggleTopMenu={() => setIsTopMenuOpen((prev) => !prev)}
                 onTestActivityChange={setTestActivity}
               />
             ) : mode === 'homework' ? (
