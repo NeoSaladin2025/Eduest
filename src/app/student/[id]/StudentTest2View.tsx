@@ -218,6 +218,8 @@ export default function StudentTest2View({
   const [questionSpentTimes, setQuestionSpentTimes] = useState<Record<string, number>>({});
   const questionEnteredAtRef = useRef<number>(Date.now());
   const testAwayStartRef = useRef<number | undefined>(undefined);
+  const testBlurDebounceTimerRef = useRef<any>(null);
+  const testWakeLockRef = useRef<any>(null);
 
   // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
   const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
@@ -1378,7 +1380,46 @@ export default function StudentTest2View({
     }, 100);
   };
 
-  // 🚨 5. 화면 이탈 감지 (부정행위 방지: 잠금 활성화 시 화면 잠금 + 자율 응시 시에도 딴짓 로그 기록)
+  // 💡 [화면 꺼짐 강제 방지] 시험 응시 중 Screen Wake Lock 획득 및 유지
+  useEffect(() => {
+    const acquireTestWakeLock = async () => {
+      if (viewMode === 'taking' && currentExam && typeof window !== 'undefined' && 'wakeLock' in navigator) {
+        try {
+          if (!testWakeLockRef.current) {
+            testWakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          }
+        } catch {}
+      } else {
+        if (testWakeLockRef.current) {
+          await testWakeLockRef.current.release().catch(() => {});
+          testWakeLockRef.current = null;
+        }
+      }
+    };
+    acquireTestWakeLock();
+    return () => {
+      if (testWakeLockRef.current) {
+        testWakeLockRef.current.release().catch(() => {});
+        testWakeLockRef.current = null;
+      }
+    };
+  }, [viewMode, currentExam]);
+
+  useEffect(() => {
+    const handleReacquire = async () => {
+      if (document.visibilityState === 'visible' && viewMode === 'taking' && currentExam) {
+        if ('wakeLock' in navigator && !testWakeLockRef.current) {
+          try {
+            testWakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          } catch {}
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleReacquire);
+    return () => document.removeEventListener('visibilitychange', handleReacquire);
+  }, [viewMode, currentExam]);
+
+  // 🚨 5. 화면 이탈 감지 (부정행위 방지: 잠금 활성화 시 화면 잠금 + 자율 응시 시에도 딴짓 로그 기록, 200ms 디바운스 적용)
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam) return;
 
@@ -1404,6 +1445,10 @@ export default function StudentTest2View({
     };
 
     const handleVisibilityChange = () => {
+      if (testBlurDebounceTimerRef.current) {
+        clearTimeout(testBlurDebounceTimerRef.current);
+        testBlurDebounceTimerRef.current = null;
+      }
       if (document.visibilityState === 'hidden') {
         handleLeaving();
       } else {
@@ -1411,14 +1456,26 @@ export default function StudentTest2View({
       }
     };
 
+    // 🌟 [오탐 방지] 200ms 디바운스 적용 및 IFRAME 조작/마우스 스침 오탐 방어
     const handleBlur = () => {
-      if (typeof document !== 'undefined' && document.activeElement && document.activeElement.tagName === 'IFRAME') {
-        return;
-      }
-      handleLeaving();
+      if (testBlurDebounceTimerRef.current) clearTimeout(testBlurDebounceTimerRef.current);
+      testBlurDebounceTimerRef.current = setTimeout(() => {
+        // 1) activeElement가 IFRAME인 경우 (유튜브/강의 플레이어, 외부 도구 조작 중)
+        if (typeof document !== 'undefined' && document.activeElement && document.activeElement.tagName === 'IFRAME') {
+          return;
+        }
+        // 2) 실제 브라우저 탭/창을 벗어난 경우에만 AWAY 처리
+        if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
+          handleLeaving();
+        }
+      }, 200);
     };
 
     const handleFocus = () => {
+      if (testBlurDebounceTimerRef.current) {
+        clearTimeout(testBlurDebounceTimerRef.current);
+        testBlurDebounceTimerRef.current = null;
+      }
       handleReturning();
     };
 
@@ -1430,6 +1487,10 @@ export default function StudentTest2View({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', handleFocus);
+      if (testBlurDebounceTimerRef.current) {
+        clearTimeout(testBlurDebounceTimerRef.current);
+        testBlurDebounceTimerRef.current = null;
+      }
     };
   }, [viewMode, currentExam, isLocked, timeLeft, broadcastProctorStatus, studentId, recordTestAwayReturnLog]);
 

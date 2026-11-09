@@ -59,6 +59,7 @@ export interface StudentActivity {
   test_remaining_sec?: number;
   duration_min?: number;
   test_duration_min?: number;
+  is_wake_lock_active?: boolean;
 }
 
 interface Student {
@@ -111,6 +112,20 @@ export default function DailyActivityMonitoringTab({
   useEffect(() => {
     if (typeof window !== 'undefined' && initializedSelectionRef.current) {
       localStorage.setItem('eduest_daily_selected_ids', JSON.stringify(selectedStudentIds));
+    }
+  }, [selectedStudentIds]);
+
+  // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상 학생들에게 실시간 강제 유지 동기화 브로드캐스트
+  useEffect(() => {
+    if (channelRef.current && initializedSelectionRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'sync_monitored_targets',
+        payload: {
+          target_student_ids: selectedStudentIds,
+          enforce_wake_lock: true,
+        },
+      });
     }
   }, [selectedStudentIds]);
 
@@ -562,11 +577,15 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
 
     channel.subscribe((status: string) => {
       if (status === 'SUBSCRIBED') {
-        // 접속 시 학생들에게 현재 위치 및 시험 상태 핑 요청
+        // 접속 시 학생들에게 현재 위치 및 시험 상태 핑 요청 (모니터링 대상자 화면 꺼짐 방지 동기화)
         channel.send({
           type: 'broadcast',
           event: 'ping_students',
-          payload: { timestamp: Date.now() },
+          payload: { 
+            timestamp: Date.now(),
+            target_student_ids: selectedStudentIds,
+            enforce_wake_lock: true,
+          },
         });
         channel.send({
           type: 'broadcast',
@@ -592,7 +611,11 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
         channelRef.current.send({
           type: 'broadcast',
           event: 'ping_students',
-          payload: { timestamp: Date.now() },
+          payload: { 
+            timestamp: Date.now(),
+            target_student_ids: selectedStudentIds,
+            enforce_wake_lock: true,
+          },
         });
         channelRef.current.send({
           type: 'broadcast',
@@ -1146,6 +1169,26 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                           </>
                         )}
                       </button>
+                      {/* 💡 화면 꺼짐 강제 방지(Screen Wake Lock) 인디케이터 */}
+                      <span
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-all ${
+                          selectedStudentIds.includes(st.id) || act?.is_wake_lock_active
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300 shadow-2xs'
+                            : 'bg-slate-100 text-slate-400 border-slate-200'
+                        }`}
+                        title={
+                          selectedStudentIds.includes(st.id) || act?.is_wake_lock_active
+                            ? '실시간 집중 모니터링 대상: 학생 화면 꺼짐 방지(Screen Wake Lock)가 강제 활성화되어 학생 화면이 절대 꺼지지 않습니다.'
+                            : '모니터링 미지정: 일반 절전 모드'
+                        }
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          selectedStudentIds.includes(st.id) || act?.is_wake_lock_active
+                            ? 'bg-emerald-500 animate-pulse'
+                            : 'bg-slate-300'
+                        }`} />
+                        화면유지 {selectedStudentIds.includes(st.id) || act?.is_wake_lock_active ? 'ON' : 'OFF'}
+                      </span>
                       {/* 📋 딴짓 이탈 기록 모달 열기 버튼 */}
                       <button
                         onClick={() => {

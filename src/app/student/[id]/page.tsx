@@ -256,6 +256,61 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const isAwayRef = useRef<boolean>(false);
   const awayStartedAtRef = useRef<number | undefined>(undefined);
 
+  // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상자 또는 시험 모드 시 화면 꺼짐 강제 차단
+  const wakeLockRef = useRef<any>(null);
+  const [isWakeLockActive, setIsWakeLockActive] = useState<boolean>(false);
+  const [isWakeLockEnforced, setIsWakeLockEnforced] = useState<boolean>(false);
+
+  const requestScreenWakeLock = useCallback(async () => {
+    if (typeof window === 'undefined' || !('wakeLock' in navigator)) return;
+    try {
+      if (!wakeLockRef.current) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        setIsWakeLockActive(true);
+        wakeLockRef.current.addEventListener('release', () => {
+          wakeLockRef.current = null;
+          setIsWakeLockActive(false);
+        });
+      }
+    } catch (err) {
+      // 탭 비활성화 또는 권한 제한 예외 무시
+    }
+  }, []);
+
+  const releaseScreenWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      await wakeLockRef.current.release().catch(() => {});
+      wakeLockRef.current = null;
+      setIsWakeLockActive(false);
+    }
+  }, []);
+
+  // 모니터링 대상자(원격 강제)이거나 시험/영상 모드일 때 WakeLock 획득 및 유지
+  useEffect(() => {
+    const shouldKeepAwake = isWakeLockEnforced || mode === 'test' || mode === 'video';
+    if (shouldKeepAwake) {
+      requestScreenWakeLock();
+    } else {
+      releaseScreenWakeLock();
+    }
+  }, [isWakeLockEnforced, mode, requestScreenWakeLock, releaseScreenWakeLock]);
+
+  // 가시성 복귀 시 자동 재획득 (W3C 권장 사양)
+  useEffect(() => {
+    const handleReacquire = () => {
+      const shouldKeepAwake = isWakeLockEnforced || mode === 'test' || mode === 'video';
+      if (document.visibilityState === 'visible' && shouldKeepAwake) {
+        requestScreenWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleReacquire);
+    window.addEventListener('focus', handleReacquire);
+    return () => {
+      document.removeEventListener('visibilitychange', handleReacquire);
+      window.removeEventListener('focus', handleReacquire);
+    };
+  }, [isWakeLockEnforced, mode, requestScreenWakeLock]);
+
   // 🌟 [시험 응시 상태 연동] 자식 시험 컴포넌트(StudentTest2View)의 실시간 응시 상태
   const [testActivity, setTestActivity] = useState<{
     isTaking: boolean;
@@ -358,6 +413,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       away_started_at: currentIsAway ? (awayStartedAtRef.current || Date.now()) : undefined,
       entered_at: enteredAtRef.current,
       updated_at: new Date().toISOString(),
+      is_wake_lock_active: Boolean(wakeLockRef.current || isWakeLockActive),
     };
 
     // 즉시 전송인 경우 (이탈/복귀/선생님 핑 응답)
@@ -399,9 +455,23 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     const channel = supabase.channel('proctoring_room');
     proctorChannelRef.current = channel;
 
-    // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신
-    channel.on('broadcast', { event: 'ping_students' }, () => {
+    // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신 및 모니터링 대상 상태 동기화
+    channel.on('broadcast', { event: 'ping_students' }, (payload: any) => {
+      const p = payload?.payload;
+      if (p && Array.isArray(p.target_student_ids)) {
+        const isTarget = p.target_student_ids.includes(student?.id);
+        setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+      }
       sendActivityBroadcast(true);
+    });
+
+    // 💡 [실시간 모니터링 연동] 선생님의 모니터링 대상자 실시간 지정 및 화면 꺼짐 강제 방지 수신
+    channel.on('broadcast', { event: 'sync_monitored_targets' }, (payload: any) => {
+      const p = payload?.payload;
+      if (p && Array.isArray(p.target_student_ids)) {
+        const isTarget = p.target_student_ids.includes(student?.id);
+        setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+      }
     });
 
     // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 실시간 토글 브로드캐스트 수신
@@ -1038,6 +1108,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   <div className="flex items-center gap-2">
                     <span className="text-lg font-black text-white">{student?.name}</span>
                     <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 font-bold text-xs border border-indigo-500/30">{student?.grade}</span>
+                    {isWakeLockActive && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold text-[10px] border border-emerald-500/30">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        화면유지 ON
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5">에듀이스트 스마트 러닝 센터 • 학생 포털</p>
                 </div>

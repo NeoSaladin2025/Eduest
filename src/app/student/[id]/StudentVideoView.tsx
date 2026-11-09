@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   PlaySquare, Search, FileText, Download, ExternalLink, 
-  Youtube, HardDrive, Play, Sparkles, Filter, CheckCircle2, ChevronRight
+  Youtube, HardDrive, Play, Sparkles, Filter, CheckCircle2, ChevronRight, X
 } from 'lucide-react';
 import { 
   VideoLectureItem, 
@@ -33,6 +33,8 @@ export default function StudentVideoView({ student }: StudentVideoViewProps) {
   const [selectedTag, setSelectedTag] = useState<string>('전체');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPlayingVideo, setCurrentPlayingVideo] = useState<VideoLectureItem | null>(null);
+  // 🌟 교재/자료 인라인 열람 모달 (새 탭 이탈로 인한 딴짓 오탐 방지)
+  const [showAttachmentModal, setShowAttachmentModal] = useState<boolean>(false);
 
   // 데이터 로드
   useEffect(() => {
@@ -282,18 +284,17 @@ export default function StudentVideoView({ student }: StudentVideoViewProps) {
                       </h2>
                     </div>
 
-                    {/* 🌟 첨부자료 다운로드 버튼 (있는 경우) */}
+                    {/* 🌟 첨부자료 인라인 열람 모달 트리거 (새 탭 이탈로 인한 딴짓 오탐 방지) */}
                     {currentPlayingVideo.attachmentUrl && (
-                      <a
-                        href={currentPlayingVideo.attachmentUrl}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => setShowAttachmentModal(true)}
                         className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-black shadow-lg shadow-indigo-900/50 transition-all shrink-0 cursor-pointer"
-                        title="강의 교재/자료 다운로드"
+                        title="강의 교재/자료 바로 열람 (화면 이탈 없이 안전 학습)"
                       >
-                        <Download size={15} />
+                        <FileText size={15} />
                         <span>교재/자료 열람</span>
-                      </a>
+                      </button>
                     )}
                   </div>
 
@@ -405,6 +406,63 @@ export default function StudentVideoView({ student }: StudentVideoViewProps) {
             </div>
           </div>
 
+        </div>
+      )}
+
+      {/* 📄 강의 교재/자료 인라인 열람 모달 (새 탭 이탈로 인한 딴짓 오탐 원천 차단) */}
+      {showAttachmentModal && currentPlayingVideo?.attachmentUrl && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* 모달 헤더 */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+                  <FileText size={18} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                    <span>강의 교재 및 학습 자료</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30">
+                      안전 열람 중
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 truncate max-w-xs sm:max-w-xl">
+                    {currentPlayingVideo.title}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <a
+                  href={currentPlayingVideo.attachmentUrl}
+                  download
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5"
+                  title="파일 직접 다운로드 또는 새 창 열기"
+                >
+                  <Download size={13} />
+                  <span>다운로드</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowAttachmentModal(false)}
+                  className="w-9 h-9 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 flex items-center justify-center transition-all cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            {/* 뷰어 본문 (인라인 iframe) */}
+            <div className="flex-1 bg-slate-950 relative">
+              <iframe
+                src={currentPlayingVideo.attachmentUrl}
+                className="w-full h-full border-none"
+                title="강의 첨부자료"
+              />
+            </div>
+          </div>
         </div>
       )}
 
