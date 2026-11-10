@@ -1866,6 +1866,180 @@ ${studentSection}
   }
 );
 
+server.tool(
+  'eduest_get_library_content_analytics',
+  '라이브러리 교재 및 단원 폴더별, 개별 파일(문항 번호)별 학생 체류시간/이용률 심층 분석. "고2 학생들이 가장 오래 붙잡고 푼 문항이 뭐야?", "4차 모의고사에서 킬러 문항이 몇 번이야?", "최근 30일간 가장 많이 본 교재 폴더는?" 등 자연어 질의 분석 지원.',
+  {
+    grade: z.string().optional().describe('학년 필터 (예: 고1, 고2, 중3, 전체)'),
+    days: z.number().optional().default(30).describe('최근 N일치 분석 (기본값: 30일)'),
+    folder_name: z.string().optional().describe('특정 폴더 핀포인트 조회 (예: 4차, 2학기 기말)'),
+    min_duration_minutes: z.number().optional().default(0).describe('최소 체류시간(분 단위)')
+  },
+  async ({ grade, days, folder_name, min_duration_minutes }) => {
+    try {
+      const data = await getLibraryRecord('home_study_sessions', { records: {} });
+      let records = Object.values(data.records || {});
+
+      // 학년 필터
+      if (grade && grade !== '전체' && grade !== 'ALL') {
+        records = records.filter(r => r.student_grade && r.student_grade.includes(grade));
+      }
+
+      // 날짜 필터
+      if (days) {
+        const cutoff = new Date(Date.now() - days * 24 * 3600000).toISOString().split('T')[0];
+        records = records.filter(r => r.date >= cutoff);
+      }
+
+      // 폴더 및 파일별 활동 집계
+      const folderStats = {};
+
+      records.forEach(r => {
+        const stName = r.student_name;
+        (r.sessions || []).forEach(ses => {
+          (ses.activities || []).forEach(act => {
+            if (act.mode !== 'library' || (act.duration_sec || 0) <= 0) return;
+            const dur = act.duration_sec || 0;
+            const title = act.title || '';
+            const sub = act.sub_detail || '';
+
+            const clean = title.replace(/^라이브러리\s*>\s*/i, '').trim();
+            if (!clean || clean === '홈 화면') return;
+
+            let targetFolder = '';
+            let targetDoc = '';
+
+            const bracketMatch = clean.match(/\[(.*?)\](?:\s*>\s*(.*?))?$/);
+            if (bracketMatch) {
+              targetFolder = bracketMatch[1].trim();
+              if (bracketMatch[2]) targetDoc = bracketMatch[2].trim();
+            } else if (clean.includes('>')) {
+              const parts = clean.split('>').map(p => p.trim());
+              targetFolder = parts[parts.length - 2] || parts[0];
+              targetDoc = parts[parts.length - 1];
+            } else {
+              targetFolder = clean;
+            }
+
+            if (!targetFolder) return;
+
+            // 특정 폴더 필터가 있는 경우
+            if (folder_name && !targetFolder.toLowerCase().includes(folder_name.toLowerCase())) {
+              return;
+            }
+
+            if (!folderStats[targetFolder]) {
+              folderStats[targetFolder] = {
+                duration: 0,
+                students: new Set(),
+                sessions: 0,
+                files: {}
+              };
+            }
+            const fEntry = folderStats[targetFolder];
+            fEntry.duration += dur;
+            fEntry.students.add(stName);
+            fEntry.sessions += 1;
+
+            if (targetDoc) {
+              const cleanDoc = targetDoc.replace(/\.html?$/i, '');
+              if (!fEntry.files[cleanDoc]) {
+                fEntry.files[cleanDoc] = {
+                  duration: 0,
+                  students: new Set(),
+                  views: 0,
+                  solutionViews: 0
+                };
+              }
+              const fileEntry = fEntry.files[cleanDoc];
+              fileEntry.duration += dur;
+              fileEntry.students.add(stName);
+              fileEntry.views += 1;
+              if (sub.includes('해설')) {
+                fileEntry.solutionViews += 1;
+              }
+            }
+          });
+        });
+      });
+
+      const folderEntries = Object.entries(folderStats);
+      if (folderEntries.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: `ℹ️ 조건에 해당하는 라이브러리 컨텐츠 열람 기록이 없습니다.\n- 대상: 학년(${grade || '전체'}), 기간(최근 ${days}일), 특정폴더(${folder_name || '전체'})`
+          }]
+        };
+      }
+
+      // 폴더 체류시간 높은 순 정렬
+      folderEntries.sort((a, b) => b[1].duration - a[1].duration);
+
+      // 상위 폴더들 보고서
+      const folderRankLines = folderEntries.slice(0, 10).map(([fName, fData], idx) => {
+        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}위`;
+        return `${medal} [${fName}]: 총 ${formatDurationKo(fData.duration)} (학생 ${fData.students.size}명 이용 · 열람 ${fData.sessions}회)`;
+      }).join('\n');
+
+      // 상위 1위(또는 지정된) 폴더의 세부 문항(파일) 미시 분석
+      const focusFolderEntry = folderEntries[0];
+      const focusFolderName = focusFolderEntry[0];
+      const focusFolderData = focusFolderEntry[1];
+      const fileEntries = Object.entries(focusFolderData.files);
+      fileEntries.sort((a, b) => b[1].duration - a[1].duration);
+
+      let fileBreakdownSection = '';
+      if (fileEntries.length === 0) {
+        fileBreakdownSection = '• 세부 파일(문항) 열람 기록 없음 (단순 폴더 탐색 위주)';
+      } else {
+        const fileLines = fileEntries.slice(0, 8).map(([docName, d], fIdx) => {
+          const numMatch = docName.match(/(\d+)/);
+          const display = numMatch ? `${parseInt(numMatch[1], 10)}번 문항 (${docName}.html)` : `${docName}.html`;
+          const solPct = d.views > 0 ? Math.round((d.solutionViews / d.views) * 100) : 0;
+          let badge = '🌱 표준 문항';
+          if (fIdx === 0 && d.duration >= 1800) badge = '🔥 최고 난도 킬러 문항 (수업 해설 권장)';
+          else if (d.duration >= 1200) badge = '⚡ 오답/고난도 문항';
+
+          return `${fIdx + 1}. ${display} - ${formatDurationKo(d.duration)} (학생 ${d.students.size}명 열람 · 해설비율 ${solPct}%) [${badge}]`;
+        });
+        fileBreakdownSection = fileLines.join('\n');
+      }
+
+      // 최상위 킬러 문항 코칭 가이드
+      let coachingTip = '';
+      if (fileEntries.length > 0 && fileEntries[0][1].duration >= 1800) {
+        const killerDoc = fileEntries[0][0];
+        const killerDur = formatDurationKo(fileEntries[0][1].duration);
+        coachingTip = `\n💡 [수업 코칭 팁] [${focusFolderName}]의 ${killerDoc}번 문항에 학생들이 총 ${killerDur}을 머물렀습니다. 학생들이 혼자 풀기 가장 버거워한 문제이므로, 다음 수업 시간에 이 문항의 변형 풀이를 꼭 짚어주시는 것을 강력 추천합니다!`;
+      }
+
+      const report = `
+📚 [라이브러리 컨텐츠 활용 및 문항별 체류시간 분석 보고서]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 기본 정보:
+- 분석 대상: ${grade ? `[${grade}]` : '전체 학년'} 라이브러리
+- 분석 기간: 최근 ${days}일간
+- 최다 열람 폴더: [${focusFolderName}] (${formatDurationKo(focusFolderData.duration)})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 폴더별 누적 학습 시간 랭킹 TOP:
+${folderRankLines}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔬 [${focusFolderName}] 폴더 내 세부 문항(파일)별 머문 시간 순위 (Drill-Down):
+${fileBreakdownSection}
+${coachingTip}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      `.trim();
+
+      return {
+        content: [{ type: 'text', text: report }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 라이브러리 컨텐츠 분석 실패: ${err.message}` }] };
+    }
+  }
+);
+
 // 서버 기동
 const transport = new StdioServerTransport();
 await server.connect(transport);

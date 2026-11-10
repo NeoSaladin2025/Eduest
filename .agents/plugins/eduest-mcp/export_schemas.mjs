@@ -371,6 +371,19 @@ const tools = [
     }
   },
   {
+    name: 'eduest_get_library_content_analytics',
+    description: '라이브러리 교재 및 단원 폴더별, 개별 파일(문항 번호)별 학생 체류시간/이용률 심층 분석. "고2 학생들이 가장 오래 붙잡고 푼 문항이 뭐야?", "4차 모의고사에서 킬러 문항이 몇 번이야?", "최근 30일간 가장 많이 본 교재 폴더는?" 등 자연어 질의 분석 지원.',
+    parameters: {
+      type: 'object',
+      properties: {
+        grade: { type: 'string', description: '학년 필터 (예: 고1, 고2, 중3, 전체)' },
+        days: { type: 'number', description: '최근 N일치 분석 (기본값: 30)' },
+        folder_name: { type: 'string', description: '특정 폴더 핀포인트 조회 (예: 4차, 2학기 기말)' },
+        min_duration_minutes: { type: 'number', description: '최소 체류시간(분 단위)' }
+      }
+    }
+  },
+  {
     name: 'eduest_get_home_study_rules',
     description: '학원 수업 제외 시간대(가정 학습 필터링 규칙) 조회 (학년별 공통 시간표 및 학생별 개별 예외 시간대 목록 확인)',
     parameters: {
