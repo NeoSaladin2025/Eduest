@@ -26,7 +26,8 @@ import {
   Trophy,
   Award,
   TrendingUp,
-  Layers
+  Layers,
+  X
 } from 'lucide-react';
 import { 
   StudentHomeStudyDayRecord, 
@@ -91,6 +92,7 @@ interface ExcludedSlot {
   type: 'excluded';
   rule: ExclusionRule;
   colSpan: number;
+  startHour: number;
 }
 
 interface DataSlot {
@@ -123,7 +125,7 @@ function buildRowSlots(
       ) {
         count++;
       }
-      slots.push({ type: 'excluded', rule: exc, colSpan: count });
+      slots.push({ type: 'excluded', rule: exc, colSpan: count, startHour: h });
       i += count;
     } else {
       const data = gridData[weekday]?.[h] || { totalSec: 0, students: new Map() };
@@ -205,6 +207,28 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
   // 히트맵 뷰 모드 ('duration': 체류시간, 'headcount': 접속 인원수)
   const [heatmapView, setHeatmapView] = useState<'duration' | 'headcount'>('duration');
+
+  // 클릭한 히트맵 슬롯 상세 팝업 상태
+  const [activeSlotModal, setActiveSlotModal] = useState<{
+    weekday: WeekdayCode;
+    weekdayKo: string;
+    hour: number;
+    hourLabel: string;
+    isExcluded: boolean;
+    exclusionRule?: ExclusionRule;
+    totalSec: number;
+    students: {
+      student_name: string;
+      student_grade: string;
+      duration_sec: number;
+      started_at?: string;
+      activities: {
+        mode: string;
+        title: string;
+        duration_sec: number;
+      }[];
+    }[];
+  } | null>(null);
 
   // 다중 학년 비교 상태
   const [comparisonGrades, setComparisonGrades] = useState<string[]>(['고1', '고2', '고3']);
@@ -356,7 +380,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     return grid;
   }, [weeklyRecords, selectedGrade]);
 
-  // 인원수 기준 골든타임 & 피크 분석
+  // 인원수 기준 골든타임 & 피크 분석 (학원 수업 제외 시간대는 100% 원천 배제)
   const headcountKpi = useMemo(() => {
     let maxHour = 22;
     let maxDay: WeekdayCode = 'MON';
@@ -367,6 +391,12 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
     WEEKDAY_KEYS.forEach(w => {
       HEATMAP_HOURS.forEach(h => {
+        // 학원 수업 제외 시간대인지 확인하여 골든타임 후보 및 저녁 평균 집계에서 완전 제외!
+        const exc = getExclusionForSlot(w, h, selectedGrade, rulesConfig);
+        if (exc) {
+          return;
+        }
+
         const item = heatmapGridData[w]?.[h];
         const cnt = item?.students.size || 0;
         if (cnt > maxCount) {
@@ -386,12 +416,12 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
     const avgEvening = eveningSlotCount > 0 ? (eveningTotalCount / eveningSlotCount).toFixed(1) : '0';
     return {
-      peakTimeText: `${WEEKDAY_KO_MAP[maxDay]}요일 ${maxHour}시`,
+      peakTimeText: maxCount > 0 ? `${WEEKDAY_KO_MAP[maxDay]}요일 ${maxHour === 24 ? '자정 (24시)' : `${maxHour}시`}` : '기록 없음',
       peakCount: maxCount,
       avgEvening,
       midnightCount,
     };
-  }, [heatmapGridData]);
+  }, [heatmapGridData, selectedGrade, rulesConfig]);
 
   // ==========================================
   // 다중 학년 시간대별 1·2·3등 랭킹 및 비교 데이터 계산
@@ -430,8 +460,14 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
         };
       });
 
-      const sorted = [...gradeResults].sort((a, b) => b.count - a.count);
-      const maxCount = Math.max(...gradeResults.map(g => g.count), 1);
+      // 학원 수업으로 제외된 학년은 랭킹 맨 아래로 배치
+      const sorted = [...gradeResults].sort((a, b) => {
+        const aVal = a.isExcluded ? -1 : a.count;
+        const bVal = b.isExcluded ? -1 : b.count;
+        return bVal - aVal;
+      });
+      const nonExcludedCounts = gradeResults.filter(g => !g.isExcluded).map(g => g.count);
+      const maxCount = Math.max(...nonExcludedCounts, 1);
 
       return {
         hour: h,
@@ -451,6 +487,86 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
       } else {
         return [...prev, g];
       }
+    });
+  };
+
+  // 히트맵 셀 클릭 핸들러 (상세 학생 명단 및 열람 내역 조회 모달 오픈)
+  const handleSlotClick = (weekday: WeekdayCode, hour: number, slot: RowSlot) => {
+    if (slot.type === 'excluded') {
+      setActiveSlotModal({
+        weekday,
+        weekdayKo: WEEKDAY_KO_MAP[weekday],
+        hour: slot.startHour || hour,
+        hourLabel: `${slot.rule.start_time.slice(0, 5)} ~ ${slot.rule.end_time.slice(0, 5)}`,
+        isExcluded: true,
+        exclusionRule: slot.rule,
+        totalSec: 0,
+        students: [],
+      });
+      return;
+    }
+
+    const targetRecords = selectedGrade === 'ALL' || selectedGrade === '전체'
+      ? weeklyRecords
+      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade));
+
+    const matchedStudents: {
+      student_name: string;
+      student_grade: string;
+      duration_sec: number;
+      started_at?: string;
+      activities: {
+        mode: string;
+        title: string;
+        duration_sec: number;
+      }[];
+    }[] = [];
+    let slotTotalSec = 0;
+
+    targetRecords.forEach(r => {
+      const studentHourSessions = (r.sessions || []).filter(ses => {
+        if (!ses.started_at) return false;
+        const d = new Date(ses.started_at);
+        const kstDate = new Date(d.getTime() + 9 * 3600000);
+        const dayIdx = kstDate.getUTCDay();
+        const dayCodes: WeekdayCode[] = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+        const mapDay: WeekdayCode = dayCodes[dayIdx];
+        const rawHour = kstDate.getUTCHours();
+        const mappedHour = rawHour === 0 ? 24 : rawHour;
+        return mapDay === weekday && mappedHour === hour;
+      });
+
+      if (studentHourSessions.length > 0) {
+        let dur = 0;
+        const acts: { mode: string; title: string; duration_sec: number }[] = [];
+        let firstStarted = studentHourSessions[0].started_at;
+
+        studentHourSessions.forEach(s => {
+          dur += s.duration_sec || 0;
+          (s.activities || []).forEach(a => acts.push(a));
+        });
+
+        slotTotalSec += dur;
+        matchedStudents.push({
+          student_name: r.student_name,
+          student_grade: r.student_grade || selectedGrade,
+          duration_sec: dur,
+          started_at: firstStarted,
+          activities: acts,
+        });
+      }
+    });
+
+    matchedStudents.sort((a, b) => b.duration_sec - a.duration_sec);
+
+    setActiveSlotModal({
+      weekday,
+      weekdayKo: WEEKDAY_KO_MAP[weekday],
+      hour,
+      hourLabel: hour === 24 ? '24:00 (자정 심야)' : `${hour}:00 ~ ${hour + 1}:00`,
+      isExcluded: false,
+      totalSec: slotTotalSec,
+      students: matchedStudents,
     });
   };
 
@@ -764,8 +880,9 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                             <td
                               key={sIdx}
                               colSpan={slot.colSpan}
-                              className="bg-rose-100/90 border border-dashed border-rose-300 text-rose-900 font-extrabold rounded-lg h-7 px-1 text-[10px] tracking-tight transition-all"
-                              title={`${slot.rule.title} (${slot.rule.start_time} ~ ${slot.rule.end_time} 제외)`}
+                              onClick={() => handleSlotClick(wDay, slot.startHour, slot)}
+                              className="bg-rose-100/90 hover:bg-rose-200/90 border border-dashed border-rose-300 text-rose-900 font-extrabold rounded-lg h-7 px-1 text-[10px] tracking-tight transition-all cursor-pointer shadow-2xs hover:scale-101 active:scale-98"
+                              title={`${slot.rule.title} (${slot.rule.start_time.slice(0, 5)} ~ ${slot.rule.end_time.slice(0, 5)} 제외) - 클릭하여 상세 안내 보기`}
                             >
                               🚫 {slot.rule.title} ({slot.rule.start_time.slice(0, 5)}~{slot.rule.end_time.slice(0, 5)} 제외)
                             </td>
@@ -775,12 +892,21 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                         // Data Slot
                         if (heatmapView === 'duration') {
                           if (slot.totalSec === 0) {
-                            return <td key={sIdx} className="bg-slate-50 text-slate-300 rounded-lg h-7 text-[10px] font-normal">-</td>;
+                            return (
+                              <td
+                                key={sIdx}
+                                onClick={() => handleSlotClick(wDay, slot.hour, slot)}
+                                className="bg-slate-50 hover:bg-slate-100 text-slate-300 rounded-lg h-7 text-[10px] font-normal cursor-pointer transition-colors"
+                                title="접속 기록 없음 (클릭하여 확인)"
+                              >
+                                -
+                              </td>
+                            );
                           }
-                          let bgClass = 'bg-violet-100 text-violet-800';
-                          if (slot.totalSec >= 5400) bgClass = 'bg-violet-700 text-white font-black shadow-2xs';
-                          else if (slot.totalSec >= 3600) bgClass = 'bg-violet-500 text-white font-black';
-                          else if (slot.totalSec >= 1800) bgClass = 'bg-violet-200 text-violet-900 font-black';
+                          let bgClass = 'bg-violet-100 text-violet-800 hover:bg-violet-200';
+                          if (slot.totalSec >= 5400) bgClass = 'bg-violet-700 text-white font-black shadow-2xs hover:bg-violet-800';
+                          else if (slot.totalSec >= 3600) bgClass = 'bg-violet-500 text-white font-black hover:bg-violet-600';
+                          else if (slot.totalSec >= 1800) bgClass = 'bg-violet-200 text-violet-900 font-black hover:bg-violet-300';
 
                           const tooltipText = slot.studentNames.length > 0 
                             ? `${slot.studentNames.slice(0, 4).join(', ')}${slot.studentNames.length > 4 ? ` 외 ${slot.studentNames.length - 4}명` : ''} (${formatDurationKo(slot.totalSec)})`
@@ -789,8 +915,9 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                           return (
                             <td
                               key={sIdx}
-                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-transform hover:scale-105`}
-                              title={tooltipText}
+                              onClick={() => handleSlotClick(wDay, slot.hour, slot)}
+                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-all hover:scale-105 hover:ring-2 hover:ring-violet-400 active:scale-95 shadow-2xs`}
+                              title={`${tooltipText} - 클릭하여 학생별 상세 보기`}
                             >
                               {formatDurationKo(slot.totalSec)}
                             </td>
@@ -798,21 +925,31 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                         } else {
                           // Headcount View
                           if (slot.studentCount === 0) {
-                            return <td key={sIdx} className="bg-slate-50 text-slate-300 rounded-lg h-7 text-[10px] font-normal">-</td>;
+                            return (
+                              <td
+                                key={sIdx}
+                                onClick={() => handleSlotClick(wDay, slot.hour, slot)}
+                                className="bg-slate-50 hover:bg-slate-100 text-slate-300 rounded-lg h-7 text-[10px] font-normal cursor-pointer transition-colors"
+                                title="접속자 없음 (클릭하여 확인)"
+                              >
+                                -
+                              </td>
+                            );
                           }
-                          let bgClass = 'bg-blue-50 text-blue-700';
+                          let bgClass = 'bg-blue-50 text-blue-700 hover:bg-blue-100';
                           if (slot.studentCount >= 26) bgClass = 'bg-gradient-to-r from-violet-600 to-pink-600 text-white font-black shadow-sm';
-                          else if (slot.studentCount >= 21) bgClass = 'bg-indigo-600 text-white font-black';
-                          else if (slot.studentCount >= 13) bgClass = 'bg-indigo-400 text-white font-black';
-                          else if (slot.studentCount >= 6) bgClass = 'bg-blue-100 text-blue-900 font-black';
+                          else if (slot.studentCount >= 21) bgClass = 'bg-indigo-600 text-white font-black hover:bg-indigo-700';
+                          else if (slot.studentCount >= 13) bgClass = 'bg-indigo-400 text-white font-black hover:bg-indigo-500';
+                          else if (slot.studentCount >= 6) bgClass = 'bg-blue-100 text-blue-900 font-black hover:bg-blue-200';
 
                           const tooltipText = slot.studentNames.join(', ');
 
                           return (
                             <td
                               key={sIdx}
-                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-transform hover:scale-105`}
-                              title={tooltipText}
+                              onClick={() => handleSlotClick(wDay, slot.hour, slot)}
+                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-all hover:scale-105 hover:ring-2 hover:ring-indigo-400 active:scale-95 shadow-2xs`}
+                              title={`${tooltipText} - 클릭하여 학생별 상세 보기`}
                             >
                               {slot.studentCount}명{slot.studentCount >= 26 ? ' 🔥' : ''}
                             </td>
@@ -832,7 +969,12 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
               <div className="flex items-center gap-2">
                 <Flame size={16} className="text-rose-500 shrink-0" />
                 <span>
-                  최고 골든타임: <strong className="text-violet-700 font-black">{headcountKpi.peakTimeText}</strong> (동시 <span className="text-rose-600 font-black">{headcountKpi.peakCount}명</span> 집중 학습)
+                  최고 골든타임: <strong className="text-violet-700 font-black">{headcountKpi.peakTimeText}</strong>
+                  {headcountKpi.peakCount > 0 ? (
+                    <> (동시 <span className="text-rose-600 font-black">{headcountKpi.peakCount}명</span> 집중 학습)</>
+                  ) : (
+                    <span className="text-slate-400 font-normal"> (수업 외 가정 학습 집계 대기)</span>
+                  )}
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 font-extrabold flex items-center gap-3">
@@ -1022,7 +1164,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                     }`}>
                       ⏰ {slot.hourLabel}
                     </span>
-                    {topRank && topRank.count > 0 && (
+                    {topRank && !topRank.isExcluded && topRank.count > 0 && (
                       <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
                         🥇 1위: {topRank.grade}
                       </span>
@@ -1117,7 +1259,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
       </div>
 
       {/* 6. 하단: 학생별 상세 가정 학습 피드 (테이블 & 카드) */}
-      <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4">
+      <div id="home-study-student-list" className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <div className="text-sm font-black text-slate-800 flex items-center gap-2">
@@ -1274,6 +1416,208 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
           fetchData();
         }}
       />
+
+      {/* 8. 히트맵 셀 클릭 상세 팝업 모달 */}
+      {activeSlotModal && (
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setActiveSlotModal(null)}
+        >
+          <div 
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/80 w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-150"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            {activeSlotModal.isExcluded ? (
+              <div className="bg-gradient-to-r from-rose-50 via-orange-50 to-white border-b border-rose-100 p-5 flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200">
+                    <ShieldAlert size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-rose-950 flex items-center gap-2">
+                      <span>🚫 학원 수업 제외 시간</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-200 text-rose-800 font-extrabold">
+                        가정 학습 제외
+                      </span>
+                    </h3>
+                    <p className="text-xs font-bold text-rose-700/80 mt-0.5">
+                      {activeSlotModal.weekdayKo}요일 ({activeSlotModal.hourLabel})
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveSlotModal(null)}
+                  className="p-1.5 rounded-xl hover:bg-rose-100/70 text-rose-700 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            ) : (
+              <div className="bg-gradient-to-r from-violet-50 via-purple-50 to-white border-b border-violet-100 p-5 flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0 border border-violet-200">
+                    <Clock size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+                      <span>📅 {activeSlotModal.weekdayKo}요일 {activeSlotModal.hourLabel} 학습 현황</span>
+                    </h3>
+                    <p className="text-xs font-bold text-slate-500 mt-0.5">
+                      {selectedGrade === 'ALL' || selectedGrade === '전체' ? '전체 학년' : selectedGrade} 기준 · 접속 학생 <strong className="text-violet-700 font-black">{activeSlotModal.students.length}명</strong>
+                      {activeSlotModal.totalSec > 0 && ` (누적 ${formatDurationKo(activeSlotModal.totalSec)})`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveSlotModal(null)}
+                  className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            )}
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4">
+              {activeSlotModal.isExcluded ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-rose-50/70 border border-rose-100 rounded-2xl space-y-2">
+                    <div className="text-xs font-black text-rose-900 flex items-center gap-1.5">
+                      <span>📌 적용된 수업 규칙:</span>
+                      <strong className="text-rose-700">{activeSlotModal.exclusionRule?.title}</strong>
+                    </div>
+                    <div className="text-[11px] font-bold text-slate-600">
+                      • 시간 범위: <strong>{activeSlotModal.exclusionRule?.start_time} ~ {activeSlotModal.exclusionRule?.end_time}</strong>
+                    </div>
+                    <div className="text-[11px] font-bold text-slate-600">
+                      • 해당 요일: <strong>{activeSlotModal.exclusionRule?.days.map(d => WEEKDAY_KO_MAP[d] + '요일').join(', ')}</strong>
+                    </div>
+                  </div>
+
+                  <p className="text-xs font-bold text-slate-600 leading-relaxed bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
+                    💡 이 시간대는 학원 정규 수업 시간표로 등록되어 있어, 학생이 앱에 접속하더라도 <strong>순수 가정/자기주도 학습 통계(체류 시간, 최고 골든타임)</strong>에서 자동 제외됩니다. 실시간 모니터링 기능은 정상 작동합니다.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveSlotModal(null);
+                      setIsExclusionModalOpen(true);
+                    }}
+                    className="w-full py-2.5 rounded-2xl bg-gradient-to-r from-rose-500 to-orange-500 hover:from-rose-600 hover:to-orange-600 text-white font-black text-xs shadow-md shadow-rose-200 transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <ShieldAlert size={15} />
+                    <span>학원 수업 제외 시간표 수정하기</span>
+                  </button>
+                </div>
+              ) : activeSlotModal.students.length === 0 ? (
+                <div className="py-10 text-center space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                    <Clock size={24} />
+                  </div>
+                  <div className="text-xs font-black text-slate-700">이 시간대에는 접속한 학생이 없습니다.</div>
+                  <div className="text-[11px] font-bold text-slate-400">
+                    학생이 학원 외 장소에서 앱을 이용하면 여기에 실시간으로 표시됩니다.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-xs font-black text-slate-600 flex items-center justify-between">
+                    <span>접속 학생 목록 ({activeSlotModal.students.length}명)</span>
+                    <span className="text-[11px] text-slate-400 font-normal">체류시간 순 정렬</span>
+                  </div>
+
+                  {activeSlotModal.students.map((st, idx) => (
+                    <div 
+                      key={idx}
+                      className="bg-slate-50 hover:bg-violet-50/50 border border-slate-200/80 hover:border-violet-200 rounded-2xl p-3.5 transition-all space-y-2.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-lg bg-violet-100 text-violet-700 text-xs font-black flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <span className="text-sm font-black text-slate-900">{st.student_name}</span>
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                            {st.student_grade}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-black text-violet-700 bg-violet-100/80 px-2.5 py-1 rounded-xl">
+                            ⏱️ {formatDurationKo(st.duration_sec)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {st.started_at && (
+                        <div className="text-[10px] font-bold text-slate-400">
+                          접속 시각: {new Date(new Date(st.started_at).getTime() + 9 * 3600000).toISOString().replace('T', ' ').slice(0, 19)}
+                        </div>
+                      )}
+
+                      {/* 활동 내역 태그 */}
+                      {st.activities && st.activities.length > 0 && (
+                        <div className="space-y-1 pt-1 border-t border-slate-200/60">
+                          <div className="text-[10px] font-extrabold text-slate-500">열람 컨텐츠:</div>
+                          <div className="flex flex-wrap gap-1">
+                            {st.activities.slice(0, 3).map((act, aIdx) => (
+                              <span 
+                                key={aIdx} 
+                                className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-slate-700 flex items-center gap-1 max-w-[220px] truncate"
+                                title={act.title}
+                              >
+                                <span>{act.mode === 'library' ? '📚' : act.mode === 'video' ? '🎬' : '📝'}</span>
+                                <span className="truncate">{act.title}</span>
+                                <span className="text-violet-600 font-extrabold">({formatDurationKo(act.duration_sec)})</span>
+                              </span>
+                            ))}
+                            {st.activities.length > 3 && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-lg bg-slate-100 text-slate-500">
+                                +{st.activities.length - 3}개 더
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 바로가기 버튼 */}
+                      <div className="pt-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSearchStudent(st.student_name);
+                            setActiveSlotModal(null);
+                            const el = document.getElementById('home-study-student-list');
+                            if (el) el.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                          className="flex items-center gap-1 text-[11px] font-black text-violet-600 hover:text-violet-800 bg-white hover:bg-violet-100/50 border border-violet-200 px-2.5 py-1 rounded-xl transition-all cursor-pointer shadow-2xs"
+                        >
+                          <Search size={12} />
+                          <span>{st.student_name} 학생 오늘 기록 보기</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-100 p-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setActiveSlotModal(null)}
+                className="px-4 py-2 rounded-2xl bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-xs transition-colors cursor-pointer shadow-2xs"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
