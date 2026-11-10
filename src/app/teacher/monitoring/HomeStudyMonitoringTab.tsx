@@ -21,14 +21,23 @@ import {
   Loader2,
   ChevronRight,
   ChevronDown,
-  Info
+  Info,
+  Flame,
+  Trophy,
+  Award,
+  TrendingUp,
+  Layers
 } from 'lucide-react';
 import { 
   StudentHomeStudyDayRecord, 
   HomeStudyRulesConfig, 
+  ExclusionRule,
+  WeekdayCode,
   formatDurationKo, 
   getKoreanDateString,
+  getKoreanDayOfWeek,
   WEEKDAY_KO_MAP,
+  WEEKDAY_ORDER,
   DEFAULT_HOME_STUDY_RULES 
 } from '@/lib/homeStudyTypes';
 import HomeStudyExclusionModal from './HomeStudyExclusionModal';
@@ -44,16 +53,162 @@ interface HomeStudyMonitoringTabProps {
 }
 
 const GRADES = ['ALL', '중1', '중2', '중3', '고1', '고2', '고3'];
+const HEATMAP_HOURS = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 1];
+const WEEKDAY_KEYS: WeekdayCode[] = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+const COMPARISON_HOURS = [18, 19, 20, 21, 22, 23, 24];
+
+function getExclusionForSlot(
+  weekday: WeekdayCode,
+  hour: number,
+  grade: string,
+  rulesConfig: HomeStudyRulesConfig
+): ExclusionRule | null {
+  if (!rulesConfig || !rulesConfig.grade_rules) return null;
+
+  const rules = (grade === 'ALL' || grade === '전체')
+    ? Object.values(rulesConfig.grade_rules).flat()
+    : (rulesConfig.grade_rules[grade] || []);
+
+  const rawHour = hour === 24 ? 0 : hour;
+  const slotStartMin = rawHour * 60;
+  const slotEndMin = slotStartMin + 60;
+
+  for (const rule of rules) {
+    if (!rule.days || !rule.days.includes(weekday)) continue;
+    const [sH, sM] = rule.start_time.split(':').map(Number);
+    const [eH, eM] = rule.end_time.split(':').map(Number);
+    const ruleStartMin = sH * 60 + sM;
+    const ruleEndMin = eH * 60 + eM;
+
+    if (Math.max(slotStartMin, ruleStartMin) < Math.min(slotEndMin, ruleEndMin)) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+interface ExcludedSlot {
+  type: 'excluded';
+  rule: ExclusionRule;
+  colSpan: number;
+}
+
+interface DataSlot {
+  type: 'data';
+  hour: number;
+  totalSec: number;
+  studentCount: number;
+  studentNames: string[];
+}
+
+type RowSlot = ExcludedSlot | DataSlot;
+
+function buildRowSlots(
+  weekday: WeekdayCode,
+  hours: number[],
+  grade: string,
+  rulesConfig: HomeStudyRulesConfig,
+  gridData: Record<WeekdayCode, Record<number, { totalSec: number; students: Map<string, number> }>>
+): RowSlot[] {
+  const slots: RowSlot[] = [];
+  let i = 0;
+  while (i < hours.length) {
+    const h = hours[i];
+    const exc = getExclusionForSlot(weekday, h, grade, rulesConfig);
+    if (exc) {
+      let count = 1;
+      while (
+        i + count < hours.length &&
+        getExclusionForSlot(weekday, hours[i + count], grade, rulesConfig)?.id === exc.id
+      ) {
+        count++;
+      }
+      slots.push({ type: 'excluded', rule: exc, colSpan: count });
+      i += count;
+    } else {
+      const data = gridData[weekday]?.[h] || { totalSec: 0, students: new Map() };
+      slots.push({
+        type: 'data',
+        hour: h,
+        totalSec: data.totalSec,
+        studentCount: data.students.size,
+        studentNames: Array.from(data.students.keys()),
+      });
+      i++;
+    }
+  }
+  return slots;
+}
+
+const GRADE_COLOR_THEME: Record<string, {
+  bg: string;
+  fill: string;
+  border: string;
+  text: string;
+  badge: string;
+}> = {
+  '고1': {
+    bg: 'bg-blue-50',
+    fill: 'bg-gradient-to-r from-blue-400 to-blue-600',
+    border: 'border-blue-400',
+    text: 'text-blue-700',
+    badge: 'bg-blue-100 text-blue-800',
+  },
+  '고2': {
+    bg: 'bg-violet-50',
+    fill: 'bg-gradient-to-r from-violet-400 to-violet-600',
+    border: 'border-violet-400',
+    text: 'text-violet-700',
+    badge: 'bg-violet-100 text-violet-800',
+  },
+  '고3': {
+    bg: 'bg-orange-50',
+    fill: 'bg-gradient-to-r from-orange-400 to-orange-600',
+    border: 'border-orange-400',
+    text: 'text-orange-700',
+    badge: 'bg-orange-100 text-orange-800',
+  },
+  '중3': {
+    bg: 'bg-emerald-50',
+    fill: 'bg-gradient-to-r from-emerald-400 to-emerald-600',
+    border: 'border-emerald-400',
+    text: 'text-emerald-700',
+    badge: 'bg-emerald-100 text-emerald-800',
+  },
+  '중2': {
+    bg: 'bg-cyan-50',
+    fill: 'bg-gradient-to-r from-cyan-400 to-cyan-600',
+    border: 'border-cyan-400',
+    text: 'text-cyan-700',
+    badge: 'bg-cyan-100 text-cyan-800',
+  },
+  '중1': {
+    bg: 'bg-rose-50',
+    fill: 'bg-gradient-to-r from-rose-400 to-rose-600',
+    border: 'border-rose-400',
+    text: 'text-rose-700',
+    badge: 'bg-rose-100 text-rose-800',
+  },
+};
 
 export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitoringTabProps) {
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
   const [selectedDate, setSelectedDate] = useState<string>(getKoreanDateString());
   const [searchStudent, setSearchStudent] = useState<string>('');
-  const [records, setRecords] = useState<StudentHomeStudyDayRecord[]>([]);
+  
+  // 전체 주간 세션 레코드 (최근 7일치 전체를 로드하여 즉시 메모리 계산)
+  const [weeklyRecords, setWeeklyRecords] = useState<StudentHomeStudyDayRecord[]>([]);
   const [rulesConfig, setRulesConfig] = useState<HomeStudyRulesConfig>(DEFAULT_HOME_STUDY_RULES);
   const [loading, setLoading] = useState<boolean>(true);
   const [isExclusionModalOpen, setIsExclusionModalOpen] = useState<boolean>(false);
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
+
+  // 히트맵 뷰 모드 ('duration': 체류시간, 'headcount': 접속 인원수)
+  const [heatmapView, setHeatmapView] = useState<'duration' | 'headcount'>('duration');
+
+  // 다중 학년 비교 상태
+  const [comparisonGrades, setComparisonGrades] = useState<string[]>(['고1', '고2', '고3']);
+  const [comparisonView, setComparisonView] = useState<'ranking' | 'sideBySide'>('ranking');
 
   // 규칙 및 세션 데이터 로드
   const fetchData = async () => {
@@ -61,7 +216,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     try {
       const [rulesRes, sessionsRes] = await Promise.all([
         fetch('/api/monitoring/home-study/rules'),
-        fetch(`/api/monitoring/home-study/sessions?date=${encodeURIComponent(selectedDate)}&grade=${encodeURIComponent(selectedGrade)}`),
+        fetch('/api/monitoring/home-study/sessions?days=7'),
       ]);
 
       const rulesData = await rulesRes.json();
@@ -71,7 +226,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
       const sessionsData = await sessionsRes.json();
       if (sessionsData.success && Array.isArray(sessionsData.records)) {
-        setRecords(sessionsData.records);
+        setWeeklyRecords(sessionsData.records);
       }
     } catch (err) {
       console.error('Failed to load home study data:', err);
@@ -82,9 +237,18 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
   useEffect(() => {
     fetchData();
-  }, [selectedDate, selectedGrade]);
+  }, []);
 
-  // 필터된 학생별 기록
+  // 선택된 날짜와 학년에 해당하는 레코드 (상단 KPI 및 하단 피드용)
+  const records = useMemo(() => {
+    return weeklyRecords.filter(r => {
+      const matchesDate = !selectedDate || r.date === selectedDate;
+      const matchesGrade = selectedGrade === 'ALL' || selectedGrade === '전체' || (r.student_grade && r.student_grade.startsWith(selectedGrade));
+      return matchesDate && matchesGrade;
+    });
+  }, [weeklyRecords, selectedDate, selectedGrade]);
+
+  // 필터된 학생별 기록 (이름/학년 검색)
   const filteredRecords = useMemo(() => {
     return records.filter(r => {
       const matchesSearch = !searchStudent.trim() || 
@@ -152,6 +316,144 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     return rulesConfig.grade_rules?.[baseGrade] || [];
   }, [rulesConfig, selectedGrade]);
 
+  // ==========================================
+  // 히트맵 실시간 동적 데이터 집계 (주간 7일 x 12시간)
+  // ==========================================
+  const heatmapGridData = useMemo(() => {
+    const grid: Record<WeekdayCode, Record<number, { totalSec: number; students: Map<string, number> }>> = {
+      MON: {}, TUE: {}, WED: {}, THU: {}, FRI: {}, SAT: {}, SUN: {}
+    };
+
+    WEEKDAY_KEYS.forEach(w => {
+      HEATMAP_HOURS.forEach(h => {
+        grid[w][h] = { totalSec: 0, students: new Map() };
+      });
+    });
+
+    const targetRecords = selectedGrade === 'ALL' || selectedGrade === '전체'
+      ? weeklyRecords
+      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade));
+
+    targetRecords.forEach(r => {
+      (r.sessions || []).forEach(ses => {
+        if (!ses.started_at) return;
+        const d = new Date(ses.started_at);
+        const kstDate = new Date(d.getTime() + 9 * 3600000);
+        const dayIdx = kstDate.getUTCDay();
+        const dayCodes: WeekdayCode[] = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+        const mapDay: WeekdayCode = dayCodes[dayIdx];
+        const rawHour = kstDate.getUTCHours();
+        const mappedHour = rawHour === 0 ? 24 : rawHour;
+
+        if (grid[mapDay] && grid[mapDay][mappedHour]) {
+          grid[mapDay][mappedHour].totalSec += ses.duration_sec || 0;
+          const prev = grid[mapDay][mappedHour].students.get(r.student_name) || 0;
+          grid[mapDay][mappedHour].students.set(r.student_name, prev + (ses.duration_sec || 0));
+        }
+      });
+    });
+
+    return grid;
+  }, [weeklyRecords, selectedGrade]);
+
+  // 인원수 기준 골든타임 & 피크 분석
+  const headcountKpi = useMemo(() => {
+    let maxHour = 22;
+    let maxDay: WeekdayCode = 'MON';
+    let maxCount = 0;
+    let eveningTotalCount = 0;
+    let eveningSlotCount = 0;
+    let midnightCount = 0;
+
+    WEEKDAY_KEYS.forEach(w => {
+      HEATMAP_HOURS.forEach(h => {
+        const item = heatmapGridData[w]?.[h];
+        const cnt = item?.students.size || 0;
+        if (cnt > maxCount) {
+          maxCount = cnt;
+          maxHour = h;
+          maxDay = w;
+        }
+        if (h >= 19 && h <= 24) {
+          eveningTotalCount += cnt;
+          eveningSlotCount++;
+        }
+        if (h === 24) {
+          midnightCount += cnt;
+        }
+      });
+    });
+
+    const avgEvening = eveningSlotCount > 0 ? (eveningTotalCount / eveningSlotCount).toFixed(1) : '0';
+    return {
+      peakTimeText: `${WEEKDAY_KO_MAP[maxDay]}요일 ${maxHour}시`,
+      peakCount: maxCount,
+      avgEvening,
+      midnightCount,
+    };
+  }, [heatmapGridData]);
+
+  // ==========================================
+  // 다중 학년 시간대별 1·2·3등 랭킹 및 비교 데이터 계산
+  // ==========================================
+  const multiGradeRankingData = useMemo(() => {
+    return COMPARISON_HOURS.map(h => {
+      const targetRawHour = h === 24 ? 0 : h;
+
+      const gradeResults = comparisonGrades.map(grade => {
+        const gRecords = weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(grade));
+        const activeStudents = new Set<string>();
+        let totalSec = 0;
+
+        gRecords.forEach(r => {
+          (r.sessions || []).forEach(ses => {
+            if (!ses.started_at) return;
+            const d = new Date(ses.started_at);
+            const kstDate = new Date(d.getTime() + 9 * 3600000);
+            if (kstDate.getUTCHours() === targetRawHour) {
+              activeStudents.add(r.student_name);
+              totalSec += ses.duration_sec || 0;
+            }
+          });
+        });
+
+        const todayDay = getKoreanDayOfWeek();
+        const exc = getExclusionForSlot(todayDay, h, grade, rulesConfig);
+
+        return {
+          grade,
+          count: activeStudents.size,
+          students: Array.from(activeStudents),
+          totalSec,
+          isExcluded: !!exc,
+          exclusionTitle: exc?.title || '',
+        };
+      });
+
+      const sorted = [...gradeResults].sort((a, b) => b.count - a.count);
+      const maxCount = Math.max(...gradeResults.map(g => g.count), 1);
+
+      return {
+        hour: h,
+        hourLabel: h === 24 ? '24:00 (자정 심야)' : `${h}:00 (${h}시대)`,
+        ranks: sorted,
+        maxCount,
+      };
+    });
+  }, [weeklyRecords, comparisonGrades, rulesConfig]);
+
+  // 다중 비교 학년 토글 핸들러
+  const toggleComparisonGrade = (g: string) => {
+    setComparisonGrades(prev => {
+      if (prev.includes(g)) {
+        if (prev.length === 1) return prev; // 최소 1개 유지
+        return prev.filter(item => item !== g);
+      } else {
+        return [...prev, g];
+      }
+    });
+  };
+
   // CSV 다운로드
   const handleExportCSV = () => {
     if (filteredRecords.length === 0) {
@@ -198,91 +500,49 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
             </span>
           </div>
           <p className="text-xs font-bold text-slate-500">
-            학원 수업 외 시간대(집, 독서실 등)에 접속한 시간대, 체류시간, 라이브러리 및 복습 열람 현황을 정밀 분석합니다.
+            학원 정규 수업 시간표를 자동 제외하여, <strong>학생이 집이나 독서실에서 혼자 앱을 켜고 공부한 순수 시간</strong>만 정밀 집계합니다.
           </p>
-
-          {/* 제외 필터 현황 뱃지 */}
-          <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs font-bold text-violet-900">
-            <span className="flex items-center gap-1 text-violet-700 font-black">
-              <ShieldAlert size={14} className="text-violet-600" />
-              학원 수업 제외 필터 작동 중:
-            </span>
-            {activeExclusionRules.length === 0 ? (
-              <span className="text-slate-400 font-normal">등록된 제외 규칙이 없습니다.</span>
-            ) : (
-              activeExclusionRules.map(r => (
-                <span key={r.id} className="px-2 py-0.5 rounded-md bg-white border border-violet-200 text-violet-800 text-[11px] font-extrabold shadow-2xs">
-                  {r.title} ({r.days.map(d => WEEKDAY_KO_MAP[d]).join(',')}) {r.start_time}~{r.end_time}
-                </span>
-              ))
-            )}
-            <span className="text-[10px] text-emerald-600 font-bold ml-1">
-              ✓ 수업시간은 저장되지 않으며 순수 가정 학습만 집계됩니다.
-            </span>
-          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsExclusionModalOpen(true)}
-          className="px-4 py-2.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white rounded-2xl text-xs font-black transition-all shadow-md shadow-violet-200 shrink-0 cursor-pointer flex items-center gap-2 active:scale-98"
-        >
-          <SlidersHorizontal size={15} />
-          <span>⚙️ 학원 수업 제외 시간 설정</span>
-        </button>
+        {/* 학원 수업 제외 시간대 설정 버튼 */}
+        <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setIsExclusionModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-black text-xs shadow-md shadow-violet-200 transition-all cursor-pointer active:scale-98"
+          >
+            <ShieldAlert size={16} />
+            <span>학원 수업 제외 시간대 설정</span>
+          </button>
+        </div>
       </div>
 
-      {/* 2. 필터 바 (학년 선택, 날짜 선택, 검색, 다운로드) */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        {/* 학년 칩 */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+      {/* 2. 필터 툴바 (학년 탭 + 날짜 + 검색 + CSV 다운로드) */}
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-4 sm:p-5 shadow-2xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+        {/* 학년 탭 버튼 */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0 scrollbar-none">
+          <span className="text-xs font-black text-slate-400 mr-1 shrink-0">학년:</span>
           {GRADES.map(g => (
             <button
               key={g}
               type="button"
               onClick={() => setSelectedGrade(g)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-2xl text-xs font-black transition-all cursor-pointer shrink-0 ${
                 selectedGrade === g
-                  ? 'bg-violet-600 text-white shadow-xs'
-                  : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200'
+                  ? 'bg-violet-600 text-white shadow-md shadow-violet-200 scale-105'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
               }`}
             >
-              {g === 'ALL' ? '전체' : g}
+              {g}
             </button>
           ))}
         </div>
 
-        {/* 날짜 선택 & 검색 & 엑셀 다운로드 */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* 오늘 / 어제 퀵 버튼 */}
-          <button
-            type="button"
-            onClick={() => setSelectedDate(getKoreanDateString())}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              selectedDate === getKoreanDateString()
-                ? 'bg-slate-900 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            오늘
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              const yest = new Date(Date.now() - 24 * 60 * 60 * 1000);
-              setSelectedDate(getKoreanDateString(yest));
-            }}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              selectedDate !== getKoreanDateString()
-                ? 'bg-slate-900 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            어제
-          </button>
-
-          <div className="flex items-center gap-1 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700">
-            <Calendar size={14} className="text-slate-400" />
+        {/* 날짜 선택 + 검색 + 액션 */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* 날짜 선택 인풋 */}
+          <div className="flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-2xl border border-slate-200/80 text-xs font-bold text-slate-700">
+            <Calendar size={14} className="text-violet-600" />
             <input
               type="date"
               value={selectedDate}
@@ -291,92 +551,109 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
             />
           </div>
 
-          <div className="relative w-36 sm:w-44">
-            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          {/* 학생 검색 인풋 */}
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
               value={searchStudent}
               onChange={e => setSearchStudent(e.target.value)}
-              placeholder="학생 이름 검색..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-7 pr-2.5 py-1.5 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400"
+              placeholder="학생 이름/학년 검색..."
+              className="bg-slate-50 border border-slate-200 rounded-2xl pl-8 pr-3 py-1.5 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 w-36 sm:w-44"
             />
           </div>
 
+          {/* 새로고침 */}
           <button
             type="button"
             onClick={fetchData}
-            className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl transition-all cursor-pointer"
+            className="p-2 rounded-2xl bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer shadow-2xs"
             title="새로고침"
           >
             <RotateCcw size={15} />
           </button>
 
+          {/* CSV 내보내기 */}
           <button
             type="button"
             onClick={handleExportCSV}
-            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 font-bold text-xs transition-all cursor-pointer shadow-2xs"
           >
-            <Download size={13} />
-            <span>CSV 다운</span>
+            <Download size={14} className="text-slate-500" />
+            <span>CSV 저장</span>
           </button>
         </div>
       </div>
 
-      {/* 3. KPI 4대 지표 카드 */}
+      {/* 3. 상단 핵심 KPI 요약 카드 4종 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* KPI 1 */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-1.5">
-          <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-            <Users size={14} className="text-violet-600" />
-            <span>가정 학습 접속 학생</span>
-          </div>
-          <div className="text-2xl font-black text-slate-900 tracking-tight">
-            {totalAccessedCount}명
-            <span className="text-xs font-bold text-slate-400 ml-1.5">
-              / 전체 {gradeStudents.length}명
+        {/* KPI 1: 총 순수 가정 학습 시간 */}
+        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-2 relative overflow-hidden">
+          <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
+            <span className="flex items-center gap-1.5">
+              <Clock size={16} className="text-violet-600" />
+              오늘 총 가정 체류시간
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-extrabold">
+              수업제외 반영
             </span>
           </div>
+          <div className="text-2xl font-black text-slate-800 tracking-tight">
+            {formatDurationKo(totalSeconds)}
+          </div>
           <div className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
-            <CheckCircle2 size={12} />
-            <span>참여율 {gradeStudents.length > 0 ? Math.round((totalAccessedCount / gradeStudents.length) * 100) : 0}%</span>
+            <Sparkles size={12} />
+            <span>학원 밖 순수 자기주도 학습량</span>
           </div>
         </div>
 
-        {/* KPI 2 */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-1.5">
-          <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-            <Clock size={14} className="text-fuchsia-600" />
-            <span>1인당 평균 가정 체류시간</span>
+        {/* KPI 2: 접속 학생 수 */}
+        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-2">
+          <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
+            <span className="flex items-center gap-1.5">
+              <Users size={16} className="text-blue-600" />
+              가정 학습 참여 학생
+            </span>
+            <span className="text-[10px] font-extrabold text-slate-500">
+              {gradeStudents.length}명 중
+            </span>
           </div>
-          <div className="text-2xl font-black text-slate-900 tracking-tight">
+          <div className="text-2xl font-black text-slate-800 tracking-tight flex items-baseline gap-2">
+            <span>{totalAccessedCount}명</span>
+            <span className="text-xs text-slate-400 font-bold">
+              ({gradeStudents.length > 0 ? Math.round((totalAccessedCount / gradeStudents.length) * 100) : 0}%)
+            </span>
+          </div>
+          <div className="text-[11px] font-bold text-slate-400">
+            대상 학년 ({selectedGrade === 'ALL' ? '전체' : selectedGrade}) 접속률
+          </div>
+        </div>
+
+        {/* KPI 3: 1인당 평균 체류시간 */}
+        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-2">
+          <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
+            <span className="flex items-center gap-1.5">
+              <TrendingUp size={16} className="text-fuchsia-600" />
+              학생 1인당 평균 시간
+            </span>
+          </div>
+          <div className="text-2xl font-black text-slate-800 tracking-tight">
             {formatDurationKo(avgSeconds)}
           </div>
-          <div className="text-[11px] font-bold text-slate-500">
-            총 {formatDurationKo(totalSeconds)} 누적 학습
+          <div className="text-[11px] font-bold text-slate-400">
+            접속 학생 기준 1인당 일일 평균
           </div>
         </div>
 
-        {/* KPI 3 */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-1.5">
-          <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-            <Sparkles size={14} className="text-amber-500" />
-            <span>주요 접속 피크 시간대</span>
+        {/* KPI 4: 최다 열람 단원/라이브러리 */}
+        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-2">
+          <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
+            <span className="flex items-center gap-1.5">
+              <Library size={16} className="text-amber-500" />
+              오늘 최다 열람 컨텐츠
+            </span>
           </div>
-          <div className="text-2xl font-black text-slate-900 tracking-tight text-violet-700">
-            21:30 ~ 23:45
-          </div>
-          <div className="text-[11px] font-bold text-violet-600">
-            심야 귀가 후 자기주도 집중
-          </div>
-        </div>
-
-        {/* KPI 4 */}
-        <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-1.5">
-          <div className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-            <BookOpen size={14} className="text-blue-600" />
-            <span>가정 최다 열람 단원</span>
-          </div>
-          <div className="text-base font-black text-slate-800 truncate" title={topLibraryTitle?.title || '기록 없음'}>
+          <div className="text-base font-black text-slate-800 truncate" title={topLibraryTitle?.title || ''}>
             {topLibraryTitle ? topLibraryTitle.title : '기록 없음'}
           </div>
           <div className="text-[11px] font-bold text-blue-600 truncate">
@@ -385,153 +662,185 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
         </div>
       </div>
 
-      {/* 4. 중단 그리드 (주간 24시간 히트맵 + 활동 구성비) */}
+      {/* 4. 중단 그리드 (동적 24시간 히트맵 + 활동 구성비) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         
-        {/* 주간 24시간 히트맵 (7열) */}
+        {/* 주간 24시간 실시간 동적 히트맵 (7열) */}
         <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4 flex flex-col justify-between">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <div className="text-sm font-black text-slate-800 flex items-center gap-2">
                 <Clock size={16} className="text-violet-600" />
-                <span>시간대별 가정 접속 히트맵 (24시간 분석)</span>
+                <span>시간대별 가정 접속 히트맵 (실시간 연동)</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-extrabold">
+                  {selectedGrade === 'ALL' ? '전체 학년' : `${selectedGrade} 맞춤 시간표`}
+                </span>
               </div>
               <p className="text-[11px] font-bold text-slate-400 mt-0.5">
-                붉은 빗금은 학원 수업 시간대로 기록에서 자동 제외된 시간대입니다.
+                선택한 학년의 수업 제외 시간표(붉은 빗금)가 즉시 자동 반영됩니다.
               </p>
             </div>
 
-            <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500">
-              <span className="w-2.5 h-2.5 rounded bg-violet-100"></span> 30분
-              <span className="w-2.5 h-2.5 rounded bg-violet-400"></span> 1시간
-              <span className="w-2.5 h-2.5 rounded bg-violet-700"></span> 2시간+
-              <span className="w-2.5 h-2.5 rounded bg-rose-200 border border-rose-300"></span> 수업제외
+            {/* 뷰 모드 토글: 체류시간 vs 인원수 */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-2xl gap-1 shrink-0 self-start sm:self-auto border border-slate-200/80">
+              <button
+                type="button"
+                onClick={() => setHeatmapView('duration')}
+                className={`px-3 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  heatmapView === 'duration'
+                    ? 'bg-white text-violet-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                ⏱️ 체류시간 뷰
+              </button>
+              <button
+                type="button"
+                onClick={() => setHeatmapView('headcount')}
+                className={`px-3 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  heatmapView === 'headcount'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                👥 접속 인원수 뷰
+              </button>
             </div>
           </div>
 
-          {/* 히트맵 그리드 테이블 */}
+          {/* 범례 표시 (뷰 모드에 따라 다이내믹 변경) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[10px] font-bold text-slate-500">
+            <span className="text-slate-400 font-extrabold">범례 (색상 농도):</span>
+            {heatmapView === 'duration' ? (
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-violet-100"></span> 30분 미만</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-violet-200"></span> 1시간</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-violet-500 text-white px-0.5"></span> 1.5시간</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-violet-700 text-white px-0.5"></span> 2시간+</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-rose-200 border border-dashed border-rose-400"></span> 🚫 수업 제외</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-50"></span> 1~5명</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-100"></span> 6~12명</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-indigo-400"></span> 13~20명</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-indigo-600"></span> 21~25명</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-gradient-to-r from-violet-600 to-pink-600"></span> 26명+ (피크🔥)</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-rose-200 border border-dashed border-rose-400"></span> 🚫 수업 제외</span>
+              </div>
+            )}
+          </div>
+
+          {/* 히트맵 그리드 테이블 (실제 100% 동적 렌더링) */}
           <div className="overflow-x-auto pb-1">
             <table className="w-full text-center text-[10px] font-bold border-separate border-spacing-1">
               <thead>
                 <tr className="text-slate-400">
                   <th className="w-8 py-1">요일</th>
-                  <th>14시</th><th>15시</th><th>16시</th><th>17시</th>
-                  <th className="text-rose-600">18시</th><th className="text-rose-600">19시</th><th className="text-rose-600">20시</th><th className="text-rose-600">21시</th>
-                  <th>22시</th><th>23시</th><th>24시</th><th>01시</th>
+                  {HEATMAP_HOURS.map(h => (
+                    <th key={h} className={h >= 19 && h <= 22 ? 'text-violet-600 font-black' : ''}>
+                      {h === 24 ? '24시' : `${h}시`}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {/* 월 */}
-                <tr>
-                  <td className="font-black text-slate-700">월</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">15m</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">35m</td>
-                  <td colSpan={4} className="bg-rose-100/80 border border-dashed border-rose-300 text-rose-800 font-extrabold rounded h-6">
-                    🚫 학원 수업 (제외)
-                  </td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h10</td>
-                  <td className="bg-violet-800 text-white rounded h-6">1h45</td>
-                  <td className="bg-violet-400 text-white rounded h-6">40m</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                </tr>
-                {/* 화 */}
-                <tr>
-                  <td className="font-black text-slate-700">화</td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">20m</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">45m</td>
-                  <td className="bg-violet-300 text-violet-900 rounded h-6">55m</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h20</td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h30</td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h50</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h10</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h15</td>
-                  <td className="bg-violet-400 text-white rounded h-6">1h05</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">48m</td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">20m</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                </tr>
-                {/* 수 */}
-                <tr>
-                  <td className="font-black text-slate-700">수</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">25m</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">40m</td>
-                  <td colSpan={4} className="bg-rose-100/80 border border-dashed border-rose-300 text-rose-800 font-extrabold rounded h-6">
-                    🚫 학원 수업 (제외)
-                  </td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h40</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h05</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h10</td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">15m</td>
-                </tr>
-                {/* 목 */}
-                <tr>
-                  <td className="font-black text-slate-700">목</td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">20m</td>
-                  <td className="bg-violet-300 text-violet-900 rounded h-6">50m</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h10</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h15</td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h45</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h00</td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h30</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h20</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h15</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">35m</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                </tr>
-                {/* 금 */}
-                <tr>
-                  <td className="font-black text-slate-700">금</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">15m</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">30m</td>
-                  <td colSpan={4} className="bg-rose-100/80 border border-dashed border-rose-300 text-rose-800 font-extrabold rounded h-6">
-                    🚫 학원 수업 (제외)
-                  </td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h20</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h15</td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h55</td>
-                  <td className="bg-violet-300 text-violet-900 rounded h-6">45m</td>
-                </tr>
-                {/* 토 */}
-                <tr>
-                  <td className="font-black text-blue-600">토</td>
-                  <td colSpan={4} className="bg-rose-100/80 border border-dashed border-rose-300 text-rose-800 font-extrabold rounded h-6">
-                    🚫 주말 클리닉 (14~18시 제외)
-                  </td>
-                  <td className="bg-violet-300 text-violet-900 rounded h-6">45m</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h15</td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h25</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h20</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h10</td>
-                  <td className="bg-violet-600 text-white rounded h-6">1h30</td>
-                  <td className="bg-violet-100 text-violet-700 rounded h-6">25m</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                </tr>
-                {/* 일 */}
-                <tr>
-                  <td className="font-black text-rose-600">일</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h15</td>
-                  <td className="bg-violet-700 text-white rounded h-6">2h00</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h30</td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h45</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h20</td>
-                  <td className="bg-violet-700 text-white rounded h-6">1h50</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h15</td>
-                  <td className="bg-violet-800 text-white rounded h-6">2h40</td>
-                  <td className="bg-violet-500 text-white rounded h-6">1h20</td>
-                  <td className="bg-violet-200 text-violet-800 rounded h-6">40m</td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                  <td className="bg-slate-50 rounded h-6"></td>
-                </tr>
+                {WEEKDAY_KEYS.map(wDay => {
+                  const slots = buildRowSlots(wDay, HEATMAP_HOURS, selectedGrade, rulesConfig, heatmapGridData);
+                  const isSun = wDay === 'SUN';
+                  const isSat = wDay === 'SAT';
+
+                  return (
+                    <tr key={wDay}>
+                      <td className={`font-black rounded h-7 ${
+                        isSun ? 'text-rose-600 bg-rose-50' : isSat ? 'text-blue-600 bg-blue-50' : 'text-slate-700 bg-slate-100'
+                      }`}>
+                        {WEEKDAY_KO_MAP[wDay]}
+                      </td>
+
+                      {slots.map((slot, sIdx) => {
+                        if (slot.type === 'excluded') {
+                          return (
+                            <td
+                              key={sIdx}
+                              colSpan={slot.colSpan}
+                              className="bg-rose-100/90 border border-dashed border-rose-300 text-rose-900 font-extrabold rounded-lg h-7 px-1 text-[10px] tracking-tight transition-all"
+                              title={`${slot.rule.title} (${slot.rule.start_time} ~ ${slot.rule.end_time} 제외)`}
+                            >
+                              🚫 {slot.rule.title} ({slot.rule.start_time.slice(0, 5)}~{slot.rule.end_time.slice(0, 5)} 제외)
+                            </td>
+                          );
+                        }
+
+                        // Data Slot
+                        if (heatmapView === 'duration') {
+                          if (slot.totalSec === 0) {
+                            return <td key={sIdx} className="bg-slate-50 text-slate-300 rounded-lg h-7 text-[10px] font-normal">-</td>;
+                          }
+                          let bgClass = 'bg-violet-100 text-violet-800';
+                          if (slot.totalSec >= 5400) bgClass = 'bg-violet-700 text-white font-black shadow-2xs';
+                          else if (slot.totalSec >= 3600) bgClass = 'bg-violet-500 text-white font-black';
+                          else if (slot.totalSec >= 1800) bgClass = 'bg-violet-200 text-violet-900 font-black';
+
+                          const tooltipText = slot.studentNames.length > 0 
+                            ? `${slot.studentNames.slice(0, 4).join(', ')}${slot.studentNames.length > 4 ? ` 외 ${slot.studentNames.length - 4}명` : ''} (${formatDurationKo(slot.totalSec)})`
+                            : formatDurationKo(slot.totalSec);
+
+                          return (
+                            <td
+                              key={sIdx}
+                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-transform hover:scale-105`}
+                              title={tooltipText}
+                            >
+                              {formatDurationKo(slot.totalSec)}
+                            </td>
+                          );
+                        } else {
+                          // Headcount View
+                          if (slot.studentCount === 0) {
+                            return <td key={sIdx} className="bg-slate-50 text-slate-300 rounded-lg h-7 text-[10px] font-normal">-</td>;
+                          }
+                          let bgClass = 'bg-blue-50 text-blue-700';
+                          if (slot.studentCount >= 26) bgClass = 'bg-gradient-to-r from-violet-600 to-pink-600 text-white font-black shadow-sm';
+                          else if (slot.studentCount >= 21) bgClass = 'bg-indigo-600 text-white font-black';
+                          else if (slot.studentCount >= 13) bgClass = 'bg-indigo-400 text-white font-black';
+                          else if (slot.studentCount >= 6) bgClass = 'bg-blue-100 text-blue-900 font-black';
+
+                          const tooltipText = slot.studentNames.join(', ');
+
+                          return (
+                            <td
+                              key={sIdx}
+                              className={`${bgClass} rounded-lg h-7 text-[10px] font-black cursor-pointer transition-transform hover:scale-105`}
+                              title={tooltipText}
+                            >
+                              {slot.studentCount}명{slot.studentCount >= 26 ? ' 🔥' : ''}
+                            </td>
+                          );
+                        }
+                      })}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+
+          {/* 인원수 뷰일 때 하단 피크 분석 뱃지 바 */}
+          {heatmapView === 'headcount' && (
+            <div className="p-3 bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-100 rounded-2xl flex flex-wrap items-center justify-between text-xs font-bold text-violet-950 gap-2 animate-in fade-in duration-200">
+              <div className="flex items-center gap-2">
+                <Flame size={16} className="text-rose-500 shrink-0" />
+                <span>
+                  최고 골든타임: <strong className="text-violet-700 font-black">{headcountKpi.peakTimeText}</strong> (동시 <span className="text-rose-600 font-black">{headcountKpi.peakCount}명</span> 집중 학습)
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-extrabold flex items-center gap-3">
+                <span>저녁 피크(19~24시) 평균: <strong className="text-slate-800">{headcountKpi.avgEvening}명</strong></span>
+                <span>자정(24시) 심야 열공: <strong className="text-indigo-600">{headcountKpi.midnightCount}명</strong></span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 활동 구성비 (5열) */}
@@ -617,122 +926,334 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
       </div>
 
-      {/* 5. 하단: 학생별 상세 가정 학습 피드 (테이블 & 카드) */}
-      <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4">
-        <div className="flex items-center justify-between">
+      {/* ========================================================================= */}
+      {/* 5. 신규 기능: 다중 학년 동시 비교 & 골든타임 1·2·3등 랭킹 분석 */}
+      {/* ========================================================================= */}
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
           <div>
-            <div className="text-sm font-black text-slate-800 flex items-center gap-2">
-              <Users size={16} className="text-violet-600" />
-              <span>학생별 가정 학습 접속 기록 및 세부 열람 내역 ({filteredRecords.length}명)</span>
+            <div className="text-base font-black text-slate-800 flex items-center gap-2">
+              <Trophy size={18} className="text-amber-500" />
+              <span>📊 학년별 동시 비교 & 골든타임 1·2·3등 랭킹 분석</span>
+              <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 font-extrabold border border-amber-200">
+                Multi-Grade Comparison
+              </span>
             </div>
-            <p className="text-[11px] font-bold text-slate-400 mt-0.5">
-              학원 수업 시간대를 제외한 순수 가정 체류 시간과 활동 내역입니다.
+            <p className="text-xs font-bold text-slate-400 mt-0.5">
+              고1, 고2, 고3 등 여러 학년을 동시에 켜놓고 "같은 시간대에 어느 학년이 더 열심히 접속하는지" 실시간 비교합니다.
             </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* 다중 선택 학년 토글 버튼들 */}
+            <div className="flex items-center gap-1.5 bg-slate-50 p-1 rounded-2xl border border-slate-200/80">
+              <span className="text-[11px] font-black text-slate-400 ml-1.5 mr-1 shrink-0">비교 학년:</span>
+              {['고1', '고2', '고3', '중3', '중2', '중1'].map(g => {
+                const isSelected = comparisonGrades.includes(g);
+                const theme = GRADE_COLOR_THEME[g] || GRADE_COLOR_THEME['고1'];
+                return (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => toggleComparisonGrade(g)}
+                    className={`px-3 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                      isSelected
+                        ? `${theme.bg} ${theme.text} border ${theme.border} shadow-2xs font-black scale-105`
+                        : 'bg-white hover:bg-slate-100 text-slate-400 border border-slate-200/60'
+                    }`}
+                  >
+                    {isSelected ? `✓ ${g}` : g}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 비교 뷰 모드 스위치 */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-2xl gap-1 border border-slate-200/80">
+              <button
+                type="button"
+                onClick={() => setComparisonView('ranking')}
+                className={`px-3 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  comparisonView === 'ranking'
+                    ? 'bg-white text-amber-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                🥇 1·2·3등 메달 랭킹
+              </button>
+              <button
+                type="button"
+                onClick={() => setComparisonView('sideBySide')}
+                className={`px-3 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                  comparisonView === 'sideBySide'
+                    ? 'bg-violet-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                📊 나란히 비교 막대
+              </button>
+            </div>
           </div>
         </div>
 
-        {loading ? (
-          <div className="py-20 flex flex-col items-center justify-center text-slate-400 gap-2">
-            <Loader2 size={24} className="animate-spin text-violet-600" />
-            <span className="text-xs font-bold">가정 학습 기록을 불러오는 중...</span>
-          </div>
-        ) : filteredRecords.length === 0 ? (
-          <div className="py-20 text-center text-xs font-bold text-slate-400 bg-slate-50/60 rounded-2xl border border-slate-100">
-            {selectedDate}에 학원 외(가정)에서 접속한 학습 기록이 없습니다.
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {filteredRecords.map(r => {
-              const isExpanded = expandedStudentId === r.id;
-              const firstTime = r.first_access_at ? new Date(r.first_access_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
-              const lastTime = r.last_access_at ? new Date(r.last_access_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
+        {/* 랭킹 뷰 vs 나란히 비교 막대 뷰 */}
+        {comparisonView === 'ranking' ? (
+          /* 🥇 1·2·3등 메달 랭킹 뷰 (피크 7개 시간대 카드 그리드) */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            {multiGradeRankingData.map(slot => {
+              const topRank = slot.ranks[0];
+              const isGolden = slot.hour === 22 || slot.hour === 23;
+              const isMidnight = slot.hour === 24;
 
               return (
-                <div key={r.id} className="py-3.5 space-y-2.5">
-                  <div 
-                    onClick={() => setExpandedStudentId(isExpanded ? null : r.id)}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer p-2 hover:bg-slate-50 rounded-2xl transition-all"
+                <div
+                  key={slot.hour}
+                  className={`rounded-2xl p-4 border transition-all space-y-3 ${
+                    isGolden
+                      ? 'bg-gradient-to-b from-purple-50/70 to-white border-purple-200 shadow-sm'
+                      : isMidnight
+                      ? 'bg-gradient-to-b from-orange-50/60 to-white border-orange-200 shadow-sm'
+                      : 'bg-slate-50/70 border-slate-200/80'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-black ${
+                      isGolden ? 'text-purple-900' : isMidnight ? 'text-orange-950' : 'text-slate-800'
+                    }`}>
+                      ⏰ {slot.hourLabel}
+                    </span>
+                    {topRank && topRank.count > 0 && (
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                        🥇 1위: {topRank.grade}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {slot.ranks.map((item, rIdx) => {
+                      const medal = rIdx === 0 ? '🥇' : rIdx === 1 ? '🥈' : rIdx === 2 ? '🥉' : `${rIdx + 1}위`;
+                      const theme = GRADE_COLOR_THEME[item.grade] || GRADE_COLOR_THEME['고1'];
+                      const pct = Math.round((item.count / slot.maxCount) * 100);
+
+                      return (
+                        <div key={item.grade} className="space-y-1">
+                          <div className="flex items-center justify-between text-[11px] font-black">
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-5 text-center">{medal}</span>
+                              <span className={`px-1.5 py-0.2 rounded ${theme.badge} font-black text-[10px]`}>
+                                {item.grade}
+                              </span>
+                            </span>
+
+                            {item.isExcluded ? (
+                              <span className="text-[10px] font-extrabold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                                🚫 학원 수업
+                              </span>
+                            ) : (
+                              <span className={`${rIdx === 0 ? 'text-purple-700 font-black' : 'text-slate-600'}`}>
+                                {item.count}명 {rIdx === 0 && item.count >= 10 ? '🔥' : ''}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="w-full h-2 bg-slate-200/80 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                item.isExcluded ? 'bg-rose-300' : theme.fill
+                              }`}
+                              style={{ width: `${item.isExcluded ? 100 : Math.max(pct, item.count > 0 ? 8 : 0)}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          /* 📊 나란히 비교 막대 뷰 */
+          <div className="space-y-3 p-4 bg-slate-50/70 rounded-2xl border border-slate-200/80">
+            {multiGradeRankingData.map(slot => (
+              <div key={slot.hour} className="space-y-1 bg-white p-3 rounded-xl border border-slate-200/70">
+                <div className="flex items-center justify-between text-xs font-black text-slate-800">
+                  <span>⏰ {slot.hourLabel}</span>
+                  <div className="flex items-center gap-3 text-[11px] text-slate-500 font-extrabold">
+                    {slot.ranks.map(g => (
+                      <span key={g.grade}>
+                        {g.grade}: {g.isExcluded ? '🚫수업' : `${g.count}명`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-1 h-6">
+                  {slot.ranks.map(item => {
+                    const theme = GRADE_COLOR_THEME[item.grade] || GRADE_COLOR_THEME['고1'];
+                    const pct = Math.round((item.count / slot.maxCount) * 100);
+
+                    return (
+                      <div
+                        key={item.grade}
+                        className={`h-full rounded-lg flex items-center justify-between px-2 text-[10px] font-black transition-all ${
+                          item.isExcluded
+                            ? 'bg-rose-100 text-rose-800 border border-dashed border-rose-300'
+                            : `${theme.fill} text-white shadow-2xs`
+                        }`}
+                        style={{ width: `${item.isExcluded ? '25%' : `${Math.max(pct, 12)}%`}` }}
+                        title={`${item.grade}: ${item.count}명 (${item.students.join(', ')})`}
+                      >
+                        <span>{item.grade}</span>
+                        <span>{item.isExcluded ? '수업' : `${item.count}명`}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 6. 하단: 학생별 상세 가정 학습 피드 (테이블 & 카드) */}
+      <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-black text-slate-800 flex items-center gap-2">
+              <Users size={16} className="text-violet-600" />
+              <span>학생별 상세 가정 학습 기록 ({filteredRecords.length}명)</span>
+            </div>
+            <p className="text-[11px] font-bold text-slate-400 mt-0.5">
+              학생을 클릭하면 집/독서실에서 열람한 라이브러리 폴더와 복습 내역을 타임라인으로 확인합니다.
+            </p>
+          </div>
+
+          <div className="text-xs font-bold text-slate-500">
+            기준 일자: <strong className="text-violet-700">{selectedDate}</strong>
+          </div>
+        </div>
+
+        {/* 학생 목록 테이블 */}
+        {loading ? (
+          <div className="py-16 flex flex-col items-center justify-center text-slate-400 gap-2">
+            <Loader2 size={28} className="animate-spin text-violet-600" />
+            <span className="text-xs font-bold">가정 학습 데이터를 불러오는 중...</span>
+          </div>
+        ) : filteredRecords.length === 0 ? (
+          <div className="py-16 text-center text-xs font-bold text-slate-400 bg-slate-50/60 rounded-2xl border border-slate-100">
+            선택한 일자/학년에 가정 학습 기록이 없습니다.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {filteredRecords.map(record => {
+              const isExpanded = expandedStudentId === record.student_id;
+              const firstTime = record.first_access_at 
+                ? new Date(record.first_access_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+                : '-';
+              const lastTime = record.last_access_at 
+                ? new Date(record.last_access_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+                : '-';
+
+              return (
+                <div
+                  key={record.id}
+                  className={`border rounded-2xl transition-all overflow-hidden ${
+                    isExpanded ? 'border-violet-300 bg-violet-50/20 shadow-sm' : 'border-slate-200/80 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  {/* 요약 바 */}
+                  <div
+                    onClick={() => setExpandedStudentId(isExpanded ? null : record.student_id)}
+                    className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none"
                   >
-                    {/* 학생 정보 & 접속 시간대 */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-2xl bg-violet-100 text-violet-800 font-black text-sm flex items-center justify-center shrink-0 border border-violet-200">
-                        {r.student_name.slice(0, 1)}
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-violet-100 text-violet-700 font-black text-xs flex items-center justify-center shrink-0">
+                        {record.student_name.slice(0, 1)}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="font-black text-sm text-slate-800">{r.student_name}</span>
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
-                            {r.student_grade}
+                          <span className="font-black text-sm text-slate-800">{record.student_name}</span>
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                            {record.student_grade}
                           </span>
                         </div>
                         <div className="text-[11px] font-bold text-slate-400 flex items-center gap-2 mt-0.5">
-                          <span className="font-mono text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded">
-                            {firstTime} ~ {lastTime}
-                          </span>
-                          <span>총 체류: <strong className="text-slate-800">{formatDurationKo(r.total_duration_sec)}</strong></span>
+                          <span>최초 접속: {firstTime}</span>
+                          <span>•</span>
+                          <span>최종 접속: {lastTime}</span>
+                          <span>•</span>
+                          <span>세션 {record.sessions?.length || 0}회</span>
                         </div>
                       </div>
                     </div>
 
-                    {/* 활동 요약 태그들 */}
-                    <div className="flex flex-wrap items-center gap-1.5 justify-end">
-                      {r.activities_summary?.library_sec > 0 && (
-                        <span className="px-2.5 py-1 rounded-xl bg-violet-50 text-violet-800 border border-violet-200 text-xs font-extrabold flex items-center gap-1">
-                          <Library size={12} />
-                          라이브러리 {formatDurationKo(r.activities_summary.library_sec)}
-                        </span>
-                      )}
-                      {r.activities_summary?.review_sec > 0 && (
-                        <span className="px-2.5 py-1 rounded-xl bg-amber-50 text-amber-800 border border-amber-200 text-xs font-extrabold flex items-center gap-1">
-                          <BookOpen size={12} />
-                          복습 {formatDurationKo(r.activities_summary.review_sec)}
-                        </span>
-                      )}
-                      {r.activities_summary?.test_sec > 0 && (
-                        <span className="px-2.5 py-1 rounded-xl bg-rose-50 text-rose-800 border border-rose-200 text-xs font-extrabold flex items-center gap-1">
-                          <FileText size={12} />
-                          시험 {formatDurationKo(r.activities_summary.test_sec)}
-                        </span>
-                      )}
+                    <div className="flex items-center gap-4">
+                      {/* 활동 뱃지들 */}
+                      <div className="hidden md:flex items-center gap-2 text-[11px] font-bold">
+                        {record.activities_summary?.library_sec > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-100">
+                            📚 기출 {formatDurationKo(record.activities_summary.library_sec)}
+                          </span>
+                        )}
+                        {record.activities_summary?.review_sec > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">
+                            📝 복습 {formatDurationKo(record.activities_summary.review_sec)}
+                          </span>
+                        )}
+                        {record.activities_summary?.video_sec > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-cyan-50 text-cyan-700 border border-cyan-100">
+                            🎬 영상 {formatDurationKo(record.activities_summary.video_sec)}
+                          </span>
+                        )}
+                      </div>
 
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 ml-1">
-                        ✓ 가정학습
-                      </span>
+                      {/* 총 체류시간 큰 글씨 */}
+                      <div className="text-right">
+                        <div className="text-base font-black text-violet-700">
+                          {formatDurationKo(record.total_duration_sec)}
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-bold">가정 순수 학습</div>
+                      </div>
 
-                      <div className="text-slate-400 ml-2">
-                        {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      <div className="text-slate-400">
+                        {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                       </div>
                     </div>
                   </div>
 
-                  {/* 세부 세션 펼침 */}
+                  {/* 세부 세션 타임라인 (펼쳤을 때) */}
                   {isExpanded && (
-                    <div className="ml-0 sm:ml-12 pl-4 border-l-2 border-violet-200 space-y-2 bg-slate-50/70 p-3 rounded-2xl animate-in fade-in duration-200">
-                      <div className="text-[11px] font-black text-slate-700">
-                        세부 열람 내역 ({r.sessions.length}회 접속):
+                    <div className="p-4 pt-1 border-t border-slate-100 bg-slate-50/50 space-y-3 animate-in fade-in duration-200">
+                      <div className="text-xs font-black text-slate-700 flex items-center gap-1.5">
+                        <FileText size={14} className="text-violet-600" />
+                        <span>학습 타임라인 및 열람 컨텐츠</span>
                       </div>
-                      <div className="space-y-1.5">
-                        {r.sessions.map((ses, sIdx) => (
-                          <div key={ses.id || sIdx} className="text-xs bg-white p-2.5 rounded-xl border border-slate-200/80 space-y-1">
-                            <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
-                              <span>
-                                {new Date(ses.started_at).toLocaleTimeString('ko-KR')} ~ {new Date(ses.ended_at).toLocaleTimeString('ko-KR')} ({formatDurationKo(ses.duration_sec)})
-                              </span>
+
+                      <div className="space-y-2">
+                        {record.sessions?.map((ses, idx) => {
+                          const sTime = new Date(ses.started_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+                          const eTime = new Date(ses.ended_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+                          return (
+                            <div key={ses.id || idx} className="p-3 bg-white rounded-xl border border-slate-200/80 text-xs space-y-1.5">
+                              <div className="flex items-center justify-between font-bold text-slate-500">
+                                <span>세션 #{idx + 1} ({sTime} ~ {eTime})</span>
+                                <span className="text-violet-700 font-black">{formatDurationKo(ses.duration_sec)}</span>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5 pt-1">
+                                {ses.activities?.map((act, aIdx) => (
+                                  <div key={aIdx} className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-bold flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-violet-600"></span>
+                                    <span>{act.title}</span>
+                                    {act.sub_detail && <span className="text-slate-400 text-[10px]">({act.sub_detail})</span>}
+                                    <span className="text-violet-600 font-black">+{formatDurationKo(act.duration_sec)}</span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                            <div className="flex flex-wrap gap-1.5 pt-0.5">
-                              {ses.activities.map((act, aIdx) => (
-                                <span key={aIdx} className="px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 text-[11px] font-bold">
-                                  {act.mode === 'library' && '📚'}
-                                  {act.mode === 'review' && '📝'}
-                                  {act.mode === 'test' && '🎯'}
-                                  {act.mode === 'video' && '🎬'}
-                                  <strong className="ml-1 text-slate-900">{act.title}</strong>
-                                  <span className="text-violet-600 ml-1">({formatDurationKo(act.duration_sec)})</span>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -743,7 +1264,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
         )}
       </div>
 
-      {/* 6. 학원 수업 제외 시간대 설정 모달 */}
+      {/* 7. 학원 수업 제외 시간대 설정 모달 */}
       <HomeStudyExclusionModal
         isOpen={isExclusionModalOpen}
         onClose={() => setIsExclusionModalOpen(false)}

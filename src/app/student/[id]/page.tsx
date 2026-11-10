@@ -653,20 +653,41 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     total_sec: 0,
   });
 
-  // 제외 규칙 1회 로드
+  // 제외 규칙 실시간 로드 및 주기적 동기화 (선생님이 시간표 수정 시 즉시 자동 반영)
   useEffect(() => {
-    fetch('/api/monitoring/home-study/rules')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.rules) {
-          homeStudyRulesRef.current = data.rules;
-        } else {
+    const loadRules = () => {
+      fetch('/api/monitoring/home-study/rules')
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.rules) {
+            homeStudyRulesRef.current = data.rules;
+          } else {
+            homeStudyRulesRef.current = DEFAULT_HOME_STUDY_RULES;
+          }
+        })
+        .catch(() => {
           homeStudyRulesRef.current = DEFAULT_HOME_STUDY_RULES;
-        }
-      })
-      .catch(() => {
-        homeStudyRulesRef.current = DEFAULT_HOME_STUDY_RULES;
-      });
+        });
+    };
+
+    // 1. 초기 1회 로드
+    loadRules();
+
+    // 2. 60초마다 백그라운드 자동 갱신
+    const interval = setInterval(loadRules, 60000);
+
+    // 3. 학생이 태블릿 창을 다시 열거나 포커스할 때 즉시 갱신
+    const handleVisibility = () => {
+      if (!document.hidden) loadRules();
+    };
+    window.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', loadRules);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', loadRules);
+    };
   }, []);
 
   // 누적된 가정 학습 세션을 서버에 플러시(저장)하는 함수
