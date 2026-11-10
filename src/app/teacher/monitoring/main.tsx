@@ -7,12 +7,14 @@ import {
   Eye, 
   ShieldAlert, 
   Users, 
-  Loader2,
-  Sparkles
+  Loader2, 
+  Sparkles,
+  Home
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import RealtimeProctorTab from '../exammgr/RealtimeProctorTab';
 import DailyActivityMonitoringTab from './DailyActivityMonitoringTab';
+import HomeStudyMonitoringTab from './HomeStudyMonitoringTab';
 
 interface Student {
   id: string;
@@ -22,7 +24,7 @@ interface Student {
 }
 
 export default function MonitoringCenterMain() {
-  const [activeSubTab, setActiveSubTab] = useState<'daily' | 'test'>('daily');
+  const [activeSubTab, setActiveSubTab] = useState<'daily' | 'home_study' | 'test'>('daily');
   const [targetStudentId, setTargetStudentId] = useState<string | undefined>(undefined);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,9 +56,9 @@ export default function MonitoringCenterMain() {
   return (
     <div className="w-full min-h-screen bg-slate-50 flex flex-col">
       {/* 서브 탭 네비게이션 헤더 */}
-      <div className="bg-white border-b border-slate-200/80 px-6 md:px-8 py-3.5 flex items-center justify-between gap-4 sticky top-0 z-10 shadow-xs">
+      <div className="bg-white border-b border-slate-200/80 px-6 md:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-10 shadow-xs">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-100">
+          <div className="w-9 h-9 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-100 shrink-0">
             <Radio size={20} className="animate-pulse" />
           </div>
           <div>
@@ -69,11 +71,12 @@ export default function MonitoringCenterMain() {
           </div>
         </div>
 
-        {/* 2-Track 모드 전환 탭 */}
-        <div className="flex items-center bg-slate-100 p-1 rounded-2xl border border-slate-200/80">
+        {/* 3-Track 모드 전환 탭 */}
+        <div className="flex items-center bg-slate-100 p-1 rounded-2xl border border-slate-200/80 shadow-2xs overflow-x-auto">
           <button
+            type="button"
             onClick={() => setActiveSubTab('daily')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
               activeSubTab === 'daily'
                 ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/70'
                 : 'text-slate-500 hover:text-slate-800'
@@ -84,8 +87,25 @@ export default function MonitoringCenterMain() {
           </button>
 
           <button
+            type="button"
+            onClick={() => setActiveSubTab('home_study')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+              activeSubTab === 'home_study'
+                ? 'bg-white text-violet-700 shadow-sm border border-slate-200/70'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Home size={15} />
+            <span>가정·자기주도 학습 분석</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-violet-100 text-violet-700 font-extrabold border border-violet-200">
+              NEW
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveSubTab('test')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
               activeSubTab === 'test'
                 ? 'bg-white text-rose-600 shadow-sm border border-slate-200/70'
                 : 'text-slate-500 hover:text-slate-800'
@@ -113,6 +133,12 @@ export default function MonitoringCenterMain() {
                   setTargetStudentId(studentId);
                   setActiveSubTab('test');
                 }}
+              />
+            )}
+
+            {activeSubTab === 'home_study' && (
+              <HomeStudyMonitoringTab
+                allStudents={students}
               />
             )}
 

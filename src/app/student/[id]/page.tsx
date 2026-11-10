@@ -12,6 +12,12 @@ import StudentVideoView from './StudentVideoView';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
 import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
+import { 
+  HomeStudyRulesConfig, 
+  isTimeExcluded, 
+  ActivitySpan, 
+  DEFAULT_HOME_STUDY_RULES 
+} from '@/lib/homeStudyTypes';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 
@@ -632,6 +638,143 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       sendActivityBroadcast(false);
     }
   }, [student?.id, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
+
+  // =========================================================================
+  // 🏡 [가정·자기주도 학습 분석] 학원 수업 제외 필터 및 가정 체류시간 누적기 (트랙 2)
+  // =========================================================================
+  const homeStudyRulesRef = useRef<HomeStudyRulesConfig | null>(null);
+  const homeStudyAccumulatorRef = useRef<{
+    started_at: string;
+    activities: Map<string, { mode: 'library' | 'review' | 'test' | 'video' | 'homework' | 'idle'; title: string; sub_detail?: string; duration_sec: number }>;
+    total_sec: number;
+  }>({
+    started_at: new Date().toISOString(),
+    activities: new Map(),
+    total_sec: 0,
+  });
+
+  // 제외 규칙 1회 로드
+  useEffect(() => {
+    fetch('/api/monitoring/home-study/rules')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.rules) {
+          homeStudyRulesRef.current = data.rules;
+        } else {
+          homeStudyRulesRef.current = DEFAULT_HOME_STUDY_RULES;
+        }
+      })
+      .catch(() => {
+        homeStudyRulesRef.current = DEFAULT_HOME_STUDY_RULES;
+      });
+  }, []);
+
+  // 누적된 가정 학습 세션을 서버에 플러시(저장)하는 함수
+  const flushHomeStudySession = useCallback((useBeacon = false) => {
+    if (!student?.id) return;
+    const acc = homeStudyAccumulatorRef.current;
+    if (!acc || acc.total_sec < 10) return; // 10초 미만 미세 체류는 스킵
+
+    const activityList: ActivitySpan[] = Array.from(acc.activities.values());
+    if (activityList.length === 0) return;
+
+    const payload = {
+      studentId: student.id,
+      studentName: student.name,
+      studentGrade: student.grade,
+      session: {
+        started_at: acc.started_at,
+        ended_at: new Date().toISOString(),
+        duration_sec: acc.total_sec,
+        activities: activityList,
+      },
+    };
+
+    // 누적기 리셋
+    homeStudyAccumulatorRef.current = {
+      started_at: new Date().toISOString(),
+      activities: new Map(),
+      total_sec: 0,
+    };
+
+    const url = '/api/monitoring/home-study/sessions';
+    if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      try {
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+        return;
+      } catch {}
+    }
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  }, [student?.id, student?.name, student?.grade]);
+
+  // 가정 학습 세션 타이머 (1초 주기 체크, 학원 수업 시간대면 누적 일시정지!)
+  useEffect(() => {
+    if (!student?.id) return;
+
+    const timer = setInterval(() => {
+      // 딴짓(자리이탈, 탭 비활성) 중이면 누적하지 않음
+      if (isAwayRef.current || document.hidden) return;
+
+      const now = new Date();
+      const excluded = isTimeExcluded(
+        now, 
+        student.id, 
+        student.grade, 
+        homeStudyRulesRef.current
+      );
+
+      // 🚫 학원 수업 시간대면 가정 학습 타이머는 정지(Pause)!
+      if (excluded) return;
+
+      // ✅ 학원 밖(가정/독서실)이면 현재 활동 시간 누적
+      const loc = computeCurrentLocation();
+      const actKey = `${mode}_${loc.title}`;
+      const acc = homeStudyAccumulatorRef.current;
+
+      acc.total_sec += 1;
+      const existing = acc.activities.get(actKey);
+      if (existing) {
+        existing.duration_sec += 1;
+      } else {
+        acc.activities.set(actKey, {
+          mode: mode as any,
+          title: loc.title,
+          sub_detail: loc.subDetail,
+          duration_sec: 1,
+        });
+      }
+
+      // 3분마다(180초) 자동 주기적 번들 플러시
+      if (acc.total_sec >= 180) {
+        flushHomeStudySession();
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [student?.id, student?.grade, mode, computeCurrentLocation, flushHomeStudySession]);
+
+  // 탭 닫기, 페이지 이동 시 잔여 누적 세션 Beacon 플러시
+  useEffect(() => {
+    const handleFlushOnExit = () => {
+      flushHomeStudySession(true);
+    };
+
+    window.addEventListener('beforeunload', handleFlushOnExit);
+    window.addEventListener('pagehide', handleFlushOnExit);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleFlushOnExit);
+      window.removeEventListener('pagehide', handleFlushOnExit);
+      flushHomeStudySession(true);
+    };
+  }, [flushHomeStudySession]);
 
   // 학생 복습 데이터 로드 (Local Cache -> Cloud DB 실시간 동기화)
   useEffect(() => {
