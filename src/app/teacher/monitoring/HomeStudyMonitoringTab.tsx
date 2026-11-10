@@ -27,10 +27,12 @@ import {
   Award,
   TrendingUp,
   Layers,
-  X
+  X,
+  Printer
 } from 'lucide-react';
 import { 
-  StudentHomeStudyDayRecord, 
+  StudentHomeStudyDayRecord,
+  HomeStudySessionItem, 
   HomeStudyRulesConfig, 
   ExclusionRule,
   WeekdayCode,
@@ -193,17 +195,67 @@ const GRADE_COLOR_THEME: Record<string, {
   },
 };
 
+// 세션별 학원 수업 시간대 칼차감 헬퍼 함수
+function computeClippedRecord(
+  record: StudentHomeStudyDayRecord,
+  rulesConfig: HomeStudyRulesConfig
+) {
+  let pureSec = 0;
+  let excludedSec = 0;
+
+  const sessions = record.sessions || [];
+  if (sessions.length === 0) {
+    return { pureSec: record.total_duration_sec || 0, excludedSec: 0 };
+  }
+
+  sessions.forEach(ses => {
+    if (!ses.started_at) {
+      pureSec += ses.duration_sec || 0;
+      return;
+    }
+    const d = new Date(ses.started_at);
+    const kstDate = new Date(d.getTime() + 9 * 3600000);
+    const dayIdx = kstDate.getUTCDay();
+    const dayCodes: WeekdayCode[] = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    const mapDay: WeekdayCode = dayCodes[dayIdx];
+    const rawHour = kstDate.getUTCHours();
+    const mappedHour = rawHour === 0 ? 24 : rawHour;
+
+    const exc = getExclusionForSlot(mapDay, mappedHour, record.student_grade, rulesConfig);
+    if (exc) {
+      // 학원 수업 시간표와 겹친 세션 -> 차감!
+      excludedSec += ses.duration_sec || 0;
+    } else {
+      // 순수 가정 학습 세션!
+      pureSec += ses.duration_sec || 0;
+    }
+  });
+
+  return { pureSec, excludedSec };
+}
+
 export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitoringTabProps) {
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
-  const [selectedDate, setSelectedDate] = useState<string>(getKoreanDateString());
+  const todayStr = getKoreanDateString();
+  const [rangePreset, setRangePreset] = useState<'today' | '7days' | '14days' | '30days' | 'custom'>('7days');
+  const [startDate, setStartDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return getKoreanDateString(d);
+  });
+  const [endDate, setEndDate] = useState<string>(todayStr);
   const [searchStudent, setSearchStudent] = useState<string>('');
   
-  // 전체 주간 세션 레코드 (최근 7일치 전체를 로드하여 즉시 메모리 계산)
+  // 전체 세션 레코드 (최근 30일치 전체를 로드하여 즉시 메모리 계산)
   const [weeklyRecords, setWeeklyRecords] = useState<StudentHomeStudyDayRecord[]>([]);
   const [rulesConfig, setRulesConfig] = useState<HomeStudyRulesConfig>(DEFAULT_HOME_STUDY_RULES);
   const [loading, setLoading] = useState<boolean>(true);
   const [isExclusionModalOpen, setIsExclusionModalOpen] = useState<boolean>(false);
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
+
+  // 특정 학생 1인 맞춤 심층 분석 팝업 상태 & 동일 학년 평균 비교 ON/OFF 토글
+  const [selectedStudentDeepDive, setSelectedStudentDeepDive] = useState<string | null>(null);
+  const [showGradeAvgComparison, setShowGradeAvgComparison] = useState<boolean>(true);
 
   // 히트맵 뷰 모드 ('duration': 체류시간, 'headcount': 접속 인원수)
   const [heatmapView, setHeatmapView] = useState<'duration' | 'headcount'>('duration');
@@ -234,13 +286,33 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
   const [comparisonGrades, setComparisonGrades] = useState<string[]>(['고1', '고2', '고3']);
   const [comparisonView, setComparisonView] = useState<'ranking' | 'sideBySide'>('ranking');
 
-  // 규칙 및 세션 데이터 로드
+  // 빠른 기간 프리셋 핸들러
+  const handlePresetChange = (preset: 'today' | '7days' | '14days' | '30days') => {
+    setRangePreset(preset);
+    const today = getKoreanDateString();
+    setEndDate(today);
+    const d = new Date();
+    if (preset === 'today') {
+      setStartDate(today);
+    } else if (preset === '7days') {
+      d.setDate(d.getDate() - 6);
+      setStartDate(getKoreanDateString(d));
+    } else if (preset === '14days') {
+      d.setDate(d.getDate() - 13);
+      setStartDate(getKoreanDateString(d));
+    } else if (preset === '30days') {
+      d.setDate(d.getDate() - 29);
+      setStartDate(getKoreanDateString(d));
+    }
+  };
+
+  // 규칙 및 세션 데이터 로드 (최대 30일치 로드하여 프론트 즉시 반응)
   const fetchData = async () => {
     setLoading(true);
     try {
       const [rulesRes, sessionsRes] = await Promise.all([
         fetch('/api/monitoring/home-study/rules'),
-        fetch('/api/monitoring/home-study/sessions?days=7'),
+        fetch('/api/monitoring/home-study/sessions?days=30'),
       ]);
 
       const rulesData = await rulesRes.json();
@@ -263,24 +335,23 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     fetchData();
   }, []);
 
-  // 선택된 날짜와 학년에 해당하는 레코드 (상단 KPI 및 하단 피드용)
+  // 선택된 날짜 범위와 학년에 해당하는 레코드 (수업 제외 세션 칼차감 반영)
   const records = useMemo(() => {
-    return weeklyRecords.filter(r => {
-      const matchesDate = !selectedDate || r.date === selectedDate;
-      const matchesGrade = selectedGrade === 'ALL' || selectedGrade === '전체' || (r.student_grade && r.student_grade.startsWith(selectedGrade));
-      return matchesDate && matchesGrade;
-    });
-  }, [weeklyRecords, selectedDate, selectedGrade]);
-
-  // 필터된 학생별 기록 (이름/학년 검색)
-  const filteredRecords = useMemo(() => {
-    return records.filter(r => {
-      const matchesSearch = !searchStudent.trim() || 
-        r.student_name.toLowerCase().includes(searchStudent.toLowerCase()) ||
-        r.student_grade.toLowerCase().includes(searchStudent.toLowerCase());
-      return matchesSearch;
-    });
-  }, [records, searchStudent]);
+    return weeklyRecords
+      .filter(r => {
+        const matchesDate = (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate);
+        const matchesGrade = selectedGrade === 'ALL' || selectedGrade === '전체' || (r.student_grade && r.student_grade.startsWith(selectedGrade));
+        return matchesDate && matchesGrade;
+      })
+      .map(r => {
+        const { pureSec, excludedSec } = computeClippedRecord(r, rulesConfig);
+        return {
+          ...r,
+          pure_sec: pureSec,
+          excluded_sec: excludedSec,
+        };
+      });
+  }, [weeklyRecords, startDate, endDate, selectedGrade, rulesConfig]);
 
   // 대상 학년의 전체 학생 수
   const gradeStudents = useMemo(() => {
@@ -288,15 +359,116 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     return allStudents.filter(s => s.grade.startsWith(selectedGrade));
   }, [allStudents, selectedGrade]);
 
-  // KPI 계산
-  const totalAccessedCount = filteredRecords.length;
-  const totalSeconds = filteredRecords.reduce((acc, cur) => acc + (cur.total_duration_sec || 0), 0);
-  const avgSeconds = totalAccessedCount > 0 ? Math.round(totalSeconds / totalAccessedCount) : 0;
+  // 기간별 학생 집계 목록 (학생 1인당 단일 카드 집계)
+  const studentAggregatedList = useMemo(() => {
+    const map: Record<string, {
+      student_id: string;
+      student_name: string;
+      student_grade: string;
+      pure_sec: number;
+      excluded_sec: number;
+      total_duration_sec: number;
+      session_count: number;
+      days_count: number;
+      first_access_at: string;
+      last_access_at: string;
+      activities_summary: {
+        library_sec: number;
+        review_sec: number;
+        test_sec: number;
+        video_sec: number;
+        homework_sec: number;
+        other_sec: number;
+      };
+      all_sessions: {
+        id?: string;
+        started_at: string;
+        ended_at: string;
+        duration_sec: number;
+        activities: {
+          mode: string;
+          title: string;
+          duration_sec: number;
+          sub_detail?: string;
+        }[];
+      }[];
+    }> = {};
+
+    records.forEach(r => {
+      if (!map[r.student_id]) {
+        map[r.student_id] = {
+          student_id: r.student_id,
+          student_name: r.student_name,
+          student_grade: r.student_grade,
+          pure_sec: 0,
+          excluded_sec: 0,
+          total_duration_sec: 0,
+          session_count: 0,
+          days_count: 0,
+          first_access_at: r.first_access_at,
+          last_access_at: r.last_access_at,
+          activities_summary: {
+            library_sec: 0,
+            review_sec: 0,
+            test_sec: 0,
+            video_sec: 0,
+            homework_sec: 0,
+            other_sec: 0,
+          },
+          all_sessions: [],
+        };
+      }
+      const item = map[r.student_id];
+      item.pure_sec += r.pure_sec;
+      item.excluded_sec += r.excluded_sec;
+      item.total_duration_sec += r.total_duration_sec;
+      item.days_count += 1;
+      item.session_count += (r.sessions?.length || 0);
+
+      if (!item.first_access_at || (r.first_access_at && r.first_access_at < item.first_access_at)) {
+        item.first_access_at = r.first_access_at;
+      }
+      if (!item.last_access_at || (r.last_access_at && r.last_access_at > item.last_access_at)) {
+        item.last_access_at = r.last_access_at;
+      }
+
+      if (r.activities_summary) {
+        item.activities_summary.library_sec += r.activities_summary.library_sec || 0;
+        item.activities_summary.review_sec += r.activities_summary.review_sec || 0;
+        item.activities_summary.test_sec += r.activities_summary.test_sec || 0;
+        item.activities_summary.video_sec += r.activities_summary.video_sec || 0;
+        item.activities_summary.homework_sec += r.activities_summary.homework_sec || 0;
+        item.activities_summary.other_sec += r.activities_summary.other_sec || 0;
+      }
+
+      if (r.sessions) {
+        item.all_sessions.push(...r.sessions);
+      }
+    });
+
+    return Object.values(map).sort((a, b) => b.pure_sec - a.pure_sec);
+  }, [records]);
+
+  // 검색어 필터링된 학생 기록
+  const filteredStudentList = useMemo(() => {
+    if (!searchStudent.trim()) return studentAggregatedList;
+    const q = searchStudent.toLowerCase();
+    return studentAggregatedList.filter(s =>
+      s.student_name.toLowerCase().includes(q) ||
+      s.student_grade.toLowerCase().includes(q)
+    );
+  }, [studentAggregatedList, searchStudent]);
+
+  // 4대 핵심 KPI 계산 (학원 수업 칼차감 100% 반영)
+  const totalAccessedCount = studentAggregatedList.length;
+  const totalPureSeconds = records.reduce((acc, cur) => acc + (cur.pure_sec || 0), 0);
+  const totalExcludedClassSeconds = records.reduce((acc, cur) => acc + (cur.excluded_sec || 0), 0);
+  const avgSeconds = totalAccessedCount > 0 ? Math.round(totalPureSeconds / totalAccessedCount) : 0;
 
   // 활동 구성비 계산
   const actTotals = useMemo(() => {
     let lib = 0, rev = 0, test = 0, vid = 0, hw = 0;
-    filteredRecords.forEach(r => {
+    records.forEach(r => {
       lib += r.activities_summary?.library_sec || 0;
       rev += r.activities_summary?.review_sec || 0;
       test += r.activities_summary?.test_sec || 0;
@@ -316,14 +488,14 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
       testPct: sum > 0 ? Math.round((test / sum) * 100) : 0,
       vidPct: sum > 0 ? Math.round((vid / sum) * 100) : 0,
     };
-  }, [filteredRecords]);
+  }, [records]);
 
-  // 최다 열람 라이브러리 폴더/단원 계산
+  // 기간 최다 열람 라이브러리 폴더/단원 계산
   const topLibraryTitle = useMemo(() => {
     const counts: Record<string, number> = {};
-    filteredRecords.forEach(r => {
-      r.sessions.forEach(ses => {
-        ses.activities.forEach(act => {
+    records.forEach(r => {
+      (r.sessions || []).forEach(ses => {
+        (ses.activities || []).forEach(act => {
           if (act.mode === 'library') {
             counts[act.title] = (counts[act.title] || 0) + act.duration_sec;
           }
@@ -332,13 +504,158 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     });
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
     return sorted.length > 0 ? { title: sorted[0][0], sec: sorted[0][1] } : null;
-  }, [filteredRecords]);
+  }, [records]);
 
   // 현재 학년에 적용된 제외 규칙 목록
   const activeExclusionRules = useMemo(() => {
     const baseGrade = selectedGrade === 'ALL' ? '고2' : selectedGrade;
     return rulesConfig.grade_rules?.[baseGrade] || [];
   }, [rulesConfig, selectedGrade]);
+
+  // 특정 학생 맞춤 심층 분석 데이터 계산 (일별 바차트, 동일 학년 평균 대비, 시간대 분포, TOP 3 교재)
+  const deepDiveData = useMemo(() => {
+    if (!selectedStudentDeepDive) return null;
+
+    const stInfo = allStudents.find(s => s.id === selectedStudentDeepDive) || 
+      studentAggregatedList.find(s => s.student_id === selectedStudentDeepDive);
+    const studentName = stInfo ? ('name' in stInfo ? stInfo.name : stInfo.student_name) : '학생';
+    const studentGrade = stInfo ? ('grade' in stInfo ? stInfo.grade : stInfo.student_grade) : '고2';
+
+    // 해당 학생의 레코드들
+    const studentRecords = weeklyRecords.filter(r => r.student_id === selectedStudentDeepDive);
+    
+    // 동일 학년 전체 학생들의 레코드들
+    const gradeRecords = weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(studentGrade));
+
+    // 선택된 기간의 일자 목록 생성 (최대 30일)
+    const dateList: string[] = [];
+    const cur = new Date(startDate);
+    const end = new Date(endDate);
+    while (cur <= end && dateList.length <= 30) {
+      dateList.push(getKoreanDateString(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    if (dateList.length === 0) dateList.push(getKoreanDateString());
+
+    let studentTotalPureSec = 0;
+    let studentTotalExcludedSec = 0;
+    let gradeTotalPureSec = 0;
+
+    const activeGradeStudentCount = allStudents.filter(s => s.grade.startsWith(studentGrade)).length || 1;
+
+    const dailyPoints = dateList.map(dt => {
+      const sDayRec = studentRecords.find(r => r.date === dt);
+      let sPure = 0;
+      let sExc = 0;
+      if (sDayRec) {
+        const clipped = computeClippedRecord(sDayRec, rulesConfig);
+        sPure = clipped.pureSec;
+        sExc = clipped.excludedSec;
+      }
+      studentTotalPureSec += sPure;
+      studentTotalExcludedSec += sExc;
+
+      // 동일 학년 평균 계산
+      const gDayRecs = gradeRecords.filter(r => r.date === dt);
+      let gPureSum = 0;
+      gDayRecs.forEach(r => {
+        const clipped = computeClippedRecord(r, rulesConfig);
+        gPureSum += clipped.pureSec;
+      });
+      const gAvg = Math.round(gPureSum / Math.max(activeGradeStudentCount, 1));
+      gradeTotalPureSec += gAvg;
+
+      const diffSec = sPure - gAvg;
+
+      return {
+        date: dt,
+        label: dt.slice(5),
+        studentSec: sPure,
+        gradeAvgSec: gAvg,
+        diffSec,
+      };
+    });
+
+    const maxChartSec = Math.max(
+      ...dailyPoints.map(p => Math.max(p.studentSec, p.gradeAvgSec)),
+      3600
+    );
+
+    // 시간대별 활동 분포 (14시 ~ 01시)
+    const hourlyDistribution: { hour: number; hourLabel: string; sec: number; isClass: boolean }[] = [];
+    const studentAllSessions: HomeStudySessionItem[] = [];
+    studentRecords.forEach(r => {
+      if (r.sessions) studentAllSessions.push(...r.sessions);
+    });
+
+    HEATMAP_HOURS.forEach(h => {
+      let hSec = 0;
+      const targetRawHour = h === 24 ? 0 : h;
+      studentAllSessions.forEach(ses => {
+        if (!ses.started_at) return;
+        const d = new Date(ses.started_at);
+        const kstDate = new Date(d.getTime() + 9 * 3600000);
+        if (kstDate.getUTCHours() === targetRawHour) {
+          hSec += ses.duration_sec || 0;
+        }
+      });
+
+      const isClass = activeExclusionRules.some(rule => {
+        const sH = parseInt(rule.start_time.split(':')[0], 10);
+        const eH = parseInt(rule.end_time.split(':')[0], 10);
+        return h >= sH && h < eH;
+      });
+
+      hourlyDistribution.push({
+        hour: h,
+        hourLabel: h === 24 ? '24시' : `${h}시`,
+        sec: hSec,
+        isClass,
+      });
+    });
+
+    const maxHourSec = Math.max(...hourlyDistribution.map(h => h.sec), 1800);
+
+    // 최다 열람 라이브러리 교재 TOP 3
+    const libCounts: Record<string, number> = {};
+    studentAllSessions.forEach(ses => {
+      ses.activities?.forEach(act => {
+        if (act.mode === 'library') {
+          libCounts[act.title] = (libCounts[act.title] || 0) + act.duration_sec;
+        }
+      });
+    });
+    const topMaterials = Object.entries(libCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([title, sec]) => ({ title, sec }));
+
+    const netDiffTotal = studentTotalPureSec - gradeTotalPureSec;
+    const isAboveAvg = netDiffTotal >= 0;
+    const peakHourItem = [...hourlyDistribution].sort((a, b) => b.sec - a.sec)[0];
+    const peakHourText = peakHourItem && peakHourItem.sec > 0 
+      ? peakHourItem.hour >= 23 || peakHourItem.hour <= 1 ? '🌙 심야 몰입 열공형 (23시~01시)' : `⚡ 저녁 집중 열공형 (${peakHourItem.hourLabel})`
+      : '🌱 학습 패턴 형성 중';
+
+    return {
+      studentId: selectedStudentDeepDive,
+      studentName,
+      studentGrade,
+      startDate,
+      endDate,
+      studentTotalPureSec,
+      studentTotalExcludedSec,
+      gradeTotalPureSec,
+      netDiffTotal,
+      isAboveAvg,
+      dailyPoints,
+      maxChartSec,
+      hourlyDistribution,
+      maxHourSec,
+      topMaterials,
+      peakHourText,
+    };
+  }, [selectedStudentDeepDive, allStudents, weeklyRecords, startDate, endDate, rulesConfig, activeExclusionRules, studentAggregatedList]);
 
   // ==========================================
   // 히트맵 실시간 동적 데이터 집계 (주간 7일 x 12시간)
@@ -355,8 +672,8 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     });
 
     const targetRecords = selectedGrade === 'ALL' || selectedGrade === '전체'
-      ? weeklyRecords
-      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade));
+      ? weeklyRecords.filter(r => (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate))
+      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade) && (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate));
 
     targetRecords.forEach(r => {
       (r.sessions || []).forEach(ses => {
@@ -431,7 +748,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
       const targetRawHour = h === 24 ? 0 : h;
 
       const gradeResults = comparisonGrades.map(grade => {
-        const gRecords = weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(grade));
+        const gRecords = weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(grade) && (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate));
         const activeStudents = new Set<string>();
         let totalSec = 0;
 
@@ -507,8 +824,8 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
     }
 
     const targetRecords = selectedGrade === 'ALL' || selectedGrade === '전체'
-      ? weeklyRecords
-      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade));
+      ? weeklyRecords.filter(r => (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate))
+      : weeklyRecords.filter(r => r.student_grade && r.student_grade.startsWith(selectedGrade) && (!startDate || r.date >= startDate) && (!endDate || r.date <= endDate));
 
     const matchedStudents: {
       student_name: string;
@@ -569,33 +886,34 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
       students: matchedStudents,
     });
   };
-
-  // CSV 다운로드
+  // CSV 다운로드 (수업 차감 및 기간 집계 반영)
   const handleExportCSV = () => {
-    if (filteredRecords.length === 0) {
+    if (filteredStudentList.length === 0) {
       alert('다운로드할 데이터가 없습니다.');
       return;
     }
-    const headers = ['날짜', '학생이름', '학년', '총체류시간(분)', '최초접속', '최종접속', '라이브러리(분)', '복습(분)', '시험(분)', '인강(분)'];
-    const rows = filteredRecords.map(r => [
-      r.date,
-      r.student_name,
-      r.student_grade,
-      Math.round(r.total_duration_sec / 60),
-      r.first_access_at ? new Date(r.first_access_at).toLocaleTimeString('ko-KR') : '',
-      r.last_access_at ? new Date(r.last_access_at).toLocaleTimeString('ko-KR') : '',
-      Math.round((r.activities_summary?.library_sec || 0) / 60),
-      Math.round((r.activities_summary?.review_sec || 0) / 60),
-      Math.round((r.activities_summary?.test_sec || 0) / 60),
-      Math.round((r.activities_summary?.video_sec || 0) / 60),
+    const headers = ['학생이름', '학년', '순수가정체류(분)', '학원수업차감(분)', '학습일수(일)', '세션수(회)', '최초접속', '최종접속', '기출열람(분)', '복습(분)', '시험(분)', '인강(분)'];
+    const rows = filteredStudentList.map(s => [
+      s.student_name,
+      s.student_grade,
+      Math.round(s.pure_sec / 60),
+      Math.round(s.excluded_sec / 60),
+      s.days_count,
+      s.session_count,
+      s.first_access_at ? new Date(s.first_access_at).toLocaleTimeString('ko-KR') : '',
+      s.last_access_at ? new Date(s.last_access_at).toLocaleTimeString('ko-KR') : '',
+      Math.round((s.activities_summary?.library_sec || 0) / 60),
+      Math.round((s.activities_summary?.review_sec || 0) / 60),
+      Math.round((s.activities_summary?.test_sec || 0) / 60),
+      Math.round((s.activities_summary?.video_sec || 0) / 60),
     ]);
 
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(e => e.join(',')).join('\n')];
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `Eduest_가정학습통계_${selectedDate}_${selectedGrade}.csv`);
+    link.setAttribute('download', `Eduest_가정학습통계_${startDate}_${endDate}_${selectedGrade}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -656,14 +974,67 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
         {/* 날짜 선택 + 검색 + 액션 */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* 날짜 선택 인풋 */}
+          {/* 기간 프리셋 버튼 그룹 */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-2xl border border-slate-200/80 gap-0.5">
+            <button
+              type="button"
+              onClick={() => handlePresetChange('today')}
+              className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                rangePreset === 'today' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              오늘
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePresetChange('7days')}
+              className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                rangePreset === '7days' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              최근 7일
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePresetChange('14days')}
+              className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                rangePreset === '14days' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              최근 14일
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePresetChange('30days')}
+              className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                rangePreset === '30days' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              최근 30일
+            </button>
+          </div>
+
+          {/* 날짜 범위 인풋 */}
           <div className="flex items-center gap-1.5 bg-slate-100 px-3 py-1.5 rounded-2xl border border-slate-200/80 text-xs font-bold text-slate-700">
-            <Calendar size={14} className="text-violet-600" />
+            <Calendar size={14} className="text-violet-600 shrink-0" />
             <input
               type="date"
-              value={selectedDate}
-              onChange={e => setSelectedDate(e.target.value)}
-              className="bg-transparent outline-none font-black text-slate-800 cursor-pointer"
+              value={startDate}
+              onChange={e => {
+                setStartDate(e.target.value);
+                setRangePreset('custom');
+              }}
+              className="bg-transparent outline-none font-black text-slate-800 cursor-pointer w-28"
+            />
+            <span className="text-slate-400 font-bold">~</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={e => {
+                setEndDate(e.target.value);
+                setRangePreset('custom');
+              }}
+              className="bg-transparent outline-none font-black text-slate-800 cursor-pointer w-28"
             />
           </div>
 
@@ -701,21 +1072,21 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
         </div>
       </div>
 
-      {/* 3. 상단 핵심 KPI 요약 카드 4종 */}
+      {/* 3. 상단 핵심 KPI 요약 카드 4종 (수업 칼차감 정밀 반영) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* KPI 1: 총 순수 가정 학습 시간 */}
         <div className="bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-2 relative overflow-hidden">
           <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
             <span className="flex items-center gap-1.5">
               <Clock size={16} className="text-violet-600" />
-              오늘 총 가정 체류시간
+              {rangePreset === 'today' ? '오늘 총 순수 가정 체류' : '선택 기간 순수 가정 학습량'}
             </span>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 font-extrabold">
-              수업제외 반영
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 font-extrabold border border-rose-200">
+              {totalExcludedClassSeconds > 0 ? `🚫 수업 ${formatDurationKo(totalExcludedClassSeconds)} 차감` : '수업 제외 반영'}
             </span>
           </div>
           <div className="text-2xl font-black text-slate-800 tracking-tight">
-            {formatDurationKo(totalSeconds)}
+            {formatDurationKo(totalPureSeconds)}
           </div>
           <div className="text-[11px] font-bold text-emerald-600 flex items-center gap-1">
             <Sparkles size={12} />
@@ -741,7 +1112,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
             </span>
           </div>
           <div className="text-[11px] font-bold text-slate-400">
-            대상 학년 ({selectedGrade === 'ALL' ? '전체' : selectedGrade}) 접속률
+            {rangePreset === 'today' ? `대상 학년 (${selectedGrade === 'ALL' ? '전체' : selectedGrade}) 접속률` : `선택 기간 내 1회 이상 자율 학습`}
           </div>
         </div>
 
@@ -757,7 +1128,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
             {formatDurationKo(avgSeconds)}
           </div>
           <div className="text-[11px] font-bold text-slate-400">
-            접속 학생 기준 1인당 일일 평균
+            {rangePreset === 'today' ? '접속 학생 기준 1인당 일일 평균' : '참여 학생 기준 1인당 누적 평균'}
           </div>
         </div>
 
@@ -766,14 +1137,14 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
           <div className="flex items-center justify-between text-slate-400 text-xs font-bold">
             <span className="flex items-center gap-1.5">
               <Library size={16} className="text-amber-500" />
-              오늘 최다 열람 컨텐츠
+              {rangePreset === 'today' ? '오늘 최다 열람 컨텐츠' : '기간 최다 열람 컨텐츠'}
             </span>
           </div>
           <div className="text-base font-black text-slate-800 truncate" title={topLibraryTitle?.title || ''}>
             {topLibraryTitle ? topLibraryTitle.title : '기록 없음'}
           </div>
           <div className="text-[11px] font-bold text-blue-600 truncate">
-            {topLibraryTitle ? `${formatDurationKo(topLibraryTitle.sec)} 누적 열람` : '오늘 열람 내역 없음'}
+            {topLibraryTitle ? `${formatDurationKo(topLibraryTitle.sec)} 누적 열람` : '기간 내 열람 내역 없음'}
           </div>
         </div>
       </div>
@@ -1264,15 +1635,15 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
           <div>
             <div className="text-sm font-black text-slate-800 flex items-center gap-2">
               <Users size={16} className="text-violet-600" />
-              <span>학생별 상세 가정 학습 기록 ({filteredRecords.length}명)</span>
+              <span>학생별 상세 가정 학습 기록 ({filteredStudentList.length}명)</span>
             </div>
             <p className="text-[11px] font-bold text-slate-400 mt-0.5">
-              학생을 클릭하면 집/독서실에서 열람한 라이브러리 폴더와 복습 내역을 타임라인으로 확인합니다.
+              학생을 클릭하면 세부 세션 타임라인을 확인하며, [심층 분석] 버튼으로 동일 학년 평균 대비 분석 팝업을 엽니다.
             </p>
           </div>
 
           <div className="text-xs font-bold text-slate-500">
-            기준 일자: <strong className="text-violet-700">{selectedDate}</strong>
+            조회 기간: <strong className="text-violet-700">{startDate} ~ {endDate}</strong>
           </div>
         </div>
 
@@ -1282,13 +1653,13 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
             <Loader2 size={28} className="animate-spin text-violet-600" />
             <span className="text-xs font-bold">가정 학습 데이터를 불러오는 중...</span>
           </div>
-        ) : filteredRecords.length === 0 ? (
+        ) : filteredStudentList.length === 0 ? (
           <div className="py-16 text-center text-xs font-bold text-slate-400 bg-slate-50/60 rounded-2xl border border-slate-100">
-            선택한 일자/학년에 가정 학습 기록이 없습니다.
+            선택한 기간/학년에 가정 학습 기록이 없습니다.
           </div>
         ) : (
           <div className="space-y-3">
-            {filteredRecords.map(record => {
+            {filteredStudentList.map(record => {
               const isExpanded = expandedStudentId === record.student_id;
               const firstTime = record.first_access_at 
                 ? new Date(record.first_access_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
@@ -1299,7 +1670,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
 
               return (
                 <div
-                  key={record.id}
+                  key={record.student_id}
                   className={`border rounded-2xl transition-all overflow-hidden ${
                     isExpanded ? 'border-violet-300 bg-violet-50/20 shadow-sm' : 'border-slate-200/80 bg-white hover:border-slate-300'
                   }`}
@@ -1310,7 +1681,7 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                     className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-violet-100 text-violet-700 font-black text-xs flex items-center justify-center shrink-0">
+                      <div className="w-10 h-10 rounded-2xl bg-violet-100 text-violet-700 font-black text-sm flex items-center justify-center shrink-0 border border-violet-200">
                         {record.student_name.slice(0, 1)}
                       </div>
                       <div>
@@ -1319,44 +1690,69 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
                             {record.student_grade}
                           </span>
+                          {record.days_count > 1 && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-100">
+                              {record.days_count}일간 학습
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] font-bold text-slate-400 flex items-center gap-2 mt-0.5">
                           <span>최초 접속: {firstTime}</span>
                           <span>•</span>
                           <span>최종 접속: {lastTime}</span>
                           <span>•</span>
-                          <span>세션 {record.sessions?.length || 0}회</span>
+                          <span>총 세션 {record.session_count}회</span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3 sm:gap-4">
                       {/* 활동 뱃지들 */}
-                      <div className="hidden md:flex items-center gap-2 text-[11px] font-bold">
+                      <div className="hidden lg:flex items-center gap-1.5 text-[11px] font-bold">
                         {record.activities_summary?.library_sec > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-100">
+                          <span className="px-2 py-0.5 rounded-lg bg-violet-50 text-violet-700 border border-violet-100">
                             📚 기출 {formatDurationKo(record.activities_summary.library_sec)}
                           </span>
                         )}
                         {record.activities_summary?.review_sec > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">
+                          <span className="px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-100">
                             📝 복습 {formatDurationKo(record.activities_summary.review_sec)}
                           </span>
                         )}
                         {record.activities_summary?.video_sec > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-cyan-50 text-cyan-700 border border-cyan-100">
+                          <span className="px-2 py-0.5 rounded-lg bg-cyan-50 text-cyan-700 border border-cyan-100">
                             🎬 영상 {formatDurationKo(record.activities_summary.video_sec)}
                           </span>
                         )}
                       </div>
 
-                      {/* 총 체류시간 큰 글씨 */}
+                      {/* 총 체류시간 + 학원수업 차감 뱃지 */}
                       <div className="text-right">
                         <div className="text-base font-black text-violet-700">
-                          {formatDurationKo(record.total_duration_sec)}
+                          {formatDurationKo(record.pure_sec)}
                         </div>
-                        <div className="text-[10px] text-slate-400 font-bold">가정 순수 학습</div>
+                        {record.excluded_sec > 0 ? (
+                          <div className="text-[10px] font-black text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200 mt-0.5 inline-block">
+                            🚫 수업 {formatDurationKo(record.excluded_sec)} 차감
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-slate-400 font-bold">순수 가정 학습</div>
+                        )}
                       </div>
+
+                      {/* 심층 분석 팝업 호출 버튼 */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedStudentDeepDive(record.student_id);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-black text-xs transition-all cursor-pointer shadow-sm shadow-violet-200"
+                        title="동일 학년 비교 및 심층 모니터링 팝업 열기"
+                      >
+                        <TrendingUp size={13} />
+                        <span>심층 분석</span>
+                      </button>
 
                       <div className="text-slate-400">
                         {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
@@ -1367,20 +1763,28 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
                   {/* 세부 세션 타임라인 (펼쳤을 때) */}
                   {isExpanded && (
                     <div className="p-4 pt-1 border-t border-slate-100 bg-slate-50/50 space-y-3 animate-in fade-in duration-200">
-                      <div className="text-xs font-black text-slate-700 flex items-center gap-1.5">
-                        <FileText size={14} className="text-violet-600" />
-                        <span>학습 타임라인 및 열람 컨텐츠</span>
+                      <div className="text-xs font-black text-slate-700 flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <FileText size={14} className="text-violet-600" />
+                          <span>세션별 상세 학습 내역 ({record.all_sessions.length}건)</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-bold">학원 수업 시간표와 겹친 세션은 차감 처리됨</span>
                       </div>
 
-                      <div className="space-y-2">
-                        {record.sessions?.map((ses, idx) => {
-                          const sTime = new Date(ses.started_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-                          const eTime = new Date(ses.ended_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+                      <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                        {record.all_sessions.map((ses, idx) => {
+                          const sTime = ses.started_at ? new Date(ses.started_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
+                          const eTime = ses.ended_at ? new Date(ses.ended_at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
+                          const sDate = ses.started_at ? ses.started_at.slice(5, 10) : '';
 
                           return (
                             <div key={ses.id || idx} className="p-3 bg-white rounded-xl border border-slate-200/80 text-xs space-y-1.5">
                               <div className="flex items-center justify-between font-bold text-slate-500">
-                                <span>세션 #{idx + 1} ({sTime} ~ {eTime})</span>
+                                <span className="flex items-center gap-2">
+                                  <span className="font-extrabold text-slate-700">세션 #{idx + 1}</span>
+                                  {sDate && <span className="text-[10px] text-slate-400">({sDate})</span>}
+                                  <span>{sTime} ~ {eTime}</span>
+                                </span>
                                 <span className="text-violet-700 font-black">{formatDurationKo(ses.duration_sec)}</span>
                               </div>
                               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1614,6 +2018,278 @@ export default function HomeStudyMonitoringTab({ allStudents }: HomeStudyMonitor
               >
                 닫기
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 9. 학생 1인 맞춤 심층 모니터링 팝업 모달 (동일 학년 평균 비교선 ON/OFF 토글) */}
+      {deepDiveData && (
+        <div 
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150 print:p-0 print:bg-white"
+          onClick={() => setSelectedStudentDeepDive(null)}
+        >
+          <div 
+            className="bg-white rounded-3xl shadow-2xl border border-slate-200/80 w-full max-w-4xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-150 print:max-h-none print:shadow-none print:border-none"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-violet-950 via-purple-950 to-slate-900 text-white p-6 flex items-start justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white font-black text-xl flex items-center justify-center shadow-md shadow-violet-500/30 border border-white/20">
+                  {deepDiveData.studentName.slice(0, 1)}
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="text-xl font-black text-white">{deepDiveData.studentName} 학생 맞춤 심층 학습 분석실</h2>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-500/30 text-violet-200 font-extrabold border border-violet-400/30">
+                      {deepDiveData.studentGrade}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-300 font-bold flex flex-wrap items-center gap-2">
+                    <span>📅 분석 기간: {deepDiveData.startDate} ~ {deepDiveData.endDate}</span>
+                    <span>•</span>
+                    <span className="text-amber-300 bg-amber-400/20 px-2.5 py-0.5 rounded-full border border-amber-400/30 font-extrabold">
+                      {deepDiveData.peakHourText}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedStudentDeepDive(null)}
+                className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer print:hidden"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Stat Summary Banner (3 Stat Cards) */}
+            <div className="bg-slate-50 p-5 border-b border-slate-200/80 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-slate-400">⏱️ 기간 총 순수 가정 학습</div>
+                  <div className="text-xl font-black text-slate-900 mt-1">
+                    {formatDurationKo(deepDiveData.studentTotalPureSec)}
+                  </div>
+                </div>
+                <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-lg bg-violet-50 text-violet-700 border border-violet-100">
+                  일평균 {formatDurationKo(Math.round(deepDiveData.studentTotalPureSec / Math.max(deepDiveData.dailyPoints.length, 1)))}
+                </span>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-slate-400">👥 {deepDiveData.studentGrade} 동일 학년 평균 대비</div>
+                  <div className={`text-xl font-black mt-1 ${deepDiveData.isAboveAvg ? 'text-emerald-600' : 'text-slate-600'}`}>
+                    {deepDiveData.isAboveAvg ? `+${formatDurationKo(deepDiveData.netDiffTotal)} 초과` : `-${formatDurationKo(Math.abs(deepDiveData.netDiffTotal))} 미달`}
+                  </div>
+                </div>
+                <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-lg border ${
+                  deepDiveData.isAboveAvg ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'
+                }`}>
+                  {deepDiveData.isAboveAvg ? '상위권 몰입 🏆' : '평균 대비 완만'}
+                </span>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-4 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold text-slate-400">🚫 학원 수업 제외 시간</div>
+                  <div className="text-xl font-black text-rose-600 mt-1">
+                    {formatDurationKo(deepDiveData.studentTotalExcludedSec)}
+                  </div>
+                </div>
+                <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">
+                  수업 칼차감 완료
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1">
+              {/* Daily Bar Chart Card */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 space-y-4 shadow-2xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="text-sm font-black text-slate-800 flex items-center gap-2">
+                    <TrendingUp size={16} className="text-violet-600" />
+                    <span>일자별 가정 학습량 추이 vs 동일 학년 평균 비교</span>
+                  </div>
+
+                  {/* Toggle Switch */}
+                  <div className="flex items-center gap-2.5 bg-slate-100 px-3 py-1.5 rounded-2xl border border-slate-200">
+                    <span className="text-xs font-black text-slate-700">동일 학년 평균 비교</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowGradeAvgComparison(!showGradeAvgComparison)}
+                      className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
+                        showGradeAvgComparison ? 'bg-violet-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform shadow-xs ${
+                        showGradeAvgComparison ? 'right-1' : 'left-1'
+                      }`} />
+                    </button>
+                    <span className="text-[11px] font-black text-violet-700">
+                      {showGradeAvgComparison ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bar Chart Canvas */}
+                <div className="h-56 flex items-end justify-between pt-8 pb-6 px-3 border-b border-slate-100 gap-2 overflow-x-auto">
+                  {deepDiveData.dailyPoints.map(pt => {
+                    const studentPct = Math.max(Math.round((pt.studentSec / deepDiveData.maxChartSec) * 100), pt.studentSec > 0 ? 8 : 2);
+                    const gradePct = Math.max(Math.round((pt.gradeAvgSec / deepDiveData.maxChartSec) * 100), pt.gradeAvgSec > 0 ? 8 : 2);
+
+                    return (
+                      <div key={pt.date} className="flex-1 min-w-[42px] flex flex-col items-center justify-end h-full relative group">
+                        {/* Bars Container */}
+                        <div className="flex items-end justify-center gap-1.5 w-full h-full">
+                          {/* Student Bar */}
+                          <div
+                            className="w-5 sm:w-6 bg-gradient-to-t from-violet-600 to-fuchsia-500 rounded-t-lg transition-all duration-300 relative group-hover:brightness-110"
+                            style={{ height: `${studentPct}%` }}
+                            title={`${deepDiveData.studentName}: ${formatDurationKo(pt.studentSec)}`}
+                          >
+                            {/* Diff badge on top */}
+                            {showGradeAvgComparison && pt.studentSec > 0 && (
+                              <div className={`absolute -top-6 left-1/2 -translate-x-1/2 text-[9px] font-black px-1 py-0.5 rounded whitespace-nowrap shadow-2xs ${
+                                pt.diffSec >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                {pt.diffSec >= 0 ? `+${Math.round(pt.diffSec / 60)}m` : `-${Math.round(Math.abs(pt.diffSec) / 60)}m`}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Grade Average Bar (Toggled ON/OFF) */}
+                          {showGradeAvgComparison && (
+                            <div
+                              className="w-4 sm:w-5 bg-slate-200 border border-dashed border-slate-400 rounded-t-lg transition-all duration-300"
+                              style={{ height: `${gradePct}%` }}
+                              title={`${deepDiveData.studentGrade} 평균: ${formatDurationKo(pt.gradeAvgSec)}`}
+                            />
+                          )}
+                        </div>
+
+                        {/* Date Label */}
+                        <div className="text-[10px] font-bold text-slate-500 mt-2 truncate w-full text-center">
+                          {pt.label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Legend */}
+                <div className="flex items-center justify-center gap-6 text-xs font-bold text-slate-500 pt-1">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3.5 h-3.5 rounded bg-gradient-to-tr from-violet-600 to-fuchsia-500"></span>
+                    <span>{deepDiveData.studentName} 순수 학습량</span>
+                  </div>
+                  {showGradeAvgComparison && (
+                    <div className="flex items-center gap-2">
+                      <span className="w-3.5 h-3.5 rounded bg-slate-200 border border-dashed border-slate-400"></span>
+                      <span>{deepDiveData.studentGrade} 동일 학년 평균</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Lower Grid (Hourly Breakdown + Top 3 Materials) */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
+                {/* Hourly Distribution (7 cols) */}
+                <div className="md:col-span-7 bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                      <Clock size={15} className="text-violet-600" />
+                      시간대별 활동 분포 (14시 ~ 01시)
+                    </span>
+                    <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
+                      빗금: 학원 수업 시간대
+                    </span>
+                  </div>
+
+                  <div className="h-32 flex items-end justify-between pt-4 pb-5 px-1 border-b border-slate-100 gap-1.5">
+                    {deepDiveData.hourlyDistribution.map(h => {
+                      const hPct = Math.max(Math.round((h.sec / deepDiveData.maxHourSec) * 100), h.sec > 0 ? 12 : 3);
+                      return (
+                        <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full">
+                          <div
+                            className={`w-full rounded-t-md transition-all ${
+                              h.isClass
+                                ? 'bg-rose-100 border border-dashed border-rose-300'
+                                : h.sec > 3600
+                                ? 'bg-violet-600 shadow-2xs'
+                                : h.sec > 0
+                                ? 'bg-violet-300'
+                                : 'bg-slate-100'
+                            }`}
+                            style={{ height: `${h.isClass ? 80 : hPct}%` }}
+                            title={`${h.hourLabel}: ${h.isClass ? '학원 수업 (제외)' : formatDurationKo(h.sec)}`}
+                          />
+                          <span className="text-[9px] font-bold text-slate-400 mt-1.5">{h.hourLabel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Top 3 Materials (5 cols) */}
+                <div className="md:col-span-5 bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-2xs">
+                  <div className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                    <Library size={15} className="text-amber-500" />
+                    기간 최다 열람 라이브러리 교재 TOP 3
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    {deepDiveData.topMaterials.length === 0 ? (
+                      <div className="py-8 text-center text-xs font-bold text-slate-400 bg-slate-50 rounded-xl">
+                        열람된 라이브러리 기록이 없습니다.
+                      </div>
+                    ) : (
+                      deepDiveData.topMaterials.map((mat, mIdx) => (
+                        <div key={mIdx} className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-5 h-5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-black flex items-center justify-center shrink-0">
+                              {mIdx + 1}
+                            </span>
+                            <span className="font-black text-slate-800 truncate" title={mat.title}>
+                              {mat.title}
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-extrabold text-violet-700 shrink-0">
+                            {formatDurationKo(mat.sec)}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 border-t border-slate-200/80 p-4 flex items-center justify-between print:hidden">
+              <span className="text-xs font-bold text-slate-400">
+                학부모 상담 및 학생 1:1 코칭 리포트로 활용하세요.
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-2xl bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-black text-xs transition-colors cursor-pointer shadow-2xs"
+                >
+                  <Printer size={14} />
+                  <span>인쇄하기</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedStudentDeepDive(null)}
+                  className="px-4 py-2 rounded-2xl bg-violet-600 hover:bg-violet-700 text-white font-black text-xs transition-colors cursor-pointer shadow-sm shadow-violet-200"
+                >
+                  닫기
+                </button>
+              </div>
             </div>
           </div>
         </div>

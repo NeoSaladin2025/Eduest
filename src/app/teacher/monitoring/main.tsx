@@ -9,12 +9,14 @@ import {
   Users, 
   Loader2, 
   Sparkles,
-  Home
+  Home,
+  Library
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import RealtimeProctorTab from '../exammgr/RealtimeProctorTab';
 import DailyActivityMonitoringTab from './DailyActivityMonitoringTab';
 import HomeStudyMonitoringTab from './HomeStudyMonitoringTab';
+import LibraryContentAnalyticsTab from './LibraryContentAnalyticsTab';
 
 interface Student {
   id: string;
@@ -24,7 +26,7 @@ interface Student {
 }
 
 export default function MonitoringCenterMain() {
-  const [activeSubTab, setActiveSubTab] = useState<'daily' | 'home_study' | 'test'>('daily');
+  const [activeSubTab, setActiveSubTab] = useState<'daily' | 'home_study' | 'library_content' | 'test'>('daily');
   const [targetStudentId, setTargetStudentId] = useState<string | undefined>(undefined);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,7 +99,20 @@ export default function MonitoringCenterMain() {
           >
             <Home size={15} />
             <span>가정·자기주도 학습 분석</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-violet-100 text-violet-700 font-extrabold border border-violet-200">
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('library_content')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+              activeSubTab === 'library_content'
+                ? 'bg-white text-purple-700 shadow-sm border border-slate-200/70'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Library size={15} />
+            <span>컨텐츠(라이브러리) 분석</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-700 font-extrabold border border-purple-200">
               NEW
             </span>
           </button>
@@ -140,6 +155,10 @@ export default function MonitoringCenterMain() {
               <HomeStudyMonitoringTab
                 allStudents={students}
               />
+            )}
+
+            {activeSubTab === 'library_content' && (
+              <LibraryContentAnalyticsTab />
             )}
 
             {activeSubTab === 'test' && (
