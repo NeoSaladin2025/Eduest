@@ -122,6 +122,19 @@ function getAllDescendantIds(node: FolderNode): string[] {
   return ids;
 }
 
+function getFolderPath(nodeId: string, nodes: FolderNode[], currentPath: string[] = []): string[] | null {
+  for (const node of nodes) {
+    if (node.drive_id === nodeId) {
+      return [...currentPath, node.name];
+    }
+    if (node.children && node.children.length > 0) {
+      const found = getFolderPath(nodeId, node.children, [...currentPath, node.name]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 export default function StudentManagerMain() {
   const [students, setStudents] = useState<Student[]>([]);
   const [name, setName] = useState('');
@@ -163,24 +176,29 @@ export default function StudentManagerMain() {
   const [targetSaving, setTargetSaving] = useState(false);
 
   // ----------------------------------------------------
-  // 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 상태 및 핸들러
+  // 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 상태 및 핸들러 (폴더 중심 + Diff 기반 안전 저장)
   const [isBatchFolderModalOpen, setIsBatchFolderModalOpen] = useState(false);
-  const [batchSelectedStudentIds, setBatchSelectedStudentIds] = useState<Set<string>>(new Set());
-  const [batchStudentGradeFilter, setBatchStudentGradeFilter] = useState<string>('고2');
-  const [batchStudentSearch, setBatchStudentSearch] = useState<string>('');
+  const [selectedBatchFolder, setSelectedBatchFolder] = useState<FolderNode | null>(null);
+  const [pendingBatchStudentIds, setPendingBatchStudentIds] = useState<Set<string>>(new Set());
   
   const [batchLibraryGrade, setBatchLibraryGrade] = useState<string>('고2');
   const [batchTreeRoots, setBatchTreeRoots] = useState<FolderNode[]>([]);
-  const [batchAllTreeIds, setBatchAllTreeIds] = useState<string[]>([]);
-  const [batchSelectedFolderIds, setBatchSelectedFolderIds] = useState<Set<string>>(new Set());
   const [batchExpandedNodes, setBatchExpandedNodes] = useState<Set<string>>(new Set());
   const [batchLoading, setBatchLoading] = useState<boolean>(false);
   const [batchSaving, setBatchSaving] = useState<boolean>(false);
-  const [batchMode, setBatchMode] = useState<'ADD' | 'OVERWRITE'>('ADD');
   const [batchToastMsg, setBatchToastMsg] = useState<string | null>(null);
 
+  // 우측 학생 필터 및 검색
+  const [batchStudentGradeFilter, setBatchStudentGradeFilter] = useState<string>('ALL');
+  const [batchStudentSearch, setBatchStudentSearch] = useState<string>('');
+
+  // 특정 폴더의 현재 권한 보유 학생 수 계산 헬퍼
+  const getFolderStudentCount = (folderId: string) => {
+    return students.filter(s => (s.unlocked_folders || []).includes(folderId)).length;
+  };
+
   // 일괄 모달용 라이브러리 폴더 트리 불러오기
-  const fetchBatchLibraryTree = async (targetGrade: string) => {
+  const fetchBatchLibraryTree = async (targetGrade: string, autoSelectFirst: boolean = false) => {
     setBatchLoading(true);
     try {
       const res = await fetch(`/api/drive/library?grade=${encodeURIComponent(targetGrade)}`);
@@ -189,16 +207,6 @@ export default function StudentManagerMain() {
       const roots = buildFolderTree(folders, targetGrade);
       setBatchTreeRoots(roots);
 
-      const allIds: string[] = [];
-      const collectIds = (nodes: FolderNode[]) => {
-        nodes.forEach(n => {
-          allIds.push(n.drive_id);
-          if (n.children && n.children.length > 0) collectIds(n.children);
-        });
-      };
-      collectIds(roots);
-      setBatchAllTreeIds(allIds);
-
       // 기본적으로 1~2단계 펼쳐두기
       const defaultExpanded = new Set<string>();
       roots.forEach(r => {
@@ -206,6 +214,15 @@ export default function StudentManagerMain() {
         (r.children || []).forEach(c => defaultExpanded.add(c.drive_id));
       });
       setBatchExpandedNodes(defaultExpanded);
+
+      if (autoSelectFirst && roots.length > 0) {
+        const firstTarget = roots[0].children.length > 0 ? roots[0].children[0] : roots[0];
+        setSelectedBatchFolder(firstTarget);
+        setPendingBatchStudentIds(new Set());
+      } else if (roots.length === 0) {
+        setSelectedBatchFolder(null);
+        setPendingBatchStudentIds(new Set());
+      }
     } catch (err) {
       console.error('Failed to load batch library tree:', err);
     } finally {
@@ -216,20 +233,13 @@ export default function StudentManagerMain() {
   // 일괄 모달 열기 핸들러
   const openBatchFolderModal = () => {
     const initialGrade = (selectedGradeFilter && selectedGradeFilter !== '전체') ? selectedGradeFilter : '고2';
-    setBatchStudentGradeFilter(initialGrade);
     setBatchLibraryGrade(initialGrade);
-
-    if (selectedStudentIds.size > 0) {
-      setBatchSelectedStudentIds(new Set(selectedStudentIds));
-    } else {
-      const gradeStudentIds = students.filter(s => s.grade.startsWith(initialGrade)).map(s => s.id);
-      setBatchSelectedStudentIds(new Set(gradeStudentIds));
-    }
-
-    setBatchSelectedFolderIds(new Set());
-    setBatchMode('ADD');
+    setBatchStudentGradeFilter(initialGrade);
+    setBatchStudentSearch('');
+    setSelectedBatchFolder(null);
+    setPendingBatchStudentIds(new Set()); // 자동 전체선택 없이 빈 상태로 시작!
     setIsBatchFolderModalOpen(true);
-    fetchBatchLibraryTree(initialGrade);
+    fetchBatchLibraryTree(initialGrade, true);
   };
 
   // 일괄 모달 내 트리 노드 펼침 토글
@@ -240,32 +250,6 @@ export default function StudentManagerMain() {
       else next.add(nodeId);
       return next;
     });
-  };
-
-  // 일괄 모달 내 폴더 노드 선택 토글
-  const toggleBatchNodeSelection = (node: FolderNode) => {
-    const descendantIds = getAllDescendantIds(node);
-    const checkState = getNodeCheckState(node, Array.from(batchSelectedFolderIds));
-    const shouldSelectAll = checkState !== 'all';
-
-    setBatchSelectedFolderIds(prev => {
-      const next = new Set(prev);
-      if (shouldSelectAll) {
-        descendantIds.forEach(id => next.add(id));
-      } else {
-        descendantIds.forEach(id => next.delete(id));
-      }
-      return next;
-    });
-  };
-
-  // 일괄 모달 내 폴더 전체 선택/해제
-  const handleToggleBatchSelectAllFolders = () => {
-    if (batchSelectedFolderIds.size === batchAllTreeIds.length) {
-      setBatchSelectedFolderIds(new Set());
-    } else {
-      setBatchSelectedFolderIds(new Set(batchAllTreeIds));
-    }
   };
 
   // 일괄 모달 내 학생 필터링
@@ -279,29 +263,66 @@ export default function StudentManagerMain() {
     });
   }, [students, batchStudentGradeFilter, batchStudentSearch]);
 
-  // 일괄 권한 최종 저장 핸들러
+  // 🌟 Diff 감지: 현재 선택된 대상 폴더에 대해 신규로 권한 부여 대기 중인 학생들 (기존에 이미 권한이 없는 학생만 엄선)
+  const newlyGrantedStudents = useMemo(() => {
+    if (!selectedBatchFolder) return [];
+    const targetFolderId = selectedBatchFolder.drive_id;
+    return students.filter(s => 
+      pendingBatchStudentIds.has(s.id) && 
+      !(s.unlocked_folders || []).includes(targetFolderId)
+    );
+  }, [students, pendingBatchStudentIds, selectedBatchFolder]);
+
+  // 현재 필터된 학생 중 권한이 아직 없는 학생들 (미보유자 일괄 부여 버튼용)
+  const unassignedStudentsInFilter = useMemo(() => {
+    if (!selectedBatchFolder) return [];
+    const targetFolderId = selectedBatchFolder.drive_id;
+    return batchFilteredStudents.filter(st => {
+      const hasExisting = (st.unlocked_folders || []).includes(targetFolderId);
+      const isPending = pendingBatchStudentIds.has(st.id);
+      return !hasExisting && !isPending;
+    });
+  }, [batchFilteredStudents, selectedBatchFolder, pendingBatchStudentIds]);
+
+  // 미보유자 전체 부여 핸들러
+  const handleGrantAllUnassigned = () => {
+    if (!selectedBatchFolder) return;
+    const targetFolderId = selectedBatchFolder.drive_id;
+    setPendingBatchStudentIds(prev => {
+      const next = new Set(prev);
+      batchFilteredStudents.forEach(st => {
+        const hasExisting = (st.unlocked_folders || []).includes(targetFolderId);
+        if (!hasExisting) {
+          next.add(st.id);
+        }
+      });
+      return next;
+    });
+  };
+
+  // 일괄 권한 최종 저장 핸들러 (Diff 기반 안전 저장: 변경된 학생만 PATCH 호출 및 기존 폴더 유지)
   const handleApplyBatchFolderPermissions = async () => {
-    if (batchSelectedStudentIds.size === 0) {
-      alert('권한을 부여할 대상 학생을 1명 이상 선택해주세요.');
+    if (!selectedBatchFolder) {
+      alert('대상 라이브러리 폴더를 선택해주세요.');
       return;
     }
-    if (batchSelectedFolderIds.size === 0) {
-      alert('오픈할 라이브러리 폴더를 1개 이상 선택해주세요.');
+    if (newlyGrantedStudents.length === 0) {
+      alert('신규로 권한을 부여할 학생이 선택되지 않았습니다.');
       return;
     }
 
     setBatchSaving(true);
     try {
-      const targetIds = Array.from(batchSelectedStudentIds);
-      const folderIds = Array.from(batchSelectedFolderIds);
+      const targetStudentIds = newlyGrantedStudents.map(s => s.id);
+      const targetFolderId = selectedBatchFolder.drive_id;
 
       const res = await fetch('/api/drive/library', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          studentIds: targetIds,
-          unlockedFolders: folderIds,
-          mode: batchMode,
+          studentIds: targetStudentIds,
+          unlockedFolders: [targetFolderId],
+          mode: 'ADD', // diff 기반 안전 추가 (기존 unlocked_folders 절대 보존)
         }),
       });
 
@@ -310,28 +331,26 @@ export default function StudentManagerMain() {
         throw new Error(data.error || '일괄 권한 저장에 실패했습니다.');
       }
 
-      // 프론트엔드 상태 실시간 업데이트
+      // 프론트엔드 상태 실시간 업데이트 (변경된 학생만 갱신)
+      const targetSet = new Set(targetStudentIds);
       setStudents(prev => prev.map(s => {
-        if (batchSelectedStudentIds.has(s.id)) {
-          if (batchMode === 'OVERWRITE') {
-            return { ...s, unlocked_folders: folderIds };
-          } else {
-            const currentList = Array.isArray(s.unlocked_folders) ? s.unlocked_folders : [];
-            const merged = Array.from(new Set([...currentList, ...folderIds]));
-            return { ...s, unlocked_folders: merged };
-          }
+        if (targetSet.has(s.id)) {
+          const currentList = Array.isArray(s.unlocked_folders) ? s.unlocked_folders : [];
+          const merged = Array.from(new Set([...currentList, targetFolderId]));
+          return { ...s, unlocked_folders: merged };
         }
         return s;
       }));
 
       setIsBatchFolderModalOpen(false);
+      setPendingBatchStudentIds(new Set());
 
-      const studentNames = students.filter(s => batchSelectedStudentIds.has(s.id)).map(s => s.name);
+      const studentNames = newlyGrantedStudents.map(s => s.name);
       const nameSummary = studentNames.length <= 3 
         ? studentNames.join(', ') 
         : `${studentNames.slice(0, 3).join(', ')} 외 ${studentNames.length - 3}명`;
 
-      const msg = `🎉 ${nameSummary} 학생(${studentNames.length}명)에게 ${folderIds.length}개 폴더 권한이 일괄 오픈되었습니다!`;
+      const msg = `🎉 [${selectedBatchFolder.name}] 권한이 ${nameSummary} (${targetStudentIds.length}명)에게 안전하게 DB 반영되었습니다!`;
       setBatchToastMsg(msg);
       setTimeout(() => setBatchToastMsg(null), 4000);
     } catch (err: any) {
@@ -342,27 +361,26 @@ export default function StudentManagerMain() {
     }
   };
 
-  // 일괄 모달용 계층형 트리 렌더러
+  // 일괄 모달용 계층형 트리 렌더러 (폴더 선택 중심)
   const renderBatchTreeNode = (node: FolderNode, depth: number = 0) => {
     const isExpanded = batchExpandedNodes.has(node.drive_id);
-    const checkState = getNodeCheckState(node, Array.from(batchSelectedFolderIds));
+    const isSelected = selectedBatchFolder?.drive_id === node.drive_id;
     const hasChildren = node.children.length > 0;
+    const studentCount = getFolderStudentCount(node.drive_id);
 
     return (
       <div key={node.drive_id} className="w-full">
         <div 
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all select-none border ${
-            depth === 0
-              ? checkState === 'all'
-                ? 'bg-indigo-50/90 border-indigo-300 shadow-xs'
-                : checkState === 'some'
-                ? 'bg-indigo-50/40 border-indigo-200'
-                : 'bg-slate-50 border-slate-200 hover:border-slate-300'
-              : checkState === 'all'
-              ? 'bg-indigo-50/70 border-indigo-200'
-              : checkState === 'some'
-              ? 'bg-indigo-50/30 border-indigo-100'
-              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200'
+          onClick={() => {
+            setSelectedBatchFolder(node);
+            setPendingBatchStudentIds(new Set());
+          }}
+          className={`flex items-center gap-2 px-3 py-2 rounded-xl transition-all select-none border cursor-pointer ${
+            isSelected
+              ? 'bg-violet-600 text-white border-violet-600 shadow-md ring-2 ring-violet-300'
+              : depth === 0
+              ? 'bg-slate-50 border-slate-200 hover:border-slate-300 hover:bg-slate-100/70 text-slate-800'
+              : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200 text-slate-700'
           }`}
         >
           {hasChildren ? (
@@ -372,7 +390,11 @@ export default function StudentManagerMain() {
                 e.stopPropagation();
                 toggleBatchExpand(node.drive_id);
               }}
-              className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-all shrink-0 cursor-pointer"
+              className={`p-1 rounded-lg transition-all shrink-0 cursor-pointer ${
+                isSelected
+                  ? 'text-white/80 hover:text-white hover:bg-white/20'
+                  : 'text-slate-400 hover:text-slate-700 hover:bg-slate-200/60'
+              }`}
             >
               {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
@@ -380,43 +402,49 @@ export default function StudentManagerMain() {
             <div className="w-5 shrink-0" />
           )}
 
-          <div 
-            onClick={() => toggleBatchNodeSelection(node)}
-            className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer"
-          >
-            {checkState === 'all' ? (
-              <CheckSquare size={18} className="text-indigo-600 shrink-0" />
-            ) : checkState === 'some' ? (
-              <MinusSquare size={18} className="text-indigo-500 shrink-0" />
-            ) : (
-              <Square size={18} className="text-slate-300 shrink-0" />
-            )}
-
+          <div className="flex items-center gap-2 flex-1 min-w-0">
             {hasChildren ? (
               isExpanded ? (
-                <FolderOpen size={17} className="text-amber-500 shrink-0" />
+                <FolderOpen size={17} className={isSelected ? 'text-white shrink-0' : 'text-amber-500 shrink-0'} />
               ) : (
-                <Folder size={17} className="text-amber-500 shrink-0" />
+                <Folder size={17} className={isSelected ? 'text-white shrink-0' : 'text-amber-500 shrink-0'} />
               )
             ) : (
-              <Folder size={15} className="text-slate-400 shrink-0" />
+              <Folder size={15} className={isSelected ? 'text-white/80 shrink-0' : 'text-slate-400 shrink-0'} />
             )}
 
             <span 
               className={`truncate text-xs ${
-                depth === 0 
+                isSelected 
+                  ? 'font-black text-white' 
+                  : depth === 0 
                   ? 'font-black text-slate-800' 
                   : depth === 1 
                   ? 'font-bold text-slate-700' 
                   : 'font-semibold text-slate-600'
-              } ${checkState === 'all' ? 'text-indigo-900 font-black' : ''}`}
+              }`}
             >
               {node.name}
             </span>
+          </div>
 
+          <div className="flex items-center gap-1.5 ml-auto shrink-0">
+            {studentCount > 0 && (
+              <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${
+                isSelected 
+                  ? 'bg-white/20 text-white border border-white/20' 
+                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              }`}>
+                {studentCount}명 보유
+              </span>
+            )}
             {hasChildren && (
-              <span className="ml-auto text-[10px] font-bold text-slate-400 bg-white/80 border border-slate-200 px-2 py-0.5 rounded-full shrink-0">
-                하위 {node.children.length}개
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                isSelected 
+                  ? 'bg-white/20 text-white' 
+                  : 'bg-slate-100 text-slate-500 border border-slate-200'
+              }`}>
+                하위 {node.children.length}
               </span>
             )}
           </div>
@@ -1471,7 +1499,7 @@ export default function StudentManagerMain() {
         </div>
       )}
 
-      {/* 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 */}
+      {/* 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 (폴더 중심 + Diff 기반 안전 저장) */}
       {isBatchFolderModalOpen && (
         <div className="fixed inset-0 z-[115] flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
           <div 
@@ -1491,13 +1519,13 @@ export default function StudentManagerMain() {
                 </div>
                 <div>
                   <h2 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight leading-none flex items-center gap-2">
-                    <span>일괄 라이브러리 폴더 권한 관리</span>
+                    <span>폴더별 학생 권한 관리</span>
                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-700 font-bold border border-violet-200">
-                      일괄 권한 오픈
+                      폴더 중심 일괄 배정
                     </span>
                   </h2>
                   <p className="text-xs text-slate-400 font-bold mt-1">
-                    원하는 학년/학생들에게 특정 단원·기출 폴더 접근 권한을 한 번에 일괄 부여합니다.
+                    왼쪽에서 폴더를 선택하고, 우측에서 원하는 학생에게 권한을 부여한 뒤 [DB 반영] 버튼을 누르세요.
                   </p>
                 </div>
               </div>
@@ -1510,179 +1538,53 @@ export default function StudentManagerMain() {
               </button>
             </div>
 
-            {/* 2. 중앙 좌우 2분할(Split) 콘텐츠 */}
-            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-100 overflow-hidden min-h-0 bg-white">
+            {/* 2. 중앙 좌우 분할 콘텐츠 (좌측: 폴더트리 5열 / 우측: 학생현황 7열) */}
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-12 divide-y md:divide-y-0 md:divide-x divide-slate-100 overflow-hidden min-h-0 bg-white">
               
-              {/* [좌측 패널] 대상 학생 선택 */}
-              <div className="flex flex-col h-full overflow-hidden bg-slate-50/30">
+              {/* [좌측 패널] 1. 대상 라이브러리 폴더 선택 */}
+              <div className="md:col-span-5 flex flex-col h-full overflow-hidden bg-slate-50/40">
                 {/* 좌측 헤더 */}
-                <div className="p-4 border-b border-slate-100 bg-white/60 space-y-3 shrink-0">
+                <div className="p-4 border-b border-slate-100 bg-white/70 space-y-3 shrink-0">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
-                      <Users size={15} className="text-violet-600" />
-                      1. 대상 학생 선택
+                      <FolderOpen size={15} className="text-violet-600" />
+                      1. 대상 라이브러리 폴더 선택
                     </span>
-                    <span className="text-[11px] font-bold text-violet-700 bg-violet-50 px-2 py-0.5 rounded-md border border-violet-100">
-                      선택: <strong className="font-black text-violet-900">{batchSelectedStudentIds.size}</strong>명 / {batchFilteredStudents.length}명
-                    </span>
+                    {selectedBatchFolder && (
+                      <span className="text-[11px] font-black text-violet-700 bg-violet-100/80 px-2 py-0.5 rounded-md border border-violet-200">
+                        선택됨
+                      </span>
+                    )}
                   </div>
 
-                  {/* 학년 필터 칩 */}
+                  {/* 학년 탭 버튼 */}
                   <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
-                    {['ALL', '중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                    {['중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
                       <button
                         key={g}
                         type="button"
-                        onClick={() => setBatchStudentGradeFilter(g)}
-                        className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
-                          batchStudentGradeFilter === g
+                        onClick={() => {
+                          setBatchLibraryGrade(g);
+                          fetchBatchLibraryTree(g, true);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+                          batchLibraryGrade === g
                             ? 'bg-violet-600 text-white shadow-xs'
                             : 'bg-white text-slate-600 border border-slate-200 hover:border-violet-300'
                         }`}
                       >
-                        {g === 'ALL' ? '전체' : g}
+                        {g}
                       </button>
                     ))}
                   </div>
-
-                  {/* 학생 검색창 & 전체선택 토글 */}
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                      <input
-                        type="text"
-                        value={batchStudentSearch}
-                        onChange={e => setBatchStudentSearch(e.target.value)}
-                        placeholder="학생 이름 검색..."
-                        className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const isAllSelected = batchFilteredStudents.length > 0 && batchFilteredStudents.every(s => batchSelectedStudentIds.has(s.id));
-                        setBatchSelectedStudentIds(prev => {
-                          const next = new Set(prev);
-                          if (isAllSelected) {
-                            batchFilteredStudents.forEach(s => next.delete(s.id));
-                          } else {
-                            batchFilteredStudents.forEach(s => next.add(s.id));
-                          }
-                          return next;
-                        });
-                      }}
-                      className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs"
-                    >
-                      {batchFilteredStudents.length > 0 && batchFilteredStudents.every(s => batchSelectedStudentIds.has(s.id))
-                        ? '전체 해제'
-                        : '전체 선택'}
-                    </button>
-                  </div>
                 </div>
 
-                {/* 학생 목록 (스크롤) */}
-                <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {batchFilteredStudents.length === 0 ? (
-                    <div className="py-16 text-center text-xs font-bold text-slate-400">
-                      해당 조건의 학생이 없습니다.
-                    </div>
-                  ) : (
-                    batchFilteredStudents.map(st => {
-                      const isSelected = batchSelectedStudentIds.has(st.id);
-                      return (
-                        <div
-                          key={st.id}
-                          onClick={() => {
-                            setBatchSelectedStudentIds(prev => {
-                              const next = new Set(prev);
-                              if (next.has(st.id)) next.delete(st.id);
-                              else next.add(st.id);
-                              return next;
-                            });
-                          }}
-                          className={`flex items-center justify-between p-2.5 px-3 rounded-xl border transition-all cursor-pointer select-none ${
-                            isSelected
-                              ? 'bg-violet-50/80 border-violet-200 text-violet-900 shadow-2xs'
-                              : 'bg-white border-slate-100 hover:border-slate-200 text-slate-700'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            {isSelected ? (
-                              <CheckSquare size={17} className="text-violet-600 shrink-0" />
-                            ) : (
-                              <Square size={17} className="text-slate-300 shrink-0" />
-                            )}
-                            <span className="font-black text-xs truncate">{st.name}</span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                              {st.grade}
-                            </span>
-                          </div>
-
-                          <div className="text-[10px] font-bold text-slate-400 shrink-0">
-                            현재 {(st.unlocked_folders || []).length}개 오픈됨
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* [우측 패널] 오픈할 라이브러리 폴더 트리 */}
-              <div className="flex flex-col h-full overflow-hidden bg-white">
-                {/* 우측 헤더 */}
-                <div className="p-4 border-b border-slate-100 bg-white/60 space-y-3 shrink-0">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
-                      <FolderOpen size={15} className="text-fuchsia-600" />
-                      2. 오픈할 라이브러리 폴더 선택
-                    </span>
-                    <span className="text-[11px] font-bold text-fuchsia-700 bg-fuchsia-50 px-2 py-0.5 rounded-md border border-fuchsia-100">
-                      선택: <strong className="font-black text-fuchsia-900">{batchSelectedFolderIds.size}</strong>개 / {batchAllTreeIds.length}개
-                    </span>
-                  </div>
-
-                  {/* 라이브러리 학년 선택 및 전체선택 버튼 */}
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
-                      {['중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
-                        <button
-                          key={g}
-                          type="button"
-                          onClick={() => {
-                            setBatchLibraryGrade(g);
-                            fetchBatchLibraryTree(g);
-                          }}
-                          className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
-                            batchLibraryGrade === g
-                              ? 'bg-fuchsia-600 text-white shadow-xs'
-                              : 'bg-slate-50 text-slate-600 border border-slate-200 hover:border-fuchsia-300'
-                          }`}
-                        >
-                          {g}
-                        </button>
-                      ))}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleToggleBatchSelectAllFolders}
-                      disabled={batchLoading || batchAllTreeIds.length === 0}
-                      className="px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-50"
-                    >
-                      {batchSelectedFolderIds.size === batchAllTreeIds.length && batchAllTreeIds.length > 0
-                        ? '전체 해제'
-                        : '전체 선택'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* 계층형 폴더 트리 영역 (스크롤) */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-1.5 bg-slate-50/20">
+                {/* 폴더 트리 목록 */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-1 bg-white/50">
                   {batchLoading ? (
                     <div className="py-20 flex flex-col items-center justify-center gap-2 text-slate-400">
-                      <Loader2 size={24} className="animate-spin text-fuchsia-600" />
-                      <span className="text-xs font-bold">라이브러리 폴더 구조를 불러오는 중...</span>
+                      <Loader2 size={24} className="animate-spin text-violet-600" />
+                      <span className="text-xs font-bold">라이브러리 폴더를 불러오는 중...</span>
                     </div>
                   ) : batchTreeRoots.length === 0 ? (
                     <div className="py-20 text-center text-xs font-bold text-slate-400">
@@ -1694,54 +1596,213 @@ export default function StudentManagerMain() {
                 </div>
               </div>
 
-            </div>
+              {/* [우측 패널] 2. 학생별 권한 현황 및 일괄 부여 */}
+              <div className="md:col-span-7 flex flex-col h-full overflow-hidden bg-white">
+                {/* 상단 타겟 배너 및 필터 */}
+                <div className="p-4 border-b border-slate-100 bg-gradient-to-r from-violet-50/60 via-fuchsia-50/30 to-white space-y-3 shrink-0">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
+                        <Users size={15} className="text-violet-600" />
+                        2. 학생별 권한 현황 & 부여
+                      </span>
+                      <div className="text-xs font-bold text-slate-600 mt-1 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-slate-400 shrink-0">대상 폴더:</span>
+                        {selectedBatchFolder ? (
+                          <span className="px-2 py-0.5 rounded-lg bg-violet-100 text-violet-800 font-black border border-violet-200 flex items-center gap-1 truncate max-w-xs sm:max-w-md">
+                            <Folder size={12} className="text-violet-600 shrink-0" />
+                            <span className="truncate">
+                              {getFolderPath(selectedBatchFolder.drive_id, batchTreeRoots)?.join(' > ') || selectedBatchFolder.name}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-amber-600 font-bold">왼쪽에서 폴더를 선택해주세요</span>
+                        )}
+                      </div>
+                    </div>
 
-            {/* 3. 하단 설정 & 액션 툴바 */}
-            <div className="shrink-0 p-4 sm:p-5 border-t border-slate-100 bg-slate-50/80 flex flex-col sm:flex-row items-center justify-between gap-4">
-              
-              {/* 부여 방식 라디오 선택 */}
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-black text-slate-700">부여 방식:</span>
-                <div className="flex items-center gap-2">
-                  <label 
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
-                      batchMode === 'ADD' 
-                        ? 'bg-white border-violet-500 text-violet-900 shadow-2xs ring-1 ring-violet-200' 
-                        : 'bg-white/60 border-slate-200 text-slate-500 hover:border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="batchMode"
-                      value="ADD"
-                      checked={batchMode === 'ADD'}
-                      onChange={() => setBatchMode('ADD')}
-                      className="text-violet-600 focus:ring-violet-500 w-3.5 h-3.5"
-                    />
-                    <span>기존 권한에 추가 <span className="text-[10px] text-violet-600 font-extrabold">(권장)</span></span>
-                  </label>
+                    {selectedBatchFolder && (
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold shrink-0">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          기존 보유 <strong>{getFolderStudentCount(selectedBatchFolder.drive_id)}</strong>명
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md bg-violet-50 text-violet-700 border border-violet-200">
+                          신규 대기 <strong>{newlyGrantedStudents.length}</strong>명
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
-                  <label 
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
-                      batchMode === 'OVERWRITE' 
-                        ? 'bg-white border-violet-500 text-violet-900 shadow-2xs ring-1 ring-violet-200' 
-                        : 'bg-white/60 border-slate-200 text-slate-500 hover:border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="batchMode"
-                      value="OVERWRITE"
-                      checked={batchMode === 'OVERWRITE'}
-                      onChange={() => setBatchMode('OVERWRITE')}
-                      className="text-violet-600 focus:ring-violet-500 w-3.5 h-3.5"
-                    />
-                    <span>선택 폴더로 덮어쓰기</span>
-                  </label>
+                  {/* 학생 필터 칩 + 검색창 + 빠른 일괄 버튼 */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                    <div className="flex items-center gap-1 overflow-x-auto pb-0.5 scrollbar-none">
+                      {['ALL', '중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => setBatchStudentGradeFilter(g)}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+                            batchStudentGradeFilter === g
+                              ? 'bg-violet-600 text-white shadow-xs'
+                              : 'bg-white text-slate-600 border border-slate-200 hover:border-violet-300'
+                          }`}
+                        >
+                          {g === 'ALL' ? '전체' : g}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-1 sm:flex-none justify-end">
+                      <div className="relative w-32 sm:w-40">
+                        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={batchStudentSearch}
+                          onChange={e => setBatchStudentSearch(e.target.value)}
+                          placeholder="학생 이름 검색..."
+                          className="w-full bg-white border border-slate-200 rounded-xl pl-7 pr-2.5 py-1 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleGrantAllUnassigned}
+                        disabled={!selectedBatchFolder || unassignedStudentsInFilter.length === 0}
+                        className="px-2.5 py-1 bg-violet-100 hover:bg-violet-200 text-violet-900 border border-violet-200 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs"
+                        title="현재 필터된 학생 중 권한이 없는 학생 모두에게 부여 대기 체크"
+                      >
+                        + 미보유자 전체 부여 ({unassignedStudentsInFilter.length})
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setPendingBatchStudentIds(new Set())}
+                        disabled={pendingBatchStudentIds.size === 0}
+                        className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-2xs"
+                      >
+                        전체 해제
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 학생 카드 목록 (2열 그리드 스크롤) */}
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 bg-slate-50/30">
+                  {!selectedBatchFolder ? (
+                    <div className="py-24 flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <FolderOpen size={36} className="text-slate-300 stroke-1" />
+                      <span className="text-xs font-bold">왼쪽에서 대상 라이브러리 폴더를 먼저 선택해주세요.</span>
+                    </div>
+                  ) : batchFilteredStudents.length === 0 ? (
+                    <div className="py-20 text-center text-xs font-bold text-slate-400">
+                      해당 조건의 학생이 없습니다.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {batchFilteredStudents.map(st => {
+                        const hasExisting = (st.unlocked_folders || []).includes(selectedBatchFolder.drive_id);
+                        const isPending = pendingBatchStudentIds.has(st.id);
+
+                        return (
+                          <div
+                            key={st.id}
+                            onClick={() => {
+                              if (hasExisting) return;
+                              setPendingBatchStudentIds(prev => {
+                                const next = new Set(prev);
+                                if (next.has(st.id)) next.delete(st.id);
+                                else next.add(st.id);
+                                return next;
+                              });
+                            }}
+                            className={`p-3 rounded-2xl border transition-all select-none ${
+                              hasExisting
+                                ? 'bg-emerald-50/70 border-emerald-200/80 text-emerald-950 cursor-default'
+                                : isPending
+                                ? 'bg-violet-50 border-2 border-violet-500 shadow-sm text-violet-950 cursor-pointer active:scale-[0.99]'
+                                : 'bg-white border-slate-200/80 hover:border-violet-300 text-slate-700 hover:shadow-xs cursor-pointer active:scale-[0.99]'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                  hasExisting 
+                                    ? 'bg-emerald-100 text-emerald-700' 
+                                    : isPending 
+                                    ? 'bg-violet-600 text-white' 
+                                    : 'bg-slate-100 text-slate-400'
+                                }`}>
+                                  {hasExisting ? (
+                                    <CheckCircle2 size={16} />
+                                  ) : isPending ? (
+                                    <Check size={16} className="stroke-[3]" />
+                                  ) : (
+                                    <Square size={16} />
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-black text-xs text-slate-800 truncate">{st.name}</span>
+                                    <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
+                                      {st.grade}
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-semibold truncate mt-0.5">
+                                    현재 {(st.unlocked_folders || []).length}개 오픈됨
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* 상태 뱃지 */}
+                              <div className="shrink-0 text-right">
+                                {hasExisting ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                    권한 있음
+                                  </span>
+                                ) : isPending ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-violet-600 text-white shadow-xs animate-in zoom-in-95">
+                                    <Sparkles size={11} />
+                                    권한 부여
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                                    권한 없음
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* 버튼 그룹 */}
+            </div>
+
+            {/* 3. 하단 설정 & DB 반영 툴바 (Diff 기반 안전 저장) */}
+            <div className="shrink-0 p-4 sm:p-5 border-t border-slate-100 bg-slate-50/80 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-black text-slate-700 shrink-0">변경 감지:</span>
+                {newlyGrantedStudents.length > 0 ? (
+                  <span className="px-3 py-1.5 rounded-xl bg-violet-100 text-violet-900 font-black border border-violet-200 flex items-center gap-1.5">
+                    <Sparkles size={14} className="text-violet-600" />
+                    <span>
+                      신규 <strong>{newlyGrantedStudents.length}명</strong>에게 <strong>[{selectedBatchFolder?.name}]</strong> 권한 부여 대기 중
+                    </span>
+                    <span className="text-[10px] text-violet-600 font-medium ml-1">
+                      (기존 보유 및 미선택 학생 안전 보존)
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-slate-400 font-semibold">
+                    신규 권한 부여 대상이 없습니다. (학생 카드를 클릭하거나 '+ 미보유자 전체 부여'를 누르세요)
+                  </span>
+                )}
+              </div>
+
               <div className="flex items-center gap-2.5 w-full sm:w-auto">
                 <button
                   type="button"
@@ -1753,25 +1814,24 @@ export default function StudentManagerMain() {
                 <button
                   type="button"
                   onClick={handleApplyBatchFolderPermissions}
-                  disabled={batchSaving || batchSelectedStudentIds.size === 0 || batchSelectedFolderIds.size === 0}
+                  disabled={batchSaving || newlyGrantedStudents.length === 0 || !selectedBatchFolder}
                   className="flex-1 sm:flex-none px-5 py-2.5 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-black text-xs transition-all shadow-md shadow-violet-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer active:scale-98"
                 >
                   {batchSaving ? (
                     <>
                       <Loader2 size={15} className="animate-spin" />
-                      <span>일괄 권한 저장 중...</span>
+                      <span>DB 반영 중...</span>
                     </>
                   ) : (
                     <>
                       <Check size={15} />
                       <span>
-                        선택 학생 {batchSelectedStudentIds.size}명에게 {batchSelectedFolderIds.size}개 폴더 권한 적용
+                        💾 DB 반영 ({newlyGrantedStudents.length}명 저장)
                       </span>
                     </>
                   )}
                 </button>
               </div>
-
             </div>
 
           </div>
