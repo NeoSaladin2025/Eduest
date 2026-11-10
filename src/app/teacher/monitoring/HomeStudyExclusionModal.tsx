@@ -46,6 +46,7 @@ export default function HomeStudyExclusionModal({
   const [activeTab, setActiveTab] = useState<'grade' | 'student'>('grade');
   const [rulesConfig, setRulesConfig] = useState<HomeStudyRulesConfig>(DEFAULT_HOME_STUDY_RULES);
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
+  const [studentGradeFilter, setStudentGradeFilter] = useState<string>('고2');
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [studentSearch, setStudentSearch] = useState<string>('');
 
@@ -190,12 +191,17 @@ export default function HomeStudyExclusionModal({
     ? (rulesConfig.grade_rules[selectedGrade] || [])
     : (selectedStudentId ? (rulesConfig.student_overrides[selectedStudentId] || []) : []);
 
-  // 학생 검색 필터
-  const filteredStudents = allStudents.filter(s => 
-    !studentSearch.trim() || 
-    s.name.includes(studentSearch) || 
-    s.grade.includes(studentSearch)
-  );
+  // 학생 검색 및 학년 필터
+  const filteredStudents = allStudents.filter(s => {
+    const matchesGrade = studentGradeFilter === '전체' || (s.grade && s.grade.startsWith(studentGradeFilter));
+    const searchLower = studentSearch.trim().toLowerCase();
+    const matchesSearch = !searchLower || 
+      (s.name && s.name.toLowerCase().includes(searchLower)) || 
+      (s.grade && s.grade.toLowerCase().includes(searchLower));
+    return matchesGrade && matchesSearch;
+  });
+
+  const selectedStudent = allStudents.find(s => s.id === selectedStudentId);
 
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
@@ -308,34 +314,132 @@ export default function HomeStudyExclusionModal({
 
           {/* 학생 선택 (학생 탭일 때) */}
           {activeTab === 'student' && (
-            <div className="space-y-2 bg-slate-50/60 p-4 rounded-2xl border border-slate-200/70">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs font-black text-slate-700">예외를 적용할 학생 선택:</span>
-                <input
-                  type="text"
-                  value={studentSearch}
-                  onChange={e => setStudentSearch(e.target.value)}
-                  placeholder="학생 이름 또는 학년 검색..."
-                  className="bg-white border border-slate-200 rounded-xl px-3 py-1 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 w-48"
-                />
+            <div className="space-y-3 bg-slate-50/70 p-4 rounded-2xl border border-slate-200/80">
+              {/* 학년별 필터 버튼 & 검색창 */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                  <span className="text-xs font-black text-slate-800 shrink-0">대상 학년:</span>
+                  <div className="flex items-center gap-1">
+                    {['전체', '중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => setStudentGradeFilter(g)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                          studentGradeFilter === g
+                            ? 'bg-violet-600 text-white shadow-xs scale-105'
+                            : 'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200'
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="relative shrink-0">
+                  <input
+                    type="text"
+                    value={studentSearch}
+                    onChange={e => setStudentSearch(e.target.value)}
+                    placeholder="학생 이름 또는 학년 검색..."
+                    className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 w-full sm:w-48"
+                  />
+                  {studentSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setStudentSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-black"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none max-h-24">
-                {filteredStudents.slice(0, 20).map(st => (
+              {/* 현재 선택된 학생 안내 바 */}
+              {selectedStudent ? (
+                <div className="flex items-center justify-between p-2.5 px-3.5 bg-violet-50/90 rounded-xl border border-violet-200 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-6 h-6 rounded-lg bg-violet-600 text-white font-black text-[11px] flex items-center justify-center">
+                      {selectedStudent.name.slice(0, 1)}
+                    </div>
+                    <div>
+                      <span className="font-black text-violet-950">{selectedStudent.name}</span>
+                      <span className="font-bold text-violet-600 ml-1">({selectedStudent.grade})</span>
+                      <span className="text-slate-500 ml-2 text-[11px]">
+                        • 등록된 개별 예외 규칙: <strong className="text-violet-700">{(rulesConfig.student_overrides[selectedStudent.id] || []).length}개</strong>
+                      </span>
+                    </div>
+                  </div>
                   <button
-                    key={st.id}
                     type="button"
-                    onClick={() => setSelectedStudentId(st.id)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
-                      selectedStudentId === st.id
-                        ? 'bg-violet-600 text-white shadow-xs'
-                        : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200'
-                    }`}
+                    onClick={() => setSelectedStudentId('')}
+                    className="text-[11px] font-bold text-violet-600 hover:text-violet-800 underline cursor-pointer"
                   >
-                    <span>{st.name}</span>
-                    <span className="text-[10px] ml-1 opacity-70">({st.grade})</span>
+                    선택 해제
                   </button>
-                ))}
+                </div>
+              ) : (
+                <div className="p-2.5 px-3.5 bg-amber-50/80 rounded-xl border border-amber-200 text-[11px] font-bold text-amber-800 flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Info size={14} className="text-amber-600 shrink-0" />
+                    <span>아래 학생 중 예외를 설정할 학생 카드를 클릭하여 선택해주세요.</span>
+                  </div>
+                  <span className="text-[10px] text-amber-600 font-extrabold">{filteredStudents.length}명 조회됨</span>
+                </div>
+              )}
+
+              {/* 학생 카드 그리드 (크고 시원하게 주욱 나오는 레이아웃) */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 max-h-56 overflow-y-auto p-2 bg-white rounded-xl border border-slate-200/90 shadow-inner">
+                {filteredStudents.length === 0 ? (
+                  <div className="col-span-full py-8 text-center text-xs text-slate-400 font-bold">
+                    일치하는 학생이 없습니다. 학년 필터를 변경해보세요.
+                  </div>
+                ) : (
+                  filteredStudents.map(st => {
+                    const isSelected = selectedStudentId === st.id;
+                    const overrideCount = (rulesConfig.student_overrides[st.id] || []).length;
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => setSelectedStudentId(st.id)}
+                        className={`group relative flex items-center justify-between p-2 rounded-xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-violet-600 text-white border-violet-600 shadow-md shadow-violet-200 scale-[1.02]'
+                            : 'bg-white hover:bg-violet-50/40 text-slate-700 border-slate-200 hover:border-violet-300'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-7 h-7 rounded-lg text-xs font-black flex items-center justify-center shrink-0 ${
+                            isSelected
+                              ? 'bg-white/20 text-white'
+                              : 'bg-slate-100 text-slate-600 group-hover:bg-violet-100 group-hover:text-violet-700'
+                          }`}>
+                            {st.name.slice(0, 1)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-black truncate">{st.name}</div>
+                            <div className={`text-[10px] font-bold ${isSelected ? 'text-violet-200' : 'text-slate-400'}`}>
+                              {st.grade}
+                            </div>
+                          </div>
+                        </div>
+
+                        {overrideCount > 0 && (
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-black shrink-0 ${
+                            isSelected
+                              ? 'bg-amber-400 text-slate-900'
+                              : 'bg-amber-100 text-amber-800 border border-amber-200'
+                          }`}>
+                            {overrideCount}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
               </div>
             </div>
           )}
@@ -425,7 +529,9 @@ export default function HomeStudyExclusionModal({
               <span className="text-xs font-black text-slate-800">
                 {activeTab === 'grade' 
                   ? `[${selectedGrade}] 학년에 등록된 수업 제외 규칙 (${activeRulesList.length}건)`
-                  : `선택 학생의 개별 예외 규칙 (${activeRulesList.length}건)`}
+                  : (selectedStudent 
+                      ? `[${selectedStudent.name} (${selectedStudent.grade})] 학생의 개별 예외 규칙 (${activeRulesList.length}건)` 
+                      : '선택 학생의 개별 예외 규칙 (학생을 선택해주세요)')}
               </span>
               <span className="text-[11px] font-bold text-slate-400">
                 이 시간대에는 실시간 감시는 계속되나 가정 학습 통계는 저장되지 않습니다.

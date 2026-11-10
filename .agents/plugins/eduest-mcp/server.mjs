@@ -1602,6 +1602,270 @@ server.tool(
   }
 );
 
+// ==========================================
+// 8. 가정 및 자기주도 학습 모니터링 & 자연어 조회 도구
+// ==========================================
+const WEEKDAY_KO_MAP = {
+  MON: '월', TUE: '화', WED: '수', THU: '목', FRI: '금', SAT: '토', SUN: '일'
+};
+
+function formatDurationKo(sec) {
+  if (!sec || sec < 60) return `${Math.max(0, Math.floor(sec || 0))}초`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}분`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM > 0 ? `${h}시간 ${remM}분` : `${h}시간`;
+}
+
+function formatKstTime(isoStr) {
+  if (!isoStr) return '-';
+  try {
+    const d = new Date(isoStr);
+    const kst = new Date(d.getTime() + 9 * 3600000);
+    const h = String(kst.getUTCHours()).padStart(2, '0');
+    const m = String(kst.getUTCMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+  } catch {
+    return isoStr;
+  }
+}
+
+server.tool(
+  'eduest_get_home_study_sessions',
+  '학생들의 가정/자기주도 학습 기록 및 세션 상세 조회 (날짜별, 학년별, 학생별 접속 시간대, 총 체류시간, 라이브러리 열람/모의고사/복습 활동 상세 분석). "오늘 고2 중 집에서 라이브러리 1시간 이상 본 학생", "김대현 학생 어제 집에서 몇 시에 접속했어?" 등 자연어 질의 처리 지원.',
+  {
+    student_name: z.string().optional().describe('학생 이름 또는 학생 ID (예: 김대현, 유지찬)'),
+    grade: z.string().optional().describe('학년 필터 (예: 고1, 고2, 중3)'),
+    date: z.string().optional().describe('조회 날짜 (YYYY-MM-DD 형식 또는 "today", "yesterday")'),
+    days: z.number().optional().default(7).describe('최근 N일치 조회 (기본값: 7일)'),
+    min_duration_minutes: z.number().optional().default(0).describe('최소 체류 시간(분 단위, 예: 30분 이상 공부한 학생만 조회)'),
+    activity_type: z.enum(['all', 'library', 'review', 'test', 'video', 'homework']).optional().default('all').describe('특정 활동 위주 필터 (라이브러리, 복습, 시험 등)')
+  },
+  async ({ student_name, grade, date, days, min_duration_minutes, activity_type }) => {
+    try {
+      const data = await getLibraryRecord('home_study_sessions', { records: {} });
+      let records = Object.values(data.records || {});
+
+      // 날짜 계산 (KST 기준)
+      const now = new Date();
+      const getKstDate = (d) => new Date(d.getTime() + 9 * 3600000).toISOString().split('T')[0];
+      const todayKst = getKstDate(now);
+      const yesterdayKst = getKstDate(new Date(now.getTime() - 24 * 3600000));
+
+      let targetDate = null;
+      if (date) {
+        if (date.toLowerCase() === 'today' || date === '오늘') targetDate = todayKst;
+        else if (date.toLowerCase() === 'yesterday' || date === '어제') targetDate = yesterdayKst;
+        else targetDate = date.trim();
+      }
+
+      // 학생 이름/ID 매칭
+      let targetStudentId = null;
+      if (student_name) {
+        const trimmed = student_name.trim();
+        const allStudents = await getAllStudents();
+        const match = allStudents.find(s => s.id === trimmed || s.name.toLowerCase().includes(trimmed.toLowerCase()));
+        if (match) {
+          targetStudentId = match.id;
+        } else {
+          records = records.filter(r => r.student_name && r.student_name.includes(trimmed));
+        }
+      }
+
+      if (targetStudentId) {
+        records = records.filter(r => r.student_id === targetStudentId);
+      }
+
+      // 학년 필터
+      if (grade && grade !== '전체' && grade !== 'ALL') {
+        records = records.filter(r => r.student_grade && r.student_grade.includes(grade));
+      }
+
+      // 날짜 필터
+      if (targetDate) {
+        records = records.filter(r => r.date === targetDate);
+      } else if (days) {
+        const cutoff = new Date(Date.now() - days * 24 * 3600000).toISOString().split('T')[0];
+        records = records.filter(r => r.date >= cutoff);
+      }
+
+      // 최소 체류시간 필터
+      if (min_duration_minutes && min_duration_minutes > 0) {
+        records = records.filter(r => (r.total_duration_sec || 0) >= min_duration_minutes * 60);
+      }
+
+      // 활동 타입 필터
+      if (activity_type && activity_type !== 'all') {
+        const secKey = `${activity_type}_sec`;
+        records = records.filter(r => (r.activities_summary && (r.activities_summary[secKey] || 0) > 0));
+      }
+
+      // 최신 날짜 및 체류시간 내림차순 정렬
+      records.sort((a, b) => b.date.localeCompare(a.date) || (b.total_duration_sec || 0) - (a.total_duration_sec || 0));
+
+      if (records.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: `ℹ️ 조건에 일치하는 가정/자기주도 학습 기록이 없습니다.\n- 조회 조건: 날짜(${targetDate || `최근 ${days}일`}), 학생(${student_name || '전체'}), 학년(${grade || '전체'}), 최소시간(${min_duration_minutes}분)`
+          }]
+        };
+      }
+
+      // 종합 집계 (KPI)
+      const totalSec = records.reduce((acc, r) => acc + (r.total_duration_sec || 0), 0);
+      const uniqueStudents = new Set(records.map(r => r.student_id)).size;
+      const avgSec = Math.round(totalSec / (records.length || 1));
+      
+      let totalLibSec = 0, totalRevSec = 0, totalTestSec = 0, totalVidSec = 0;
+      records.forEach(r => {
+        if (r.activities_summary) {
+          totalLibSec += r.activities_summary.library_sec || 0;
+          totalRevSec += r.activities_summary.review_sec || 0;
+          totalTestSec += r.activities_summary.test_sec || 0;
+          totalVidSec += r.activities_summary.video_sec || 0;
+        }
+      });
+
+      // 학생별 보고서 포맷팅
+      const studentReports = records.map(r => {
+        const firstKst = formatKstTime(r.first_access_at);
+        const lastKst = formatKstTime(r.last_access_at);
+        const act = r.activities_summary || {};
+        
+        // 주요 열람 컨텐츠 추출 (최근 활동 4건)
+        const allActs = [];
+        (r.sessions || []).forEach(s => {
+          (s.activities || []).forEach(a => {
+            if (a.title && !allActs.includes(a.title)) allActs.push(a.title);
+          });
+        });
+        const sampleActs = allActs.slice(0, 4).map(t => `   • ${t}`).join('\n') || '   • 활동 상세 없음';
+
+        return `
+📌 [${r.date}] ${r.student_name} (${r.student_grade})
+- 총 학습시간: ${formatDurationKo(r.total_duration_sec)} (세션 ${(r.sessions || []).length}회)
+- 접속 시간대: ${firstKst} ~ ${lastKst}
+- 활동 내역:
+  • 📚 라이브러리: ${formatDurationKo(act.library_sec || 0)}
+  • 🎬 동영상 시청: ${formatDurationKo(act.video_sec || 0)}
+  • 📝 오답/복습: ${formatDurationKo(act.review_sec || 0)}
+  • ✍️ 시험/테스트: ${formatDurationKo(act.test_sec || 0)}
+- 주요 열람 목록:
+${sampleActs}
+`.trim();
+      }).join('\n\n');
+
+      const fullReport = `
+🏡 [가정/자기주도 학습 기록 분석 보고서]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 종합 요약 KPI
+- 조회 대상: ${targetDate ? `[${targetDate}]` : `최근 ${days}일간`}
+- 총 학습 학생: ${uniqueStudents}명 (총 ${records.length}건 레코드)
+- 총 누적 체류시간: ${formatDurationKo(totalSec)} (평균 ${formatDurationKo(avgSec)}/학생)
+- 활동 비중: 📚 라이브러리 ${formatDurationKo(totalLibSec)} | 🎬 영상 ${formatDurationKo(totalVidSec)} | 📝 복습 ${formatDurationKo(totalRevSec)} | ✍️ 시험 ${formatDurationKo(totalTestSec)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👥 학생별 상세 내역:
+${studentReports}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      `.trim();
+
+      return {
+        content: [{ type: 'text', text: fullReport }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 가정 학습 세션 조회 실패: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  'eduest_get_home_study_rules',
+  '학원 수업 제외 시간대(가정 학습 필터링 규칙) 조회 (학년별 공통 시간표 및 학생별 개별 예외 시간대 목록 확인)',
+  {
+    grade: z.string().optional().describe('특정 학년 필터 (예: 고1, 고2, 중3)'),
+    student_name: z.string().optional().describe('특정 학생 이름 (예: 김대현, 유지찬)')
+  },
+  async ({ grade, student_name }) => {
+    try {
+      const data = await getLibraryRecord('home_study_rules', {
+        grade_rules: {},
+        student_overrides: {},
+        updated_at: ''
+      });
+
+      const gradeRules = data.grade_rules || {};
+      const studentOverrides = data.student_overrides || {};
+
+      let allStudents = [];
+      try {
+        allStudents = await getAllStudents();
+      } catch {}
+
+      // 학년별 규칙 보고서
+      let gradeSection = '';
+      const targetGrades = grade ? [grade] : ['고3', '고2', '고1', '중3', '중2', '중1'];
+      const gradeLines = [];
+      for (const g of targetGrades) {
+        const rules = gradeRules[g] || [];
+        if (rules.length === 0) {
+          gradeLines.push(`• [${g}]: 등록된 공통 제외 시간 없음 (24시간 가정 학습 집계)`);
+        } else {
+          const ruleStrs = rules.map(r => {
+            const daysKo = (r.days || []).map(d => WEEKDAY_KO_MAP[d] || d).join(', ');
+            return `  - ${r.title}: 매주 [${daysKo}] ${r.start_time} ~ ${r.end_time}`;
+          }).join('\n');
+          gradeLines.push(`• [${g}] (공통 수업 ${rules.length}건):\n${ruleStrs}`);
+        }
+      }
+      gradeSection = gradeLines.join('\n');
+
+      // 학생별 개별 오버라이드 보고서
+      let studentSection = '';
+      const overrideEntries = Object.entries(studentOverrides);
+      if (overrideEntries.length === 0) {
+        studentSection = '• 등록된 학생별 개별 예외가 없습니다 (전체 학생이 학년별 공통 규칙 적용).';
+      } else {
+        const studentLines = [];
+        for (const [stId, rules] of overrideEntries) {
+          const st = allStudents.find(s => s.id === stId);
+          const stName = st ? `${st.name} (${st.grade})` : stId;
+          if (student_name && !stName.includes(student_name)) continue;
+
+          const ruleStrs = (rules || []).map(r => {
+            const daysKo = (r.days || []).map(d => WEEKDAY_KO_MAP[d] || d).join(', ');
+            return `  - ${r.title}: 매주 [${daysKo}] ${r.start_time} ~ ${r.end_time}`;
+          }).join('\n');
+          studentLines.push(`• [${stName}] (개별 예외 ${rules.length}건):\n${ruleStrs}`);
+        }
+        studentSection = studentLines.length > 0 ? studentLines.join('\n') : '• 조건에 맞는 학생 개별 예외가 없습니다.';
+      }
+
+      const report = `
+🛡️ [학원 수업 제외 시간대 (가정 학습 필터) 설정 현황]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ℹ️ 이 시간대에는 학생의 가정 학습 통계(체류 시간, 열람 내역) 저장이 일시 중단되며,
+   실시간 모니터링 센터 화면은 중단 없이 정상 작동합니다.
+
+🏫 학년별 공통 제외 시간표:
+${gradeSection}
+
+👤 학생별 개별 예외 시간표:
+${studentSection}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+최종 업데이트: ${data.updated_at || '기록 없음'}
+      `.trim();
+
+      return {
+        content: [{ type: 'text', text: report }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `❌ 제외 규칙 조회 실패: ${err.message}` }] };
+    }
+  }
+);
+
 // 서버 기동
 const transport = new StdioServerTransport();
 await server.connect(transport);
