@@ -1471,6 +1471,321 @@ export default function StudentManagerMain() {
         </div>
       )}
 
+      {/* 🌟 [오라버니 요청] 신규 일괄 폴더 권한 관리 모달 */}
+      {isBatchFolderModalOpen && (
+        <div className="fixed inset-0 z-[115] flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
+          <div 
+            className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm" 
+            onClick={() => setIsBatchFolderModalOpen(false)} 
+          />
+
+          <div 
+            className="relative bg-white w-full max-w-5xl rounded-[32px] shadow-2xl flex flex-col animate-in zoom-in-95 duration-200 overflow-hidden"
+            style={{ maxHeight: '90vh' }}
+          >
+            {/* 1. 상단 모달 헤더 */}
+            <div className="shrink-0 p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-violet-50/50 via-fuchsia-50/30 to-white">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 text-white flex items-center justify-center shadow-md shadow-violet-200 shrink-0">
+                  <FolderLock size={22} />
+                </div>
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight leading-none flex items-center gap-2">
+                    <span>일괄 라이브러리 폴더 권한 관리</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-700 font-bold border border-violet-200">
+                      일괄 권한 오픈
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-400 font-bold mt-1">
+                    원하는 학년/학생들에게 특정 단원·기출 폴더 접근 권한을 한 번에 일괄 부여합니다.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBatchFolderModalOpen(false)}
+                className="w-10 h-10 rounded-2xl bg-white/80 hover:bg-slate-100 border border-slate-200 text-slate-400 hover:text-slate-700 flex items-center justify-center transition-all cursor-pointer shadow-2xs"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* 2. 중앙 좌우 2분할(Split) 콘텐츠 */}
+            <div className="flex-1 grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-100 overflow-hidden min-h-0 bg-white">
+              
+              {/* [좌측 패널] 대상 학생 선택 */}
+              <div className="flex flex-col h-full overflow-hidden bg-slate-50/30">
+                {/* 좌측 헤더 */}
+                <div className="p-4 border-b border-slate-100 bg-white/60 space-y-3 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
+                      <Users size={15} className="text-violet-600" />
+                      1. 대상 학생 선택
+                    </span>
+                    <span className="text-[11px] font-bold text-violet-700 bg-violet-50 px-2 py-0.5 rounded-md border border-violet-100">
+                      선택: <strong className="font-black text-violet-900">{batchSelectedStudentIds.size}</strong>명 / {batchFilteredStudents.length}명
+                    </span>
+                  </div>
+
+                  {/* 학년 필터 칩 */}
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+                    {['ALL', '중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => setBatchStudentGradeFilter(g)}
+                        className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+                          batchStudentGradeFilter === g
+                            ? 'bg-violet-600 text-white shadow-xs'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:border-violet-300'
+                        }`}
+                      >
+                        {g === 'ALL' ? '전체' : g}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 학생 검색창 & 전체선택 토글 */}
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={batchStudentSearch}
+                        onChange={e => setBatchStudentSearch(e.target.value)}
+                        placeholder="학생 이름 검색..."
+                        className="w-full bg-white border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs font-bold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const isAllSelected = batchFilteredStudents.length > 0 && batchFilteredStudents.every(s => batchSelectedStudentIds.has(s.id));
+                        setBatchSelectedStudentIds(prev => {
+                          const next = new Set(prev);
+                          if (isAllSelected) {
+                            batchFilteredStudents.forEach(s => next.delete(s.id));
+                          } else {
+                            batchFilteredStudents.forEach(s => next.add(s.id));
+                          }
+                          return next;
+                        });
+                      }}
+                      className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      {batchFilteredStudents.length > 0 && batchFilteredStudents.every(s => batchSelectedStudentIds.has(s.id))
+                        ? '전체 해제'
+                        : '전체 선택'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 학생 목록 (스크롤) */}
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {batchFilteredStudents.length === 0 ? (
+                    <div className="py-16 text-center text-xs font-bold text-slate-400">
+                      해당 조건의 학생이 없습니다.
+                    </div>
+                  ) : (
+                    batchFilteredStudents.map(st => {
+                      const isSelected = batchSelectedStudentIds.has(st.id);
+                      return (
+                        <div
+                          key={st.id}
+                          onClick={() => {
+                            setBatchSelectedStudentIds(prev => {
+                              const next = new Set(prev);
+                              if (next.has(st.id)) next.delete(st.id);
+                              else next.add(st.id);
+                              return next;
+                            });
+                          }}
+                          className={`flex items-center justify-between p-2.5 px-3 rounded-xl border transition-all cursor-pointer select-none ${
+                            isSelected
+                              ? 'bg-violet-50/80 border-violet-200 text-violet-900 shadow-2xs'
+                              : 'bg-white border-slate-100 hover:border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            {isSelected ? (
+                              <CheckSquare size={17} className="text-violet-600 shrink-0" />
+                            ) : (
+                              <Square size={17} className="text-slate-300 shrink-0" />
+                            )}
+                            <span className="font-black text-xs truncate">{st.name}</span>
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                              {st.grade}
+                            </span>
+                          </div>
+
+                          <div className="text-[10px] font-bold text-slate-400 shrink-0">
+                            현재 {(st.unlocked_folders || []).length}개 오픈됨
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* [우측 패널] 오픈할 라이브러리 폴더 트리 */}
+              <div className="flex flex-col h-full overflow-hidden bg-white">
+                {/* 우측 헤더 */}
+                <div className="p-4 border-b border-slate-100 bg-white/60 space-y-3 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
+                      <FolderOpen size={15} className="text-fuchsia-600" />
+                      2. 오픈할 라이브러리 폴더 선택
+                    </span>
+                    <span className="text-[11px] font-bold text-fuchsia-700 bg-fuchsia-50 px-2 py-0.5 rounded-md border border-fuchsia-100">
+                      선택: <strong className="font-black text-fuchsia-900">{batchSelectedFolderIds.size}</strong>개 / {batchAllTreeIds.length}개
+                    </span>
+                  </div>
+
+                  {/* 라이브러리 학년 선택 및 전체선택 버튼 */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none">
+                      {['중1', '중2', '중3', '고1', '고2', '고3'].map(g => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => {
+                            setBatchLibraryGrade(g);
+                            fetchBatchLibraryTree(g);
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-black transition-all shrink-0 cursor-pointer ${
+                            batchLibraryGrade === g
+                              ? 'bg-fuchsia-600 text-white shadow-xs'
+                              : 'bg-slate-50 text-slate-600 border border-slate-200 hover:border-fuchsia-300'
+                          }`}
+                        >
+                          {g}
+                        </button>
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleToggleBatchSelectAllFolders}
+                      disabled={batchLoading || batchAllTreeIds.length === 0}
+                      className="px-3 py-1.5 bg-slate-50 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-50"
+                    >
+                      {batchSelectedFolderIds.size === batchAllTreeIds.length && batchAllTreeIds.length > 0
+                        ? '전체 해제'
+                        : '전체 선택'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 계층형 폴더 트리 영역 (스크롤) */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-1.5 bg-slate-50/20">
+                  {batchLoading ? (
+                    <div className="py-20 flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <Loader2 size={24} className="animate-spin text-fuchsia-600" />
+                      <span className="text-xs font-bold">라이브러리 폴더 구조를 불러오는 중...</span>
+                    </div>
+                  ) : batchTreeRoots.length === 0 ? (
+                    <div className="py-20 text-center text-xs font-bold text-slate-400">
+                      선택한 학년({batchLibraryGrade})에 등록된 라이브러리 폴더가 없습니다.
+                    </div>
+                  ) : (
+                    batchTreeRoots.map(root => renderBatchTreeNode(root, 0))
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            {/* 3. 하단 설정 & 액션 툴바 */}
+            <div className="shrink-0 p-4 sm:p-5 border-t border-slate-100 bg-slate-50/80 flex flex-col sm:flex-row items-center justify-between gap-4">
+              
+              {/* 부여 방식 라디오 선택 */}
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-black text-slate-700">부여 방식:</span>
+                <div className="flex items-center gap-2">
+                  <label 
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
+                      batchMode === 'ADD' 
+                        ? 'bg-white border-violet-500 text-violet-900 shadow-2xs ring-1 ring-violet-200' 
+                        : 'bg-white/60 border-slate-200 text-slate-500 hover:border-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="batchMode"
+                      value="ADD"
+                      checked={batchMode === 'ADD'}
+                      onChange={() => setBatchMode('ADD')}
+                      className="text-violet-600 focus:ring-violet-500 w-3.5 h-3.5"
+                    />
+                    <span>기존 권한에 추가 <span className="text-[10px] text-violet-600 font-extrabold">(권장)</span></span>
+                  </label>
+
+                  <label 
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
+                      batchMode === 'OVERWRITE' 
+                        ? 'bg-white border-violet-500 text-violet-900 shadow-2xs ring-1 ring-violet-200' 
+                        : 'bg-white/60 border-slate-200 text-slate-500 hover:border-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="batchMode"
+                      value="OVERWRITE"
+                      checked={batchMode === 'OVERWRITE'}
+                      onChange={() => setBatchMode('OVERWRITE')}
+                      className="text-violet-600 focus:ring-violet-500 w-3.5 h-3.5"
+                    />
+                    <span>선택 폴더로 덮어쓰기</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* 버튼 그룹 */}
+              <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsBatchFolderModalOpen(false)}
+                  className="flex-1 sm:flex-none px-4 py-2.5 rounded-2xl bg-white border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-100 transition-all cursor-pointer shadow-2xs"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyBatchFolderPermissions}
+                  disabled={batchSaving || batchSelectedStudentIds.size === 0 || batchSelectedFolderIds.size === 0}
+                  className="flex-1 sm:flex-none px-5 py-2.5 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-black text-xs transition-all shadow-md shadow-violet-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                >
+                  {batchSaving ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" />
+                      <span>일괄 권한 저장 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check size={15} />
+                      <span>
+                        선택 학생 {batchSelectedStudentIds.size}명에게 {batchSelectedFolderIds.size}개 폴더 권한 적용
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* 🌟 [오라버니 요청] 일괄 권한 부여 완료 상단 플로팅 토스트 */}
+      {batchToastMsg && (
+        <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[200] bg-slate-900/95 text-white px-6 py-3.5 rounded-2xl shadow-2xl border border-indigo-500/30 font-black text-xs sm:text-sm flex items-center gap-3 animate-in slide-in-from-top-4 duration-300 backdrop-blur-md">
+          <Sparkles size={18} className="text-amber-400 shrink-0" />
+          <span>{batchToastMsg}</span>
+        </div>
+      )}
+
       {/* 헤더 섹션 */}
       <div className="flex justify-between items-end mb-10">
         <div>
