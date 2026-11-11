@@ -1160,6 +1160,20 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         academyName: academyName || 'Eduest 수학학원',
         questionsPerPage: questionsPerPage === 6 ? 4 : questionsPerPage,
         columns: columns,
+        showAcademyName,
+        customStudentName,
+        customClassName,
+        showStudentName,
+        showClassName,
+        showPoints,
+        showFolderInfo,
+        showCenterDivider,
+        includeAnswerKey,
+        selectedPages: Array.from(effectiveSelectedPages),
+        selectedChip,
+        titleFontSize,
+        headerDensity,
+        marginPreset,
       });
     } catch (err) {
       console.error('PDF 다운로드 실패:', err);
