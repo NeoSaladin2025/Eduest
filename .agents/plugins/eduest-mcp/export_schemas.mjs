@@ -371,6 +371,20 @@ const tools = [
     }
   },
   {
+    name: 'eduest_analyze_library_question_difficulty',
+    description: '모의평가 또는 라이브러리 특정 폴더(또는 단일 문항)의 문제 HTML을 열람/파싱하여 객관적 학업 난이도(킬러/준킬러/표준), 요구 개념, 풀이 단계, 함정 요인을 정밀 분석하고, 학생 실제 체류시간과 결합하여 "진짜 킬러" vs "시간 정체 함정"을 자동 진단 및 아카이빙함.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folder_name: { type: 'string', description: '분석할 모의평가 또는 라이브러리 폴더 이름 (예: 4차, 2학기 기말)' },
+        grade: { type: 'string', description: '학년 (예: 고2, 고1, 중3)' },
+        folder_drive_id: { type: 'string', description: '특정 폴더 Drive ID' },
+        file_drive_id: { type: 'string', description: '특정 단일 문항 Drive ID' },
+        force_refresh: { type: 'boolean', description: '기존 아카이브 갱신 및 재분석 여부' }
+      }
+    }
+  },
+  {
     name: 'eduest_get_library_content_analytics',
     description: '라이브러리 교재 및 단원 폴더별, 개별 파일(문항 번호)별 학생 체류시간/이용률 심층 분석. "고2 학생들이 가장 오래 붙잡고 푼 문항이 뭐야?", "4차 모의고사에서 킬러 문항이 몇 번이야?", "최근 30일간 가장 많이 본 교재 폴더는?" 등 자연어 질의 분석 지원.',
     parameters: {

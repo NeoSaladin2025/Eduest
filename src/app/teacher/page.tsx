@@ -20,7 +20,8 @@ import {
   PlaySquare,
   Menu,
   X,
-  ChevronRight
+  ChevronRight,
+  Microscope
 } from 'lucide-react';
 
 // 🔗 하위 폴더 컴포넌트들 연동
@@ -32,6 +33,7 @@ import ExamManagerMain from './exammgr/main';
 import TestDataManagerMain from './testdatamgr/main';
 import ReviewManagerMain from './reviewmgr/main';
 import MonitoringCenterMain from './monitoring/main';
+import LibraryDeepAnalysisMain from './deep-analysis/LibraryDeepAnalysisMain';
 import ScheduleManagerMain from './schedule/main';
 import VideoManagerMain from './videomgr/main';
 
@@ -238,6 +240,11 @@ export default function TeacherAdminPage() {
       id: 'monitoring',
       label: '실시간 모니터링',
       icon: <Radio size={15} />,
+    },
+    {
+      id: 'library_deep_analysis',
+      label: '라이브러리 정밀 분석',
+      icon: <Microscope size={15} />,
     },
     {
       id: 'notices',
@@ -588,6 +595,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'monitoring' && (
             <div className="w-full h-full bg-slate-50 overflow-y-auto">
               <MonitoringCenterMain />
+            </div>
+          )}
+
+          {/* 🔬 라이브러리 정밀 분석 독립 센터 */}
+          {activeMenu === 'library_deep_analysis' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <LibraryDeepAnalysisMain />
             </div>
           )}
         </div>

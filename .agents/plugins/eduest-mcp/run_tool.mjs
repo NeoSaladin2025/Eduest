@@ -165,6 +165,22 @@ async function execute() {
         solution_views: fv.solutionViews
       }]))
     }])), null, 2));
+  } else if (toolName === 'eduest_analyze_library_question_difficulty') {
+    const folderName = toolArgs.folder_name || '4차';
+    const { data: folders } = await supabase.from('exam_library').select('*').ilike('name', '%' + folderName + '%');
+    let folder = folders?.find(f => f.name === folderName) || folders?.[0];
+    if (!folder) {
+      console.log(JSON.stringify({ error: "폴더 '" + folderName + "'을 찾을 수 없습니다." }, null, 2));
+      return;
+    }
+    const archiveKey = 'library_analysis_archive_' + folder.drive_id;
+    const { data: archiveRow } = await supabase.from('exam_library').select('file_data').eq('drive_id', archiveKey).maybeSingle();
+    if (archiveRow && archiveRow.file_data) {
+      const parsed = JSON.parse(archiveRow.file_data);
+      console.log(JSON.stringify(parsed, null, 2));
+    } else {
+      console.log(JSON.stringify({ status: '아직 아카이빙된 분석 데이터가 없습니다.', folder: folder.name }, null, 2));
+    }
   } else {
     console.log(`Tool ${toolName} not directly handled in CLI runner`);
   }
