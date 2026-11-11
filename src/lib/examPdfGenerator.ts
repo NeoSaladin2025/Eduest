@@ -1,26 +1,35 @@
 'use client';
 
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+
+export interface PdfProgressInfo {
+  current: number;
+  total: number;
+  percent: number;
+  message: string;
+}
 
 export interface ExamPdfOptions {
   academyName?: string;
   questionsPerPage?: 1 | 2 | 4;
   columns?: 1 | 2;
   includeAnswerKey?: boolean;
-  onProgress?: (status: string) => void;
+  onProgress?: (progress: PdfProgressInfo) => void;
 }
 
 /**
- * 파일명 특수문자 제거
+ * 파일명에서 특수문자 제거
  */
 function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim();
 }
 
 /**
- * 시험지를 A4 규격 벡터 PDF(인쇄/PDF저장 다이렉트 창)로 즉시 띄워주는 초고속 엔진 (방식 2)
- * - html2canvas 백지 버그 원천 차단
- * - 브라우저 네이티브 벡터 엔진을 통해 텍스트 검색/복사가 가능한 초고화질 PDF 즉시 생성
+ * 1:1 순차 페이지 렌더링 기반 100% 방탄 PDF 파일 다운로더 (방식 1 개량형)
+ * - window.print()를 절대 호출하지 않아 키오스크 종이 인쇄(--kiosk-printing)와 완전 독립
+ * - 1페이지씩 정좌표(0,0)에서 렌더링하고 jsPDF에 합쳐 캔버스 메모리 초과 및 백지 버그 0%
  */
 export async function downloadExamAsPdf(
   exam: ExamPaper,
@@ -37,15 +46,7 @@ export async function downloadExamAsPdf(
   const includeAnswerKey = options?.includeAnswerKey !== false;
   const onProgress = options?.onProgress || (() => {});
 
-  onProgress('문서 준비 중...');
-
-  // 1. 현재 문서의 모든 Tailwind/전역 스타일 태그 추출
-  const styleNodes = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'));
-  const combinedStyles = styleNodes
-    .map(node => node.outerHTML)
-    .join('\n');
-
-  // 2. 문항을 페이지 단위로 분할
+  // 1. 문항 페이지 분할
   const pages: ExamQuestion[][] = [];
   for (let i = 0; i < exam.questions.length; i += questionsPerPage) {
     pages.push(exam.questions.slice(i, i + questionsPerPage));
@@ -54,382 +55,297 @@ export async function downloadExamAsPdf(
   const totalProblemPages = pages.length;
   const totalPages = includeAnswerKey ? totalProblemPages + 1 : totalProblemPages;
 
-  // 3. A4 페이지별 HTML 생성
-  let sheetsHtml = '';
+  onProgress({
+    current: 0,
+    total: totalPages,
+    percent: 0,
+    message: 'PDF 렌더링 스테이지 초기화 중...',
+  });
 
-  pages.forEach((pageQuestions, pageIdx) => {
-    const pageNumber = pageIdx + 1;
-    const isFirstPage = pageNumber === 1;
+  // 2. 단일 페이지용 고정 크기 A4 스테이지 생성 (뷰포트 상단 0,0)
+  // zIndex 99990으로 배치하여 로딩 모달(zIndex 99999) 뒤에서 안전하게 렌더링
+  const stage = document.createElement('div');
+  stage.id = 'eduest-pdf-page-stage';
+  stage.style.position = 'fixed';
+  stage.style.top = '0';
+  stage.style.left = '0';
+  stage.style.width = '794px';
+  stage.style.height = '1123px';
+  stage.style.zIndex = '99990';
+  stage.style.background = '#ffffff';
+  stage.style.overflow = 'hidden';
+  stage.style.pointerEvents = 'none';
+  stage.style.boxSizing = 'border-box';
+  document.body.appendChild(stage);
 
-    let headerHtml = '';
-    if (isFirstPage) {
-      headerHtml = `
-        <div style="border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 8px;">
-          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-            <div>
-              <div style="font-size: 11px; font-weight: 800; color: #475569; letter-spacing: 1px; margin-bottom: 2px;">
-                ${academyName} · 정기 평가
-              </div>
-              <h1 style="font-size: 18px; font-weight: 900; color: #0f172a; margin: 0; line-height: 1.2;">
-                ${exam.title}
-              </h1>
-              <div style="font-size: 10px; font-weight: 600; color: #64748b; margin-top: 4px;">
-                총 ${exam.questions.length}문항 · 제한시간 ${exam.duration_min || 50}분
+  // 3. jsPDF 인스턴스 생성 (A4, mm)
+  const pdf = new jsPDF({
+    unit: 'mm',
+    format: 'a4',
+    orientation: 'portrait',
+    compress: true,
+  });
+
+  try {
+    // 4. 페이지별 1:1 순차 렌더링 및 캡처 루프
+    for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
+      const pageNumber = pageIdx + 1;
+      const isAnswerKeyPage = pageIdx >= totalProblemPages;
+      const isFirstPage = pageNumber === 1;
+
+      onProgress({
+        current: pageNumber,
+        total: totalPages,
+        percent: Math.round(((pageIdx) / totalPages) * 100),
+        message: isAnswerKeyPage
+          ? '빠른 정답표 렌더링 중...'
+          : `${pageNumber}쪽 문항 렌더링 중 (${(pageIdx * questionsPerPage) + 1}~${Math.min((pageIdx + 1) * questionsPerPage, exam.questions.length)}번)...`,
+      });
+
+      let pageHtml = '';
+
+      if (!isAnswerKeyPage) {
+        // 문제 페이지 HTML
+        const pageQuestions = pages[pageIdx];
+
+        let headerHtml = '';
+        if (isFirstPage) {
+          headerHtml = `
+            <div style="border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 12px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <div>
+                  <div style="font-size: 11px; font-weight: 800; color: #475569; letter-spacing: 1px; margin-bottom: 2px;">
+                    ${academyName} · 정기 평가
+                  </div>
+                  <h1 style="font-size: 20px; font-weight: 900; color: #0f172a; margin: 0; line-height: 1.2;">
+                    ${exam.title}
+                  </h1>
+                  <div style="font-size: 11px; font-weight: 600; color: #64748b; margin-top: 4px;">
+                    총 ${exam.questions.length}문항 · 제한시간 ${exam.duration_min || 50}분
+                  </div>
+                </div>
+                <div style="display: flex; border: 1.5px solid #0f172a; border-radius: 6px; overflow: hidden; text-align: center; font-size: 11px;">
+                  <div style="border-right: 1px solid #cbd5e1; width: 68px;">
+                    <div style="background: #f1f5f9; padding: 4px 0; font-weight: 800; font-size: 10px; color: #334155;">성명</div>
+                    <div style="height: 30px; line-height: 30px; font-weight: 900; font-size: 12px; color: #0f172a;"></div>
+                  </div>
+                  <div style="border-right: 1px solid #cbd5e1; width: 64px;">
+                    <div style="background: #f1f5f9; padding: 4px 0; font-weight: 800; font-size: 10px; color: #334155;">점수</div>
+                    <div style="height: 30px; line-height: 30px; font-weight: 900; font-size: 12px; color: #e11d48;">/ 100</div>
+                  </div>
+                  <div style="width: 60px;">
+                    <div style="background: #f1f5f9; padding: 4px 0; font-weight: 800; font-size: 10px; color: #334155;">확인</div>
+                    <div style="height: 30px; line-height: 30px;"></div>
+                  </div>
+                </div>
               </div>
             </div>
-            <div style="display: flex; border: 1.5px solid #0f172a; border-radius: 6px; overflow: hidden; text-align: center; font-size: 11px;">
-              <div style="border-right: 1px solid #cbd5e1; width: 65px;">
-                <div style="background: #f1f5f9; padding: 3px 0; font-weight: 800; font-size: 10px; color: #334155;">성명</div>
-                <div style="height: 28px; line-height: 28px; font-weight: 900; font-size: 12px; color: #0f172a;"></div>
-              </div>
-              <div style="border-right: 1px solid #cbd5e1; width: 60px;">
-                <div style="background: #f1f5f9; padding: 3px 0; font-weight: 800; font-size: 10px; color: #334155;">점수</div>
-                <div style="height: 28px; line-height: 28px; font-weight: 900; font-size: 12px; color: #e11d48;">/ 100</div>
-              </div>
-              <div style="width: 60px;">
-                <div style="background: #f1f5f9; padding: 3px 0; font-weight: 800; font-size: 10px; color: #334155;">확인</div>
-                <div style="height: 28px; line-height: 28px;"></div>
-              </div>
+          `;
+        } else {
+          headerHtml = `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 6px; margin-bottom: 12px; font-size: 11px; font-weight: 700; color: #64748b;">
+              <span>${exam.title}</span>
+              <span>${academyName}</span>
             </div>
-          </div>
-        </div>
-      `;
-    } else {
-      headerHtml = `
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #cbd5e1; padding-bottom: 5px; margin-bottom: 8px; font-size: 10px; font-weight: 700; color: #64748b;">
-          <span>${exam.title}</span>
-          <span>${academyName}</span>
-        </div>
-      `;
-    }
+          `;
+        }
 
-    const questionCardsHtml = pageQuestions
-      .map((q, qSubIdx) => {
-        const globalQNum = pageIdx * questionsPerPage + qSubIdx + 1;
-        const points = q.points || 4;
+        const cardsHtml = pageQuestions
+          .map((q, qSubIdx) => {
+            const globalQNum = pageIdx * questionsPerPage + qSubIdx + 1;
+            const points = q.points || 4;
+            const maxImgHeight = questionsPerPage === 1 ? '550px' : questionsPerPage === 2 ? '420px' : '320px';
 
-        return `
-          <div class="eduest-q-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: #0f172a; color: #ffffff; font-size: 11px; font-weight: 900;">
-                  ${globalQNum}
-                </span>
-                <span style="font-size: 10px; font-weight: 800; color: #475569;">
-                  [${points}.0점]
-                </span>
+            return `
+              <div style="display: flex; flex-direction: column; border-radius: 8px; overflow: hidden; border: 1px solid #cbd5e1; padding: 10px 12px; background: #ffffff; height: 100%; box-sizing: border-box;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: #0f172a; color: #ffffff; font-size: 12px; font-weight: 900;">
+                      ${globalQNum}
+                    </span>
+                    <span style="font-size: 11px; font-weight: 800; color: #475569;">
+                      [${points}.0점]
+                    </span>
+                    ${
+                      q.is_descriptive
+                        ? `<span style="font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 4px; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;">서술형</span>`
+                        : ''
+                    }
+                  </div>
+                  <span style="font-size: 10px; color: #94a3b8; font-weight: 600;">
+                    ${q.name ? q.name.replace(/\.html?$/i, '') : ''}
+                  </span>
+                </div>
+
+                <div style="flex: 1; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
+                  ${
+                    q.image_url
+                      ? `<img src="${q.image_url}" crossOrigin="anonymous" style="width: 100%; height: auto; max-height: ${maxImgHeight}; object-fit: contain; object-position: top;" alt="문항 ${globalQNum}" />`
+                      : `<div style="padding: 30px; text-align: center; color: #94a3b8; font-size: 12px;">문제 이미지 없음</div>`
+                  }
+                </div>
+
                 ${
-                  q.is_descriptive
-                    ? `<span style="font-size: 9px; font-weight: 800; padding: 1px 5px; border-radius: 4px; background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;">서술형</span>`
+                  questionsPerPage === 1
+                    ? `
+                    <div style="margin-top: 15px; min-height: 280px; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; justify-content: space-between;">
+                      <span style="font-size: 11px; font-weight: 700; color: #94a3b8;">[풀이 과정 및 정답 작성란]</span>
+                      <div style="text-align: right; font-size: 12px; font-weight: 800; color: #1e293b;">정답: ______________________</div>
+                    </div>
+                  `
                     : ''
                 }
               </div>
-              <span style="font-size: 9px; color: #94a3b8; font-weight: 600;">
-                ${q.name ? q.name.replace(/\\.html?$/i, '') : ''}
-              </span>
-            </div>
+            `;
+          })
+          .join('');
 
-            <div style="flex: 1; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
-              ${
-                q.image_url
-                  ? `<img src="${q.image_url}" class="eduest-q-img" alt="문항 ${globalQNum}" />`
-                  : `<div style="padding: 20px; text-align: center; color: #94a3b8; font-size: 11px;">문제 이미지 없음</div>`
-              }
-            </div>
+        const gridStyle = columns === 1
+          ? 'display: flex; flex-direction: column; gap: 15px; flex: 1;'
+          : 'display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; row-gap: 14px; flex: 1;';
 
-            ${
-              questionsPerPage === 1
-                ? `
-                <div style="margin-top: 15px; min-height: 80mm; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; justify-content: space-between;">
-                  <span style="font-size: 10px; font-weight: 700; color: #94a3b8;">[풀이 과정 및 정답 작성란]</span>
-                  <div style="text-align: right; font-size: 11px; font-weight: 800; color: #1e293b;">정답: ______________________</div>
-                </div>
-              `
-                : ''
-            }
+        const footerHtml = `
+          <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 10px; font-size: 10px; font-weight: 700; color: #64748b;">
+            <span>Eduest Smart Assessment System</span>
+            <span style="font-weight: 900; color: #0f172a;">${pageNumber} / ${totalPages}</span>
+            <span>${academyName}</span>
           </div>
         `;
-      })
-      .join('');
 
-    const footerHtml = `
-      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 5px; margin-top: 8px; font-size: 10px; font-weight: 700; color: #64748b;">
-        <span>Eduest Smart Assessment System</span>
-        <span style="font-weight: 900; color: #0f172a;">${pageNumber} / ${totalPages}</span>
-        <span>${academyName}</span>
-      </div>
-    `;
-
-    sheetsHtml += `
-      <div class="a4-print-sheet">
-        <div>
-          ${headerHtml}
-          <div class="${columns === 1 ? 'eduest-grid-1col' : 'eduest-grid-2col'}">
-            ${questionCardsHtml}
-          </div>
-        </div>
-        ${footerHtml}
-      </div>
-    `;
-  });
-
-  // 4. 빠른 정답표 시트
-  if (includeAnswerKey) {
-    const answerRows = exam.questions.map((q, idx) => ({
-      num: idx + 1,
-      answer: q.answer || q.raw_answer || '-',
-      points: q.points || 4,
-      type: q.is_descriptive ? '서술형' : '객관식',
-    }));
-
-    const midIdx = Math.ceil(answerRows.length / 2);
-    const colLeft = answerRows.slice(0, midIdx);
-    const colRight = answerRows.slice(midIdx);
-
-    const renderTable = (items: typeof answerRows) => `
-      <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: center;">
-        <thead>
-          <tr style="background: #f1f5f9; border-bottom: 2px solid #0f172a;">
-            <th style="padding: 6px; width: 40px; font-weight: 900;">번호</th>
-            <th style="padding: 6px; font-weight: 900;">정답</th>
-            <th style="padding: 6px; width: 45px; font-weight: 900;">배점</th>
-            <th style="padding: 6px; width: 55px; font-weight: 900;">유형</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${items
-            .map(
-              item => `
-            <tr style="border-bottom: 1px solid #e2e8f0;">
-              <td style="padding: 5px; font-weight: 800; background: #fafafa;">${item.num}</td>
-              <td style="padding: 5px; font-weight: 900; color: #2563eb; font-size: 12px;">${item.answer}</td>
-              <td style="padding: 5px; font-weight: 700; color: #64748b;">${item.points}.0</td>
-              <td style="padding: 5px; font-size: 10px; font-weight: 600; color: ${item.type === '서술형' ? '#dc2626' : '#475569'};">${item.type}</td>
-            </tr>
-          `
-            )
-            .join('')}
-        </tbody>
-      </table>
-    `;
-
-    const answerKeySheetHtml = `
-      <div class="a4-print-sheet">
-        <div>
-          <div style="border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 15px;">
-            <div style="font-size: 11px; font-weight: 800; color: #475569; letter-spacing: 1px; margin-bottom: 2px;">
-              ${academyName} · 교사용 정답 및 배점표
+        pageHtml = `
+          <div style="width: 794px; height: 1123px; padding: 32px 36px; box-sizing: border-box; background: #ffffff; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              ${headerHtml}
+              <div style="${gridStyle}">
+                ${cardsHtml}
+              </div>
             </div>
-            <h1 style="font-size: 18px; font-weight: 900; color: #0f172a; margin: 0;">
-              [빠른 정답표] ${exam.title}
-            </h1>
+            ${footerHtml}
           </div>
+        `;
+      } else {
+        // 마지막 빠른 정답표 페이지 HTML
+        const answerRows = exam.questions.map((q, idx) => ({
+          num: idx + 1,
+          answer: q.answer || q.raw_answer || '-',
+          points: q.points || 4,
+          type: q.is_descriptive ? '서술형' : '객관식',
+        }));
 
-          <div style="display: grid; grid-template-columns: 1fr 1fr; column-gap: 12mm; align-items: start;">
-            <div>${renderTable(colLeft)}</div>
-            <div>${colRight.length > 0 ? renderTable(colRight) : ''}</div>
+        const midIdx = Math.ceil(answerRows.length / 2);
+        const colLeft = answerRows.slice(0, midIdx);
+        const colRight = answerRows.slice(midIdx);
+
+        const renderTable = (items: typeof answerRows) => `
+          <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: center;">
+            <thead>
+              <tr style="background: #f1f5f9; border-bottom: 2px solid #0f172a;">
+                <th style="padding: 6px; width: 45px; font-weight: 900;">번호</th>
+                <th style="padding: 6px; font-weight: 900;">정답</th>
+                <th style="padding: 6px; width: 50px; font-weight: 900;">배점</th>
+                <th style="padding: 6px; width: 60px; font-weight: 900;">유형</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items
+                .map(
+                  item => `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 5px; font-weight: 800; background: #fafafa;">${item.num}</td>
+                  <td style="padding: 5px; font-weight: 900; color: #2563eb; font-size: 12px;">${item.answer}</td>
+                  <td style="padding: 5px; font-weight: 700; color: #64748b;">${item.points}.0</td>
+                  <td style="padding: 5px; font-size: 10px; font-weight: 600; color: ${item.type === '서술형' ? '#dc2626' : '#475569'};">${item.type}</td>
+                </tr>
+              `
+                )
+                .join('')}
+            </tbody>
+          </table>
+        `;
+
+        pageHtml = `
+          <div style="width: 794px; height: 1123px; padding: 32px 36px; box-sizing: border-box; background: #ffffff; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="border-bottom: 2.5px solid #0f172a; padding-bottom: 10px; margin-bottom: 20px;">
+                <div style="font-size: 11px; font-weight: 800; color: #475569; letter-spacing: 1px; margin-bottom: 2px;">
+                  ${academyName} · 교사용 정답 및 배점표
+                </div>
+                <h1 style="font-size: 20px; font-weight: 900; color: #0f172a; margin: 0;">
+                  [빠른 정답표] ${exam.title}
+                </h1>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; align-items: start;">
+                <div>${renderTable(colLeft)}</div>
+                <div>${colRight.length > 0 ? renderTable(colRight) : ''}</div>
+              </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 8px; font-size: 10px; font-weight: 700; color: #64748b;">
+              <span>Eduest Smart Assessment System (정답 및 배점표)</span>
+              <span style="font-weight: 900; color: #0f172a;">${totalPages} / ${totalPages}</span>
+              <span>${academyName}</span>
+            </div>
           </div>
-        </div>
+        `;
+      }
 
-        <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 5px; font-size: 10px; font-weight: 700; color: #64748b;">
-          <span>Eduest Smart Assessment System (정답 및 배점표)</span>
-          <span style="font-weight: 900; color: #0f172a;">${totalPages} / ${totalPages}</span>
-          <span>${academyName}</span>
-        </div>
-      </div>
-    `;
+      // 5. 스테이지에 HTML 삽입 및 이미지 로드 완료 대기
+      stage.innerHTML = pageHtml;
 
-    sheetsHtml += answerKeySheetHtml;
-  }
+      const pageImgs = Array.from(stage.querySelectorAll('img'));
+      await Promise.all(
+        pageImgs.map(img => {
+          if (img.complete) return Promise.resolve(true);
+          return new Promise(r => {
+            img.onload = () => r(true);
+            img.onerror = () => r(false);
+          });
+        })
+      );
 
-  // 5. 풀 문서 HTML 조립
-  const fullDocumentHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>${sanitizeFileName(exam.title || '시험지')} - 시험지 PDF</title>
-        ${combinedStyles}
-        <style>
-          @page {
-            size: A4 portrait;
-            margin: 0;
-          }
-          *, *::before, *::after {
-            box-sizing: border-box;
-          }
-          html, body {
-            margin: 0 !important;
-            padding: 0 !important;
-            background: #ffffff !important;
-            color: #000000 !important;
-            width: 210mm !important;
-            height: auto !important;
-            overflow: visible !important;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-          .a4-print-sheet {
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: space-between !important;
-            width: 210mm !important;
-            height: 297mm !important;
-            min-height: 297mm !important;
-            max-height: 297mm !important;
-            box-sizing: border-box !important;
-            margin: 0 !important;
-            padding: 8mm 10mm !important;
-            page-break-before: auto !important;
-            page-break-after: always !important;
-            page-break-inside: avoid !important;
-            break-after: page !important;
-            break-inside: avoid !important;
-            background: #ffffff !important;
-            overflow: hidden !important;
-          }
-          .a4-print-sheet:last-child {
-            page-break-after: auto !important;
-            break-after: auto !important;
-          }
-          .eduest-grid-2col {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            column-gap: 8mm;
-            row-gap: 5mm;
-            flex: 1;
-          }
-          .eduest-grid-1col {
-            display: flex;
-            flex-direction: column;
-            gap: 6mm;
-            flex: 1;
-          }
-          .eduest-q-card {
-            display: flex;
-            flex-direction: column;
-            border-radius: 8px;
-            overflow: hidden;
-            border: 1px solid #cbd5e1;
-            padding: 8px 10px;
-            background: #ffffff;
-            height: 100%;
-            box-sizing: border-box;
-          }
-          .eduest-q-img {
-            width: 100%;
-            height: auto;
-            max-height: ${questionsPerPage === 1 ? '160mm' : questionsPerPage === 2 ? '115mm' : '90mm'};
-            object-fit: contain;
-            object-position: top;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="eduest-print-area">
-          ${sheetsHtml}
-        </div>
-      </body>
-    </html>
-  `;
+      // 레이아웃 안정화 딜레이
+      await new Promise(r => setTimeout(r, 60));
 
-  onProgress('PDF 인쇄창 로딩 중...');
+      // 6. html2canvas로 현재 단일 페이지만 캡처 (A4 1:1)
+      const canvas = await html2canvas(stage, {
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+        scrollY: 0,
+        scrollX: 0,
+        width: 794,
+        height: 1123,
+        windowWidth: 794,
+        windowHeight: 1123,
+      });
 
-  // 6. 독립 iframe을 통한 안전한 네이티브 벡터 렌더링 및 인쇄/PDF 저장창 실행
-  return new Promise((resolve) => {
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    iframe.style.visibility = 'hidden';
-    document.body.appendChild(iframe);
-
-    const doc = iframe.contentWindow?.document;
-    if (!doc) {
-      if (document.body.contains(iframe)) document.body.removeChild(iframe);
-      resolve(false);
-      return;
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      if (pageIdx > 0) {
+        pdf.addPage('a4', 'portrait');
+      }
+      pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
     }
 
-    doc.open();
-    doc.write(fullDocumentHtml);
-    doc.close();
+    onProgress({
+      current: totalPages,
+      total: totalPages,
+      percent: 100,
+      message: 'PDF 파일 저장 중...',
+    });
 
-    let isFinished = false;
-    let checkTimer: NodeJS.Timeout | null = null;
-    let maxTimer: NodeJS.Timeout | null = null;
+    // 7. 브라우저 다운로드 폴더로 직접 파일 저장 (window.print 미호출)
+    const safeTitle = sanitizeFileName(exam.title || '시험지');
+    pdf.save(`${safeTitle}_시험지.pdf`);
 
-    const finish = () => {
-      if (isFinished) return;
-      isFinished = true;
-      if (checkTimer) clearInterval(checkTimer);
-      if (maxTimer) clearTimeout(maxTimer);
-
-      window.removeEventListener('afterprint', finish);
-      iframe.contentWindow?.removeEventListener('afterprint', finish);
-
-      setTimeout(() => {
-        try {
-          if (document.body.contains(iframe)) {
-            document.body.removeChild(iframe);
-          }
-        } catch (e) {
-          // ignore
-        }
-      }, 300);
-
-      onProgress('완료!');
-      resolve(true);
-    };
-
-    const startPrint = async () => {
-      try {
-        // iframe 내부 이미지 로딩 대기
-        const iframeImages = Array.from(doc.images);
-        await Promise.all(
-          iframeImages.map(img => {
-            if (img.complete) return Promise.resolve(true);
-            return new Promise(r => {
-              img.onload = () => r(true);
-              img.onerror = () => r(false);
-            });
-          })
-        );
-
-        // 렌더링 안정화 대기
-        await new Promise(r => setTimeout(r, 250));
-
-        window.addEventListener('afterprint', finish, { once: true });
-        iframe.contentWindow?.addEventListener('afterprint', finish, { once: true });
-
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-
-        // 포커스 복귀 감지
-        let stableTicks = 0;
-        checkTimer = setInterval(() => {
-          if (document.hasFocus()) {
-            stableTicks++;
-            if (stableTicks >= 4) {
-              finish();
-            }
-          } else {
-            stableTicks = 0;
-          }
-        }, 300);
-
-        // 최대 60초 타임아웃
-        maxTimer = setTimeout(finish, 60000);
-      } catch (err) {
-        console.error('startPrint error:', err);
-        finish();
-      }
-    };
-
-    startPrint();
-  });
+    return true;
+  } catch (err) {
+    console.error('downloadExamAsPdf error:', err);
+    throw err;
+  } finally {
+    // 8. 렌더 스테이지 정리
+    if (document.body.contains(stage)) {
+      document.body.removeChild(stage);
+    }
+  }
 }

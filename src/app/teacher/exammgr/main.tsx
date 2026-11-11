@@ -385,24 +385,36 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 🖨️ 시험지 인쇄 모달 상태
   const [printModalExam, setPrintModalExam] = useState<ExamPaper | null>(null);
-  const [downloadingPdfExamId, setDownloadingPdfExamId] = useState<string | null>(null);
-  const [pdfDownloadProgress, setPdfDownloadProgress] = useState<string>('');
+  // 📥 시험지 PDF 1:1 순차 직접 다운로드 상태
+  const [pdfProgress, setPdfProgress] = useState<{
+    examTitle: string;
+    current: number;
+    total: number;
+    percent: number;
+    message: string;
+  } | null>(null);
 
   const handleDownloadExamPdf = async (exam: ExamPaper) => {
-    if (downloadingPdfExamId) return;
+    if (pdfProgress) return;
     try {
-      setDownloadingPdfExamId(exam.id);
-      setPdfDownloadProgress('준비 중...');
+      const estimatedPages = Math.ceil(exam.questions.length / 4) + 1;
+      setPdfProgress({
+        examTitle: exam.title,
+        current: 0,
+        total: estimatedPages,
+        percent: 0,
+        message: 'PDF 엔진 준비 중...',
+      });
       await downloadExamAsPdf(exam, {
         academyName: 'Eduest 수학학원',
-        onProgress: (status) => setPdfDownloadProgress(status),
+        onProgress: (p) => setPdfProgress({ examTitle: exam.title, ...p }),
       });
+      await new Promise(r => setTimeout(r, 600));
     } catch (err) {
       console.error('PDF 다운로드 실패:', err);
       alert('PDF 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
     } finally {
-      setDownloadingPdfExamId(null);
-      setPdfDownloadProgress('');
+      setPdfProgress(null);
     }
   };
 
@@ -3500,21 +3512,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         <button
                           type="button"
                           onClick={() => handleDownloadExamPdf(exam)}
-                          disabled={downloadingPdfExamId === exam.id}
+                          disabled={!!pdfProgress}
                           className="px-3 py-2 bg-blue-50 hover:bg-blue-100 disabled:bg-blue-50/50 text-blue-700 disabled:text-blue-400 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border border-blue-200/80 shadow-2xs group"
-                          title="이 시험지를 A4 규격 PDF 파일로 즉시 다운로드"
+                          title="이 시험지를 내 컴퓨터에 PDF 파일로 직접 다운로드 (프린터 미사용)"
                         >
-                          {downloadingPdfExamId === exam.id ? (
-                            <>
-                              <Loader2 size={14} className="animate-spin text-blue-600" />
-                              <span>{pdfDownloadProgress || '생성 중...'}</span>
-                            </>
-                          ) : (
-                            <>
-                              <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
-                              <span>PDF 저장</span>
-                            </>
-                          )}
+                          <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
+                          <span>PDF 저장</span>
                         </button>
                       </div>
 
@@ -5538,21 +5541,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 <button
                   type="button"
                   onClick={() => resultsModalExam && handleDownloadExamPdf(resultsModalExam)}
-                  disabled={downloadingPdfExamId === resultsModalExam?.id}
+                  disabled={!!pdfProgress}
                   className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 disabled:bg-blue-50/50 text-blue-700 disabled:text-blue-400 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border border-blue-200 cursor-pointer"
-                  title="이 시험지를 A4 규격 PDF로 즉시 다운로드"
+                  title="이 시험지를 내 컴퓨터에 PDF 파일로 직접 다운로드 (프린터 미사용)"
                 >
-                  {downloadingPdfExamId === resultsModalExam?.id ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin text-blue-600" />
-                      <span>{pdfDownloadProgress || '생성 중...'}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download size={14} />
-                      <span>PDF 저장</span>
-                    </>
-                  )}
+                  <Download size={14} />
+                  <span>PDF 저장</span>
                 </button>
                 <button
                   onClick={() => setResultsModalExam(null)}
@@ -6607,6 +6601,44 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         exam={printModalExam}
         students={students}
       />
+
+      {/* 📥 100% 방탄 순수 PDF 직접 다운로드 진행 오버레이 모달 */}
+      {pdfProgress && (
+        <div className="fixed inset-0 z-[99999] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 text-center space-y-4 animate-in zoom-in-95">
+            <div className="w-14 h-14 rounded-2xl bg-blue-100 text-blue-600 flex items-center justify-center mx-auto text-2xl shadow-inner">
+              📄
+            </div>
+            <div>
+              <h3 className="text-base font-black text-slate-900 tracking-tight">
+                시험지 PDF 파일 제작 중...
+              </h3>
+              <p className="text-xs text-slate-500 font-semibold truncate mt-1">
+                {pdfProgress.examTitle}
+              </p>
+            </div>
+
+            {/* 진행률 바 */}
+            <div className="space-y-1.5">
+              <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden p-0.5 border border-slate-200">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full transition-all duration-300"
+                  style={{ width: `${pdfProgress.percent}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-[11px] font-bold text-slate-400">
+                <span>{pdfProgress.message}</span>
+                <span className="text-blue-600 font-black">{pdfProgress.current} / {pdfProgress.total}쪽 ({pdfProgress.percent}%)</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-blue-50/80 rounded-xl border border-blue-100 text-[11px] font-medium text-blue-900 text-left flex items-start gap-2 leading-relaxed">
+              <span>💡</span>
+              <span>프린터를 호출하지 않고, 내 PC 다운로드 폴더에 실제 <strong>.pdf</strong> 파일로 안전하게 저장됩니다.</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ⏱️ 시험지 설정 및 정보 통합 수정 모달 (제목 + 시험시간 + 필터칩) */}
       {durationModalExam && (

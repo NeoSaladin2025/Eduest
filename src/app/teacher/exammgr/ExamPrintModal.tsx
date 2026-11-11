@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
+import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
 
 interface Student {
   id: string;
@@ -1149,10 +1150,23 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     });
   };
 
-  // 📥 현재 설정 그대로 PDF 파일 직접 다운로드 (방식 2: 네이티브 벡터 인쇄창 호출)
-  const isDownloadingPdf = isPreparingPrint;
-  const handleDownloadPdfFromModal = () => {
-    handleTriggerPrint();
+  // 📥 현재 설정 그대로 PDF 파일 직접 다운로드 (프린터 미사용 순수 파일 저장)
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
+  const handleDownloadPdfFromModal = async () => {
+    if (!exam || isDownloadingPdf) return;
+    try {
+      setIsDownloadingPdf(true);
+      await downloadExamAsPdf(exam, {
+        academyName: academyName || 'Eduest 수학학원',
+        questionsPerPage: questionsPerPage === 6 ? 4 : questionsPerPage,
+        columns: columns,
+      });
+    } catch (err) {
+      console.error('PDF 다운로드 실패:', err);
+      alert('PDF 생성 중 오류가 발생했습니다.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
