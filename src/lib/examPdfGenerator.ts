@@ -11,21 +11,23 @@ export interface ExamPdfOptions {
 }
 
 /**
- * 파일명에서 특수문자 제거
+ * 파일명 특수문자 제거
  */
 function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim();
 }
 
 /**
- * 시험지를 A4 규격 PDF로 변환하여 브라우저에서 즉시 다운로드하는 핵심 엔진
+ * 시험지를 A4 규격 벡터 PDF(인쇄/PDF저장 다이렉트 창)로 즉시 띄워주는 초고속 엔진 (방식 2)
+ * - html2canvas 백지 버그 원천 차단
+ * - 브라우저 네이티브 벡터 엔진을 통해 텍스트 검색/복사가 가능한 초고화질 PDF 즉시 생성
  */
 export async function downloadExamAsPdf(
   exam: ExamPaper,
   options?: ExamPdfOptions
 ): Promise<boolean> {
   if (!exam || !exam.questions || exam.questions.length === 0) {
-    alert('시험지에 문항이 존재하지 않아 PDF를 생성할 수 없습니다.');
+    alert('시험지에 문항이 존재하지 않습니다.');
     return false;
   }
 
@@ -35,24 +37,13 @@ export async function downloadExamAsPdf(
   const includeAnswerKey = options?.includeAnswerKey !== false;
   const onProgress = options?.onProgress || (() => {});
 
-  onProgress('이미지 로딩 중...');
+  onProgress('문서 준비 중...');
 
-  // 1. 모든 문항의 이미지 사전 로드 (깨짐 방지)
-  const imageUrls = exam.questions.map(q => q.image_url).filter(Boolean);
-  await Promise.all(
-    imageUrls.map(
-      url =>
-        new Promise(resolve => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => resolve(true);
-          img.onerror = () => resolve(false);
-          img.src = url;
-        })
-    )
-  );
-
-  onProgress('A4 문서 렌더링 중...');
+  // 1. 현재 문서의 모든 Tailwind/전역 스타일 태그 추출
+  const styleNodes = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'));
+  const combinedStyles = styleNodes
+    .map(node => node.outerHTML)
+    .join('\n');
 
   // 2. 문항을 페이지 단위로 분할
   const pages: ExamQuestion[][] = [];
@@ -63,75 +54,8 @@ export async function downloadExamAsPdf(
   const totalProblemPages = pages.length;
   const totalPages = includeAnswerKey ? totalProblemPages + 1 : totalProblemPages;
 
-  // 3. 오프스크린 임시 렌더 컨테이너 생성
-  const container = document.createElement('div');
-  container.id = 'eduest-pdf-export-container';
-  container.style.position = 'fixed';
-  container.style.left = '-99999px';
-  container.style.top = '0';
-  container.style.width = '210mm';
-  container.style.background = '#ffffff';
-  container.style.zIndex = '-9999';
-
-  // 4. 전역 스타일 및 A4 페이지 CSS 주입
-  const cssStyles = `
-    <style>
-      .eduest-pdf-sheet {
-        width: 210mm;
-        height: 297mm;
-        min-height: 297mm;
-        max-height: 297mm;
-        box-sizing: border-box;
-        padding: 10mm 12mm;
-        background: #ffffff;
-        color: #0f172a;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        page-break-after: always;
-        break-after: page;
-        page-break-inside: avoid;
-        break-inside: avoid;
-        overflow: hidden;
-      }
-      .eduest-grid-2col {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        column-gap: 8mm;
-        row-gap: 5mm;
-        flex: 1;
-        align-content: stretch;
-      }
-      .eduest-grid-1col {
-        display: flex;
-        flex-direction: column;
-        gap: 6mm;
-        flex: 1;
-      }
-      .eduest-q-card {
-        display: flex;
-        flex-direction: column;
-        border-radius: 8px;
-        overflow: hidden;
-        border: 1px solid #e2e8f0;
-        padding: 8px 10px;
-        background: #ffffff;
-        height: 100%;
-        box-sizing: border-box;
-      }
-      .eduest-q-img {
-        width: 100%;
-        height: auto;
-        max-height: ${questionsPerPage === 1 ? '160mm' : questionsPerPage === 2 ? '115mm' : '90mm'};
-        object-fit: contain;
-        object-position: top;
-      }
-    </style>
-  `;
-
-  // 5. 각 문제 페이지 HTML 생성
-  let htmlContent = cssStyles;
+  // 3. A4 페이지별 HTML 생성
+  let sheetsHtml = '';
 
   pages.forEach((pageQuestions, pageIdx) => {
     const pageNumber = pageIdx + 1;
@@ -179,7 +103,6 @@ export async function downloadExamAsPdf(
       `;
     }
 
-    // 문항 카드 생성
     const questionCardsHtml = pageQuestions
       .map((q, qSubIdx) => {
         const globalQNum = pageIdx * questionsPerPage + qSubIdx + 1;
@@ -202,14 +125,14 @@ export async function downloadExamAsPdf(
                 }
               </div>
               <span style="font-size: 9px; color: #94a3b8; font-weight: 600;">
-                ${q.name ? q.name.replace(/\.html?$/i, '') : ''}
+                ${q.name ? q.name.replace(/\\.html?$/i, '') : ''}
               </span>
             </div>
 
             <div style="flex: 1; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
               ${
                 q.image_url
-                  ? `<img src="${q.image_url}" crossOrigin="anonymous" class="eduest-q-img" alt="문항 ${globalQNum}" />`
+                  ? `<img src="${q.image_url}" class="eduest-q-img" alt="문항 ${globalQNum}" />`
                   : `<div style="padding: 20px; text-align: center; color: #94a3b8; font-size: 11px;">문제 이미지 없음</div>`
               }
             </div>
@@ -237,8 +160,8 @@ export async function downloadExamAsPdf(
       </div>
     `;
 
-    htmlContent += `
-      <div class="eduest-pdf-sheet">
+    sheetsHtml += `
+      <div class="a4-print-sheet">
         <div>
           ${headerHtml}
           <div class="${columns === 1 ? 'eduest-grid-1col' : 'eduest-grid-2col'}">
@@ -250,7 +173,7 @@ export async function downloadExamAsPdf(
     `;
   });
 
-  // 6. 마지막 빠른 정답 및 배점표 페이지 생성
+  // 4. 빠른 정답표 시트
   if (includeAnswerKey) {
     const answerRows = exam.questions.map((q, idx) => ({
       num: idx + 1,
@@ -259,7 +182,6 @@ export async function downloadExamAsPdf(
       type: q.is_descriptive ? '서술형' : '객관식',
     }));
 
-    // 정답표를 2단(좌/우)으로 나누어 배치
     const midIdx = Math.ceil(answerRows.length / 2);
     const colLeft = answerRows.slice(0, midIdx);
     const colRight = answerRows.slice(midIdx);
@@ -292,7 +214,7 @@ export async function downloadExamAsPdf(
     `;
 
     const answerKeySheetHtml = `
-      <div class="eduest-pdf-sheet">
+      <div class="a4-print-sheet">
         <div>
           <div style="border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 15px;">
             <div style="font-size: 11px; font-weight: 800; color: #475569; letter-spacing: 1px; margin-bottom: 2px;">
@@ -317,53 +239,197 @@ export async function downloadExamAsPdf(
       </div>
     `;
 
-    htmlContent += answerKeySheetHtml;
+    sheetsHtml += answerKeySheetHtml;
   }
 
-  container.innerHTML = htmlContent;
-  document.body.appendChild(container);
+  // 5. 풀 문서 HTML 조립
+  const fullDocumentHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${sanitizeFileName(exam.title || '시험지')} - 시험지 PDF</title>
+        ${combinedStyles}
+        <style>
+          @page {
+            size: A4 portrait;
+            margin: 0;
+          }
+          *, *::before, *::after {
+            box-sizing: border-box;
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            color: #000000 !important;
+            width: 210mm !important;
+            height: auto !important;
+            overflow: visible !important;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .a4-print-sheet {
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
+            width: 210mm !important;
+            height: 297mm !important;
+            min-height: 297mm !important;
+            max-height: 297mm !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+            padding: 8mm 10mm !important;
+            page-break-before: auto !important;
+            page-break-after: always !important;
+            page-break-inside: avoid !important;
+            break-after: page !important;
+            break-inside: avoid !important;
+            background: #ffffff !important;
+            overflow: hidden !important;
+          }
+          .a4-print-sheet:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+          .eduest-grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            column-gap: 8mm;
+            row-gap: 5mm;
+            flex: 1;
+          }
+          .eduest-grid-1col {
+            display: flex;
+            flex-direction: column;
+            gap: 6mm;
+            flex: 1;
+          }
+          .eduest-q-card {
+            display: flex;
+            flex-direction: column;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #cbd5e1;
+            padding: 8px 10px;
+            background: #ffffff;
+            height: 100%;
+            box-sizing: border-box;
+          }
+          .eduest-q-img {
+            width: 100%;
+            height: auto;
+            max-height: ${questionsPerPage === 1 ? '160mm' : questionsPerPage === 2 ? '115mm' : '90mm'};
+            object-fit: contain;
+            object-position: top;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="eduest-print-area">
+          ${sheetsHtml}
+        </div>
+      </body>
+    </html>
+  `;
 
-  onProgress('PDF 파일 생성 중...');
+  onProgress('PDF 인쇄창 로딩 중...');
 
-  try {
-    // 7. html2pdf 동적 import 및 변환
-    const html2pdfModule = await import('html2pdf.js');
-    const html2pdf = html2pdfModule.default || (html2pdfModule as any);
+  // 6. 독립 iframe을 통한 안전한 네이티브 벡터 렌더링 및 인쇄/PDF 저장창 실행
+  return new Promise((resolve) => {
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.visibility = 'hidden';
+    document.body.appendChild(iframe);
 
-    const safeTitle = sanitizeFileName(exam.title || '시험지');
-    const fileName = `${safeTitle}_시험지.pdf`;
+    const doc = iframe.contentWindow?.document;
+    if (!doc) {
+      if (document.body.contains(iframe)) document.body.removeChild(iframe);
+      resolve(false);
+      return;
+    }
 
-    const opt = {
-      margin: 0,
-      filename: fileName,
-      image: { type: 'jpeg' as const, quality: 0.98 },
-      html2canvas: {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        scrollY: 0,
-        scrollX: 0,
-        windowWidth: 794,
-      },
-      jsPDF: {
-        unit: 'mm',
-        format: 'a4',
-        orientation: 'portrait' as const,
-      },
-      pagebreak: {
-        mode: ['css', 'legacy'],
-      },
+    doc.open();
+    doc.write(fullDocumentHtml);
+    doc.close();
+
+    let isFinished = false;
+    let checkTimer: NodeJS.Timeout | null = null;
+    let maxTimer: NodeJS.Timeout | null = null;
+
+    const finish = () => {
+      if (isFinished) return;
+      isFinished = true;
+      if (checkTimer) clearInterval(checkTimer);
+      if (maxTimer) clearTimeout(maxTimer);
+
+      window.removeEventListener('afterprint', finish);
+      iframe.contentWindow?.removeEventListener('afterprint', finish);
+
+      setTimeout(() => {
+        try {
+          if (document.body.contains(iframe)) {
+            document.body.removeChild(iframe);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }, 300);
+
+      onProgress('완료!');
+      resolve(true);
     };
 
-    await html2pdf().set(opt).from(container).save();
-    onProgress('완료!');
-    return true;
-  } catch (err) {
-    console.error('PDF generation error:', err);
-    throw err;
-  } finally {
-    if (document.body.contains(container)) {
-      document.body.removeChild(container);
-    }
-  }
+    const startPrint = async () => {
+      try {
+        // iframe 내부 이미지 로딩 대기
+        const iframeImages = Array.from(doc.images);
+        await Promise.all(
+          iframeImages.map(img => {
+            if (img.complete) return Promise.resolve(true);
+            return new Promise(r => {
+              img.onload = () => r(true);
+              img.onerror = () => r(false);
+            });
+          })
+        );
+
+        // 렌더링 안정화 대기
+        await new Promise(r => setTimeout(r, 250));
+
+        window.addEventListener('afterprint', finish, { once: true });
+        iframe.contentWindow?.addEventListener('afterprint', finish, { once: true });
+
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+
+        // 포커스 복귀 감지
+        let stableTicks = 0;
+        checkTimer = setInterval(() => {
+          if (document.hasFocus()) {
+            stableTicks++;
+            if (stableTicks >= 4) {
+              finish();
+            }
+          } else {
+            stableTicks = 0;
+          }
+        }, 300);
+
+        // 최대 60초 타임아웃
+        maxTimer = setTimeout(finish, 60000);
+      } catch (err) {
+        console.error('startPrint error:', err);
+        finish();
+      }
+    };
+
+    startPrint();
+  });
 }

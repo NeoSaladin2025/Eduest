@@ -1149,48 +1149,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     });
   };
 
-  // 📥 현재 설정 그대로 PDF 파일 직접 다운로드
-  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
-  const handleDownloadPdfFromModal = async () => {
-    if (!exam || isDownloadingPdf) return;
-    const printArea = document.getElementById('eduest-print-area');
-    if (!printArea) {
-      alert('인쇄 영역을 찾을 수 없습니다.');
-      return;
-    }
-    try {
-      setIsDownloadingPdf(true);
-      const html2pdfModule = await import('html2pdf.js');
-      const html2pdf = html2pdfModule.default || (html2pdfModule as any);
-      const safeTitle = (exam.title || '시험지').replace(/[\/:*?"<>|]/g, '_').trim();
-      const opt = {
-        margin: 0,
-        filename: `${safeTitle}_시험지.pdf`,
-        image: { type: 'jpeg' as const, quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          scrollY: 0,
-          scrollX: 0,
-          windowWidth: 794,
-        },
-        jsPDF: {
-          unit: 'mm',
-          format: 'a4',
-          orientation: 'portrait' as const,
-        },
-        pagebreak: {
-          mode: ['css', 'legacy'],
-        },
-      };
-      await html2pdf().set(opt).from(printArea).save();
-    } catch (e) {
-      console.error('PDF download error:', e);
-      alert('PDF 생성 중 오류가 발생했습니다.');
-    } finally {
-      setIsDownloadingPdf(false);
-    }
+  // 📥 현재 설정 그대로 PDF 파일 직접 다운로드 (방식 2: 네이티브 벡터 인쇄창 호출)
+  const isDownloadingPdf = isPreparingPrint;
+  const handleDownloadPdfFromModal = () => {
+    handleTriggerPrint();
   };
 
   // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
