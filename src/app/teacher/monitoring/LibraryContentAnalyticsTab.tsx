@@ -48,13 +48,31 @@ interface FolderTreeNode {
   isLeaf: boolean;
 }
 
+export interface StudentEngagement {
+  studentId: string;
+  studentName: string;
+  totalDurationSec: number;
+  openCount: number;
+  avgDurationSec: number;
+  lastViewedAt: string;
+  history: Array<{
+    sessionIndex: number;
+    durationSec: number;
+    timestamp: string;
+  }>;
+}
+
 interface FileStatItem {
   fileName: string;
   displayName: string;
   durationSec: number;
   students: Set<string>;
+  studentCount: number;
+  studentMap: Record<string, StudentEngagement>;
   views: number;
   solutionViews: number;
+  avgDurationPerStudentSec: number;
+  avgDurationPerViewSec: number;
   status: 'killer' | 'hard' | 'normal' | 'skipped';
 }
 
@@ -90,6 +108,7 @@ export default function LibraryContentAnalyticsTab() {
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
   const [focusedFolderKey, setFocusedFolderKey] = useState<string | null>(null);
   const [hasTriggeredAnalysis, setHasTriggeredAnalysis] = useState<boolean>(false);
+  const [expandedStudent, setExpandedStudent] = useState<{ fileName: string; studentName: string } | null>(null);
 
   // 1. 데이터 로드 (세션 30일치 + 라이브러리 전체 폴더)
   const fetchData = async () => {
@@ -344,6 +363,7 @@ export default function LibraryContentAnalyticsTab() {
       const fileMap: Record<string, {
         durationSec: number;
         students: Set<string>;
+        studentMap: Record<string, StudentEngagement>;
         views: number;
         solutionViews: number;
       }> = {};
@@ -396,6 +416,7 @@ export default function LibraryContentAnalyticsTab() {
                   fileMap[cleanDoc] = {
                     durationSec: 0,
                     students: new Set<string>(),
+                    studentMap: {},
                     views: 0,
                     solutionViews: 0,
                   };
@@ -407,6 +428,33 @@ export default function LibraryContentAnalyticsTab() {
                 if (sub.includes('해설')) {
                   fileEntry.solutionViews += 1;
                 }
+
+                // 학생별 인게이지먼트 누적 (다회차 열람 실시간 계산)
+                if (!fileEntry.studentMap[stName]) {
+                  fileEntry.studentMap[stName] = {
+                    studentId: r.student_id || stName,
+                    studentName: stName,
+                    totalDurationSec: 0,
+                    openCount: 0,
+                    avgDurationSec: 0,
+                    lastViewedAt: ses.started_at || r.date || '',
+                    history: [],
+                  };
+                }
+                const stEntry = fileEntry.studentMap[stName];
+                stEntry.totalDurationSec += dur;
+                stEntry.openCount += 1;
+                stEntry.avgDurationSec = stEntry.openCount > 0 ? Math.round(stEntry.totalDurationSec / stEntry.openCount) : 0;
+                
+                const actTime = ses.started_at || r.date || '';
+                if (actTime && (!stEntry.lastViewedAt || new Date(actTime) > new Date(stEntry.lastViewedAt))) {
+                  stEntry.lastViewedAt = actTime;
+                }
+                stEntry.history.push({
+                  sessionIndex: stEntry.openCount,
+                  durationSec: dur,
+                  timestamp: actTime,
+                });
               }
             }
           });
@@ -426,14 +474,21 @@ export default function LibraryContentAnalyticsTab() {
 
         const numMatch = fileName.match(/(\d+)/);
         const displayName = numMatch ? `${parseInt(numMatch[1], 10)}번 문항 (${fileName}.html)` : `${fileName}.html`;
+        const studentCount = data.students.size;
+        const avgDurationPerStudentSec = studentCount > 0 ? Math.round(data.durationSec / studentCount) : 0;
+        const avgDurationPerViewSec = data.views > 0 ? Math.round(data.durationSec / data.views) : 0;
 
         return {
           fileName,
           displayName,
           durationSec: data.durationSec,
           students: data.students,
+          studentCount,
+          studentMap: data.studentMap,
           views: data.views,
           solutionViews: data.solutionViews,
+          avgDurationPerStudentSec,
+          avgDurationPerViewSec,
           status,
         };
       });
@@ -526,16 +581,16 @@ export default function LibraryContentAnalyticsTab() {
         ]);
       } else {
         folder.files.forEach(file => {
-          const solPct = file.views > 0 ? Math.round((file.solutionViews / file.views) * 100) : 0;
+          const avgPerStudentMin = file.studentCount > 0 ? (file.durationSec / 60 / file.studentCount).toFixed(1) : '0';
           rows.push([
             folderType,
             folder.folderName,
             folder.parentPath || '-',
             file.displayName,
             Math.round(file.durationSec / 60),
-            file.students.size,
+            file.studentCount,
             file.views,
-            solPct,
+            avgPerStudentMin,
             file.status === 'killer' ? '최고난도킬러' : file.status === 'hard' ? '고난도' : '표준문항'
           ]);
         });
@@ -1018,12 +1073,11 @@ export default function LibraryContentAnalyticsTab() {
                     const fPct = Math.max(Math.round((file.durationSec / currentFocusedFolder.maxFileDuration) * 100), file.durationSec > 0 ? 8 : 2);
                     const isKiller = file.status === 'killer';
                     const isHard = file.status === 'hard';
-                    const solRatio = file.views > 0 ? Math.round((file.solutionViews / file.views) * 100) : 0;
 
                     return (
                       <div
                         key={file.fileName}
-                        className={`p-3 rounded-2xl border transition-all space-y-2 ${
+                        className={`p-3.5 rounded-2xl border transition-all space-y-2.5 ${
                           isKiller
                             ? 'bg-rose-50/50 border-rose-200 shadow-2xs'
                             : isHard
@@ -1031,7 +1085,7 @@ export default function LibraryContentAnalyticsTab() {
                             : 'bg-slate-50 border-slate-200/80'
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-start justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className={`w-5 h-5 rounded-md text-[10px] font-black flex items-center justify-center shrink-0 ${
                               isKiller ? 'bg-rose-200 text-rose-900' : 'bg-slate-200 text-slate-700'
@@ -1053,9 +1107,15 @@ export default function LibraryContentAnalyticsTab() {
                             )}
                           </div>
 
-                          <span className={`text-xs font-black shrink-0 ${isKiller ? 'text-rose-700' : 'text-slate-800'}`}>
-                            {formatDurationKo(file.durationSec)}
-                          </span>
+                          {/* 우측 시간 영역: 상단 총 누적시간, 하단 학생평균 */}
+                          <div className="text-right shrink-0">
+                            <div className={`text-xs font-black ${isKiller ? 'text-rose-700' : 'text-slate-900'}`}>
+                              총 {formatDurationKo(file.durationSec)}
+                            </div>
+                            <div className="text-[10px] font-bold text-slate-500 mt-0.5">
+                              학생 평균: <span className="font-extrabold text-slate-700">{formatDurationKo(file.avgDurationPerStudentSec)}</span>
+                            </div>
+                          </div>
                         </div>
 
                         {/* 파일 체류 바 */}
@@ -1068,14 +1128,118 @@ export default function LibraryContentAnalyticsTab() {
                           />
                         </div>
 
-                        {/* 파일 세부 통계 */}
-                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 pt-0.5">
-                          <span>
-                            이용 학생: <strong className="text-slate-800">{file.students.size}명</strong> ({Array.from(file.students).slice(0, 3).join(', ')}{file.students.size > 3 ? '...' : ''})
-                          </span>
-                          <span>
-                            해설 열람 비중: <strong className={solRatio >= 60 ? 'text-rose-600' : 'text-slate-700'}>{solRatio}%</strong> (총 {file.views}회)
-                          </span>
+                        {/* 파일 세부 통계 & 학생 클릭 인터랙티브 칩 */}
+                        <div className="space-y-2 pt-0.5">
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px] font-bold text-slate-500">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-slate-600 font-extrabold">
+                                이용 학생 <strong className="text-slate-900 font-black">{file.studentCount}명</strong>:
+                              </span>
+                              {Object.values(file.studentMap || {}).map((st) => {
+                                const isSelected = expandedStudent?.fileName === file.fileName && expandedStudent?.studentName === st.studentName;
+                                const isRepeat = st.openCount >= 2;
+
+                                return (
+                                  <button
+                                    key={st.studentName}
+                                    type="button"
+                                    onClick={() => {
+                                      setExpandedStudent(prev =>
+                                        prev?.fileName === file.fileName && prev?.studentName === st.studentName
+                                          ? null
+                                          : { fileName: file.fileName, studentName: st.studentName }
+                                      );
+                                    }}
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-violet-600 text-white shadow-2xs ring-1 ring-violet-400 font-black'
+                                        : 'bg-white border border-slate-200 text-slate-700 hover:border-violet-300 hover:bg-violet-50/60'
+                                    }`}
+                                    title="클릭하여 학생의 누적 열람시간 및 횟수 확인"
+                                  >
+                                    <span>👤</span>
+                                    <span>{st.studentName}</span>
+                                    <span className={`text-[9px] px-1 py-0.2 rounded ${
+                                      isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600 font-semibold'
+                                    }`}>
+                                      {formatDurationKo(st.totalDurationSec)} · {st.openCount}회{isRepeat ? ' 🔥' : ''}
+                                    </span>
+                                    <span className="text-[8px] opacity-75">{isSelected ? '▲' : '▾'}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            <div className="text-[10px] font-bold text-slate-400 shrink-0">
+                              누적 열람: <strong className="text-slate-700">{file.views}회</strong>
+                              {file.views > 0 && (
+                                <span className="ml-1 text-slate-400">(회당 평균 {formatDurationKo(file.avgDurationPerViewSec)})</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* 학생 클릭 시 인라인으로 열리는 정밀 인게이지먼트 카드 */}
+                          {expandedStudent?.fileName === file.fileName && file.studentMap[expandedStudent.studentName] && (() => {
+                            const st = file.studentMap[expandedStudent.studentName];
+                            const isRepeat = st.openCount >= 2;
+                            return (
+                              <div className="p-3 bg-white rounded-xl border border-violet-200 shadow-2xs space-y-2 text-[11px]">
+                                <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-black text-violet-950 flex items-center gap-1">
+                                      🎯 <strong>{st.studentName}</strong> 학생 열람 정밀 리포트
+                                    </span>
+                                    {isRepeat ? (
+                                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-800">
+                                        반복 학습형 🔥 ({st.openCount}회 열람)
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                                        1회 열람
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedStudent(null)}
+                                    className="text-[10px] text-slate-400 hover:text-slate-600 font-bold px-1 cursor-pointer"
+                                  >
+                                    닫기 ✕
+                                  </button>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-1.5 text-center">
+                                  <div className="bg-violet-50/70 p-1.5 rounded-lg border border-violet-100">
+                                    <div className="text-[9px] font-bold text-violet-700">총 누적 열람시간</div>
+                                    <div className="text-xs font-black text-violet-950 mt-0.5">{formatDurationKo(st.totalDurationSec)}</div>
+                                  </div>
+                                  <div className="bg-indigo-50/70 p-1.5 rounded-lg border border-indigo-100">
+                                    <div className="text-[9px] font-bold text-indigo-700">누적 열람 횟수</div>
+                                    <div className="text-xs font-black text-indigo-950 mt-0.5">{st.openCount}회</div>
+                                  </div>
+                                  <div className="bg-amber-50/70 p-1.5 rounded-lg border border-amber-100">
+                                    <div className="text-[9px] font-bold text-amber-700">회당 평균 체류</div>
+                                    <div className="text-xs font-black text-amber-950 mt-0.5">{formatDurationKo(st.avgDurationSec)}</div>
+                                  </div>
+                                </div>
+
+                                {st.history.length > 1 && (
+                                  <div className="text-[10px] text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100 flex items-center gap-2 overflow-x-auto">
+                                    <span className="font-bold text-slate-700 shrink-0">📌 회차별:</span>
+                                    {st.history.map((h, hIdx) => (
+                                      <span key={hIdx} className="inline-flex items-center gap-1 shrink-0">
+                                        <span className="font-semibold text-slate-600">{hIdx + 1}회차:</span>
+                                        <strong className={hIdx === st.history.length - 1 ? 'text-violet-700 font-black' : 'text-slate-800'}>
+                                          {formatDurationKo(h.durationSec)}
+                                        </strong>
+                                        {hIdx < st.history.length - 1 && <span className="text-slate-300">➔</span>}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     );
