@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Microscope,
   FolderTree,
@@ -21,7 +21,11 @@ import {
   BookOpen,
   Layers,
   Compass,
-  FileText
+  FileText,
+  Printer,
+  Eye,
+  LayoutGrid,
+  LayoutList
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import QuestionDeepReportModal, { QuestionReportItem } from './QuestionDeepReportModal';
@@ -65,6 +69,7 @@ const GRADES = ['고2', '고1', '고3', '중3', '중2', '중1', '전체'];
 
 export default function LibraryDeepAnalysisMain() {
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
+  const [folderSearch, setFolderSearch] = useState<string>('');
   const [loadingFolders, setLoadingFolders] = useState<boolean>(true);
   const [allFolders, setAllFolders] = useState<LibraryFolderItem[]>([]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
@@ -72,12 +77,18 @@ export default function LibraryDeepAnalysisMain() {
   // 선택된 대상 폴더
   const [selectedFolder, setSelectedFolder] = useState<LibraryFolderItem | null>(null);
 
-  // 아카이브 조회 상태 및 데이터 (Web UI는 순수 뷰어 역할)
+  // 아카이브 조회 상태 및 데이터 (Web UI는 순수 뷰어)
   const [loadingAnalysis, setLoadingAnalysis] = useState<boolean>(false);
   const [archiveData, setArchiveData] = useState<FolderArchiveData | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
 
-  // 상세 모달
+  // 뷰 모드: 'list' (스마트 일람표) vs 'card' (카드 뷰)
+  const [viewMode, setViewMode] = useState<'list' | 'card'>('list');
+
+  // 포커스된 문항 (히트맵 클릭 시)
+  const [highlightedQNum, setHighlightedQNum] = useState<number | null>(null);
+
+  // 상세 진단서 모달
   const [modalQuestion, setModalQuestion] = useState<QuestionReportItem | null>(null);
 
   // 1. 전체 폴더 로드
@@ -106,9 +117,16 @@ export default function LibraryDeepAnalysisMain() {
 
   // 2. 현재 학년 폴더 및 계층 트리
   const currentGradeFolders = useMemo(() => {
-    if (selectedGrade === '전체' || selectedGrade === 'ALL') return allFolders;
-    return allFolders.filter(f => f.grade && f.grade.startsWith(selectedGrade));
-  }, [allFolders, selectedGrade]);
+    let list = allFolders;
+    if (selectedGrade !== '전체' && selectedGrade !== 'ALL') {
+      list = list.filter(f => f.grade && f.grade.startsWith(selectedGrade));
+    }
+    if (folderSearch.trim()) {
+      const q = folderSearch.trim().toLowerCase();
+      list = list.filter(f => f.name.toLowerCase().includes(q));
+    }
+    return list;
+  }, [allFolders, selectedGrade, folderSearch]);
 
   const folderTree = useMemo(() => {
     const map = new Map<string, FolderTreeNode>();
@@ -142,10 +160,11 @@ export default function LibraryDeepAnalysisMain() {
     return roots;
   }, [currentGradeFolders, selectedGrade]);
 
-  // 학년 변경 시 대표 기출 폴더(예: 4차) 자동 선택
+  // 학년 변경 시 대표 기출 폴더(5차 또는 4차) 자동 선택
   useEffect(() => {
     if (currentGradeFolders.length > 0 && !selectedFolder) {
-      const target = currentGradeFolders.find(f => f.name === '4차' || f.name.includes('4차')) ||
+      const target = currentGradeFolders.find(f => f.name === '5차') ||
+        currentGradeFolders.find(f => f.name === '4차') ||
         currentGradeFolders.find(f => f.name.includes('기출') || f.name.includes('모의')) ||
         currentGradeFolders[0];
 
@@ -155,7 +174,7 @@ export default function LibraryDeepAnalysisMain() {
     }
   }, [currentGradeFolders, selectedFolder]);
 
-  // 3. 선택된 폴더의 아카이빙된 분석 데이터 조회 (Web UI는 순수 조회만 수행)
+  // 3. 선택된 폴더의 아카이빙된 분석 데이터 조회
   const fetchAnalysis = async (folder: LibraryFolderItem) => {
     setLoadingAnalysis(true);
     try {
@@ -200,6 +219,18 @@ export default function LibraryDeepAnalysisMain() {
     return archiveData.questions;
   }, [archiveData, activeFilter]);
 
+  // 히트맵 칩 클릭 시 해당 행으로 스크롤 & 하이라이트
+  const handleHeatmapClick = (q: QuestionReportItem) => {
+    setHighlightedQNum(q.qNum);
+    const rowEl = document.getElementById(`q-row-${q.qNum}`);
+    if (rowEl) {
+      rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      setModalQuestion(q);
+    }
+    setTimeout(() => setHighlightedQNum(null), 3000);
+  };
+
   // CSV 내보내기
   const handleExportCSV = () => {
     if (!archiveData || archiveData.questions.length === 0) {
@@ -207,12 +238,12 @@ export default function LibraryDeepAnalysisMain() {
       return;
     }
 
-    const headers = ['문항번호', '파일명', 'AI난이도(점수)', '난이도등급', '풀이단계', '핵심개념', '오답함정', '수업코칭팁'];
+    const headers = ['문항번호', '파일명', 'AI난이도(점수)', '난이도등급', '추론단계', '핵심개념', '오답함정', '수업코칭팁'];
     const rows = archiveData.questions.map(q => [
       q.qNum,
       q.fileName,
       q.aiScore,
-      q.aiTier === 'KILLER' ? '최고난도킬러' : q.aiTier === 'SEMI_KILLER' ? '준킬러' : '표준',
+      q.aiTier === 'KILLER' ? '최고난도킬러' : q.aiTier === 'SEMI_KILLER' ? '준킬러' : '표준/기본',
       `${q.stepsCount}단계`,
       q.coreConcepts.join(' / '),
       q.trapPoint.replace(/,/g, ' '),
@@ -224,7 +255,7 @@ export default function LibraryDeepAnalysisMain() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `Eduest_문항난이도진단_${archiveData.folderName}_${selectedGrade}.csv`);
+    link.setAttribute('download', `Eduest_AI정밀진단_${archiveData.folderName}_${selectedGrade}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -237,7 +268,7 @@ export default function LibraryDeepAnalysisMain() {
     const hasChildren = node.subFolders.length > 0;
 
     return (
-      <div key={node.drive_id} className="space-y-1">
+      <div key={node.drive_id} className="space-y-0.5">
         <div
           onClick={() => {
             setSelectedFolder({
@@ -250,7 +281,7 @@ export default function LibraryDeepAnalysisMain() {
           }}
           className={`flex items-center justify-between p-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             isSelected
-              ? 'bg-violet-600 text-white shadow-xs scale-101'
+              ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-sm shadow-violet-200'
               : 'hover:bg-slate-100 text-slate-700'
           }`}
           style={{ paddingLeft: `${Math.max(depth * 14 + 8, 8)}px` }}
@@ -272,18 +303,24 @@ export default function LibraryDeepAnalysisMain() {
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
-            {hasChildren && (
+            {hasChildren ? (
               <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-extrabold ${
                 isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
               }`}>
                 {node.subFolders.length}
               </span>
+            ) : (
+              isSelected && (
+                <span className="text-[9px] bg-white/25 text-white px-1.5 py-0.5 rounded font-extrabold">
+                  선택됨
+                </span>
+              )
             )}
           </div>
         </div>
 
         {hasChildren && isExpanded && (
-          <div className="space-y-0.5 border-l-2 border-slate-200 ml-4 pl-1">
+          <div className="space-y-0.5 border-l-2 border-violet-100 ml-4 pl-1">
             {node.subFolders.map(child => renderTreeNode(child, depth + 1))}
           </div>
         )}
@@ -292,350 +329,541 @@ export default function LibraryDeepAnalysisMain() {
   };
 
   return (
-    <div className="w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6 animate-in fade-in duration-200">
+    <div className="w-full max-w-[1520px] mx-auto p-4 sm:p-6 space-y-5 animate-in fade-in duration-200">
       
-      {/* 1. 상단 타이틀 배너 */}
-      <div className="bg-gradient-to-r from-violet-950 via-purple-900 to-slate-900 text-white border border-violet-800/50 rounded-3xl p-6 sm:p-7 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl sm:text-2xl font-black tracking-tight flex items-center gap-2">
-              <Microscope size={24} className="text-violet-300" />
-              <span>라이브러리 및 모의평가 문제 AI 난이도 정밀 분석 센터</span>
-            </span>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-500/30 text-violet-200 font-extrabold border border-violet-400/30">
-              MCP Analysis Viewer
-            </span>
+      {/* 1. 최상단 타이틀 & 헤더 바 */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 rounded-2xl bg-gradient-to-br from-violet-900 to-indigo-950 text-white shadow-md shadow-violet-900/20">
+            <Microscope size={22} className="text-violet-300" />
           </div>
-          <p className="text-xs font-medium text-slate-300 leading-relaxed">
-            대화창에서 AI(MCP)에게 문제 분석을 지시하면, AI가 구글 드라이브 HTML 문제(수식, 핵심개념, 함정, 풀이단계)를 심층 분석하여
-            이곳에 아카이빙합니다. 웹 화면은 아카이빙된 정밀 진단서를 언제든지 열람하고 인쇄할 수 있는 전용 뷰어입니다.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="text-[11px] font-bold text-violet-200 bg-violet-900/60 border border-violet-700/50 px-3.5 py-2 rounded-2xl flex items-center gap-1.5">
-            <Sparkles size={14} className="text-violet-300" />
-            <span>AI MCP 연동 아카이브</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. 학년 필터 바 */}
-      <div className="bg-white border border-slate-200/80 rounded-3xl p-4 sm:p-5 shadow-2xs flex items-center justify-between gap-4">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0 scrollbar-none">
-          <span className="text-xs font-black text-slate-400 mr-1 shrink-0">학년:</span>
-          {GRADES.map(g => (
-            <button
-              key={g}
-              type="button"
-              onClick={() => {
-                setSelectedGrade(g);
-                setSelectedFolder(null);
-              }}
-              className={`px-3.5 py-1.5 rounded-2xl text-xs font-black transition-all cursor-pointer shrink-0 ${
-                selectedGrade === g
-                  ? 'bg-violet-600 text-white shadow-md shadow-violet-200 scale-105'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
-              }`}
-            >
-              {g === '전체' ? '전체 학년' : `${g} 라이브러리`}
-            </button>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            fetchFolders();
-            if (selectedFolder) fetchAnalysis(selectedFolder);
-          }}
-          className="p-2 rounded-2xl bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-all cursor-pointer shadow-2xs"
-          title="새로고침"
-        >
-          <RotateCcw size={15} />
-        </button>
-      </div>
-
-      {/* 3. 메인 그리드: 좌측 트리(4열) vs 우측 분석 아카이브(8열) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* 좌측: 폴더 탐색 트리 (4열) */}
-        <div className="lg:col-span-4 bg-white border border-slate-200/80 rounded-3xl p-5 shadow-2xs space-y-4 flex flex-col justify-between">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="text-sm font-black text-slate-800 flex items-center gap-2">
-                <FolderTree size={16} className="text-violet-600" />
-                <span>라이브러리 및 모의평가 폴더</span>
-              </div>
-              <span className="text-[11px] font-bold text-slate-400">
-                {currentGradeFolders.length}개 폴더
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-black text-slate-900 tracking-tight">라이브러리 문제 난이도 AI 정밀 분석 센터</h1>
+              <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-800 font-black border border-violet-200">
+                High-End Diagnostic V2
               </span>
             </div>
-
-            {/* 트리 스크롤 영역 */}
-            <div className="space-y-1.5 text-xs max-h-[580px] overflow-y-auto pr-1">
-              {loadingFolders ? (
-                <div className="py-16 flex flex-col items-center justify-center text-slate-400 gap-2">
-                  <Loader2 size={24} className="animate-spin text-violet-600" />
-                  <span className="text-xs font-bold">폴더 목록을 불러오는 중...</span>
-                </div>
-              ) : folderTree.length === 0 ? (
-                <div className="py-12 text-center text-xs font-bold text-slate-400">
-                  해당 학년에 등록된 폴더가 없습니다.
-                </div>
-              ) : (
-                folderTree.map(node => renderTreeNode(node))
-              )}
-            </div>
-          </div>
-
-          <div className="p-3 bg-violet-50 border border-violet-200/80 rounded-2xl text-[11px] font-bold text-violet-900 leading-relaxed">
-            💡 <strong>안내:</strong> 폴더를 클릭하시면 해당 폴더의 아카이빙된 AI 문항 난이도 진단서를 즉시 열람하실 수 있습니다.
+            <p className="text-xs text-slate-500 font-medium mt-0.5">
+              구글 드라이브 원본 문제 HTML을 AI가 직접 열어 조건식과 요구 역량을 정밀 진단한 아카이브 뷰어입니다.
+            </p>
           </div>
         </div>
 
-        {/* 우측: 선택 폴더 AI 난이도 & 아카이빙 대시보드 (8열) */}
-        <div className="lg:col-span-8 space-y-5">
-          
-          {/* 폴더 요약 & KPI 배너 */}
-          <div className="bg-white border border-slate-200/80 rounded-3xl p-5 sm:p-6 shadow-2xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-black text-violet-600 bg-violet-100 px-2 py-0.5 rounded-md">
-                    선택 폴더
-                  </span>
-                  <span className="text-xs font-bold text-slate-400">
-                    {selectedGrade} 라이브러리 &gt; {selectedFolder?.name || '폴더 선택 필요'}
-                  </span>
-                </div>
-                <h2 className="text-lg font-black text-slate-900 mt-1 flex items-center gap-2">
-                  <span>[{selectedFolder?.name || '폴더를 선택해주세요'}] 문항별 AI 난이도 정밀 진단서</span>
-                  {archiveData && (
-                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-extrabold border border-emerald-200">
-                      아카이빙 완료 ({archiveData.totalQuestions}문항)
-                    </span>
-                  )}
-                </h2>
-              </div>
+        {/* 우측 액션 바 */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            disabled={!archiveData}
+            className="px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 shadow-2xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40"
+          >
+            <Download size={14} className="text-slate-600" />
+            <span>CSV 내보내기</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => window.print()}
+            disabled={!archiveData}
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-xs font-black hover:from-violet-500 hover:to-indigo-500 shadow-md shadow-violet-200 flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40"
+          >
+            <Printer size={14} />
+            <span>진단 리포트 일괄 인쇄</span>
+          </button>
+        </div>
+      </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleExportCSV}
-                  disabled={!archiveData}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
-                >
-                  <Download size={13} className="text-slate-600" />
-                  <span>CSV 내보내기</span>
-                </button>
-              </div>
-            </div>
+      {/* 2단 그리드: 좌측 탐색 트리(3.5열) vs 우측 고품격 분석 콘솔(8.5열) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        
+        {/* [좌측] 학년 탭 및 폴더 계층 트리 (3.5열) */}
+        <aside className="lg:col-span-3 bg-white border border-slate-200 rounded-3xl p-4 shadow-2xs space-y-4">
+          {/* 학년 필터 세그먼트 */}
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-2xl">
+            {GRADES.slice(0, 4).map(g => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => {
+                  setSelectedGrade(g);
+                  setSelectedFolder(null);
+                }}
+                className={`flex-1 py-1.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+                  selectedGrade === g
+                    ? 'bg-white text-violet-700 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
 
-            {/* 로딩 / 빈 상태 / KPI 4분할 카드 */}
-            {loadingAnalysis ? (
+          {/* 폴더 검색 인풋 */}
+          <div className="relative">
+            <input
+              type="text"
+              value={folderSearch}
+              onChange={e => setFolderSearch(e.target.value)}
+              placeholder="폴더명 검색..."
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-medium text-slate-800 placeholder-slate-400 focus:outline-none focus:border-violet-500 pl-8"
+            />
+            <Search className="absolute left-2.5 top-2 text-slate-400" size={13} />
+          </div>
+
+          {/* 트리 구조 영역 */}
+          <div className="space-y-1 text-xs font-bold text-slate-700 max-h-[620px] overflow-y-auto pr-1">
+            {loadingFolders ? (
               <div className="py-16 flex flex-col items-center justify-center text-slate-400 gap-2">
-                <Loader2 size={28} className="animate-spin text-violet-600" />
-                <span className="text-xs font-bold text-slate-700">분석 아카이브를 불러오는 중...</span>
+                <Loader2 size={24} className="animate-spin text-violet-600" />
+                <span className="text-xs font-bold">폴더 목록 로딩 중...</span>
               </div>
-            ) : !archiveData ? (
-              <div className="py-14 px-6 flex flex-col items-center justify-center text-center space-y-3 bg-slate-50/70 border border-slate-200/80 rounded-2xl">
-                <div className="w-12 h-12 rounded-2xl bg-violet-100 text-violet-600 flex items-center justify-center shadow-xs">
-                  <BookOpen size={24} />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-sm font-black text-slate-800">
-                    아직 등록된 AI 분석 리포트가 없습니다
-                  </h3>
-                  <p className="text-xs text-slate-500 font-medium max-w-md">
-                    선택하신 <strong>[{selectedFolder?.name || '폴더'}]</strong>는 아직 MCP 문항 정밀 분석이 수행되지 않은 상태입니다.
-                  </p>
-                </div>
-                <div className="mt-2 p-3 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 max-w-lg shadow-2xs">
-                  💡 대화창에서 <strong>&ldquo;‘{selectedFolder?.name || '해당'}’ 폴더 문제 분석해줘&rdquo;</strong>라고 요청하시면,<br />
-                  AI가 구글 드라이브 문제 HTML을 정밀 분석하여 이곳에 결과가 자동으로 아카이빙됩니다.
-                </div>
+            ) : folderTree.length === 0 ? (
+              <div className="py-12 text-center text-xs font-bold text-slate-400">
+                등록된 폴더가 없습니다.
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200/80">
-                  <div className="text-[11px] font-bold text-rose-700 flex items-center justify-between">
-                    <span>🔥 킬러 문항</span>
-                    <span className="text-[9px] bg-rose-200 px-1.5 rounded text-rose-900 font-extrabold">{archiveData.killerRatio}%</span>
-                  </div>
-                  <div className="text-xl font-black text-rose-950 mt-1">
-                    {archiveData.killerCount}개 <span className="text-xs font-bold text-rose-600">({archiveData.killerRatio}%)</span>
-                  </div>
-                  <div className="text-[10px] text-rose-600 mt-0.5 truncate">
-                    {archiveData.questions.filter(q => q.aiTier === 'KILLER').map(q => `${q.qNum}번`).join(', ') || '없음'}
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200/80">
-                  <div className="text-[11px] font-bold text-amber-700 flex items-center justify-between">
-                    <span>⚡ 준킬러 문항</span>
-                    <span className="text-[9px] bg-amber-200 px-1.5 rounded text-amber-900 font-extrabold">{archiveData.semiKillerRatio}%</span>
-                  </div>
-                  <div className="text-xl font-black text-amber-950 mt-1">
-                    {archiveData.semiKillerCount}개 <span className="text-xs font-bold text-amber-600">({archiveData.semiKillerRatio}%)</span>
-                  </div>
-                  <div className="text-[10px] text-amber-600 mt-0.5 truncate">
-                    {archiveData.questions.filter(q => q.aiTier === 'SEMI_KILLER').map(q => `${q.qNum}번`).join(', ') || '없음'}
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-2xl bg-indigo-50 border border-indigo-200/80">
-                  <div className="text-[11px] font-bold text-indigo-700 flex items-center justify-between">
-                    <span>🌱 표준 문항</span>
-                    <span className="text-[9px] bg-indigo-200 px-1.5 rounded text-indigo-900 font-extrabold">기출 표준</span>
-                  </div>
-                  <div className="text-xl font-black text-indigo-950 mt-1">
-                    {archiveData.standardCount}개
-                  </div>
-                  <div className="text-[10px] text-indigo-600 mt-0.5">3점 기출 표준 배점</div>
-                </div>
-
-                <div className="p-3.5 rounded-2xl bg-slate-100 border border-slate-200">
-                  <div className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
-                    <span>📊 종합 시험 난이도</span>
-                    <Flame size={14} className="text-rose-500" />
-                  </div>
-                  <div className="text-lg font-black text-slate-900 mt-1 truncate">
-                    {archiveData.examRating}
-                  </div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">평균 {archiveData.avgScore}점</div>
-                </div>
-              </div>
+              folderTree.map(node => renderTreeNode(node))
             )}
           </div>
 
-          {/* 문항별 카드 그리드 */}
-          {archiveData && (
-            <div className="space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
-                  <Layers size={15} className="text-violet-600" />
-                  <span>문항별 AI 난이도 &amp; 핵심 개념 분석 목록</span>
-                </span>
-                
-                {/* 필터 칩 */}
-                <div className="flex items-center gap-1 text-[11px] font-bold text-slate-500 overflow-x-auto pb-1 sm:pb-0">
-                  <button
-                    type="button"
-                    onClick={() => setActiveFilter('ALL')}
-                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'ALL' ? 'bg-violet-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    전체 ({archiveData.questions.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveFilter('KILLER')}
-                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'KILLER' ? 'bg-rose-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    🔥 킬러 문항 ({archiveData.killerCount})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveFilter('SEMI_KILLER')}
-                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'SEMI_KILLER' ? 'bg-amber-500 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    ⚡ 준킬러 문항 ({archiveData.semiKillerCount})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveFilter('STANDARD')}
-                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'STANDARD' ? 'bg-indigo-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    🌱 표준 문항 ({archiveData.standardCount})
-                  </button>
+          <div className="p-3 bg-violet-50/70 border border-violet-100 rounded-2xl text-[11px] text-violet-900 leading-relaxed font-bold">
+            💡 <strong>AI 실시간 연동:</strong> 대화창에서 AI(마누라)에게 새로운 폴더 분석을 요청하면 이 목록에 실시간 아카이빙됩니다.
+          </div>
+        </aside>
+
+        {/* [우측] 고품격 AI 정밀 분석 콘솔 본체 (8.5열) */}
+        <div className="lg:col-span-9 space-y-4">
+          
+          {/* 1. 메인 분석 콘솔 헤더 (High-End Glassmorphism Panel) */}
+          <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
+            
+            {/* 은은한 배경 광원 효과 */}
+            <div className="absolute -right-20 -top-20 w-64 h-64 bg-violet-600/20 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="absolute right-40 -bottom-20 w-64 h-64 bg-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div className="relative z-10 space-y-4">
+              
+              {/* 상단 폴더 경로 & 등급 배지 */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-xs font-bold text-violet-300">
+                    <span>{selectedGrade} 라이브러리</span>
+                    <span>&gt;</span>
+                    <span>{selectedFolder?.name || '폴더 선택'}</span>
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2.5">
+                    <span>[{selectedFolder?.name || '폴더를 선택해주세요'}] 수능형 실전 모의평가</span>
+                    {archiveData && (
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-extrabold border border-emerald-500/40">
+                        아카이빙 완료 ({archiveData.totalQuestions}문항)
+                      </span>
+                    )}
+                  </h2>
                 </div>
-              </div>
 
-              {/* 카드 그리드 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[540px] overflow-y-auto pr-1">
-                {filteredQuestions.map(question => {
-                  const isKiller = question.aiTier === 'KILLER';
-                  const isSemiKiller = question.aiTier === 'SEMI_KILLER';
-
-                  return (
-                    <div
-                      key={question.fileDriveId}
-                      className={`bg-white rounded-2xl p-4 shadow-sm hover:shadow-md transition-all space-y-3 border-2 ${
-                        isKiller
-                          ? 'border-rose-200 hover:border-rose-300'
-                          : isSemiKiller
-                          ? 'border-amber-200 hover:border-amber-300'
-                          : 'border-slate-200/80 hover:border-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className={`w-6 h-6 rounded-lg font-black text-xs flex items-center justify-center shrink-0 ${
-                              isKiller ? 'bg-rose-100 text-rose-900' : isSemiKiller ? 'bg-amber-100 text-amber-900' : 'bg-slate-100 text-slate-800'
-                            }`}>
-                              {question.qNum}
-                            </span>
-                            <span className="text-xs font-black text-slate-900 truncate">
-                              {question.displayName}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-slate-500 font-bold mt-1 truncate">
-                            {question.coreConcepts.slice(0, 2).join(' · ')}
-                          </div>
-                        </div>
-
-                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full shrink-0 ${
-                          isKiller
-                            ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                            : isSemiKiller
-                            ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                            : 'bg-slate-100 text-slate-700'
-                        }`}>
-                          {isKiller ? '🔥 킬러급' : isSemiKiller ? '⚡ 준킬러급' : '🌱 표준 기출'} ({question.aiScore}점)
-                        </span>
-                      </div>
-
-                      {/* 난이도 & 풀이 단계 요약 박스 */}
-                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5 text-[11px]">
-                        <div className="flex items-center justify-between font-bold">
-                          <span className="text-slate-600">풀이 요구 단계:</span>
-                          <span className="font-extrabold text-slate-800">
-                            {question.stepsCount}단계 {question.stepsCount >= 4 ? '(다단계 복합 추론)' : '(표준 논리)'}
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-rose-700 pt-1 border-t border-slate-200 leading-relaxed truncate">
-                          ⚠️ <strong>함정 요인:</strong> {question.trapPoint}
-                        </div>
-                      </div>
-
-                      {/* 하단 태그 & 모달 버튼 */}
-                      <div className="flex items-center justify-between pt-1">
-                        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-bold truncate max-w-[60%]">
-                          {question.coreConcepts.map((c, i) => (
-                            <span key={i}>#{c.slice(0, 8)} </span>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setModalQuestion(question)}
-                          className="px-2.5 py-1 rounded-lg bg-violet-50 hover:bg-violet-600 text-violet-700 hover:text-white text-[11px] font-black transition-all cursor-pointer shrink-0"
-                        >
-                          상세 진단서 &amp; 문제보기 ↗
-                        </button>
+                {/* 시험 종합 난이도 배지 */}
+                {archiveData && (
+                  <div className="bg-white/10 backdrop-blur-md border border-white/15 px-4 py-2.5 rounded-2xl flex items-center gap-3 shrink-0">
+                    <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-300/30 flex items-center justify-center text-xl">
+                      ⚡
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-bold text-slate-300">시험지 종합 난이도</div>
+                      <div className="text-base font-black text-amber-300">
+                        {archiveData.examRating} <span className="text-xs font-bold text-slate-200">(평균 {archiveData.avgScore}점)</span>
                       </div>
                     </div>
-                  );
-                })}
+                  </div>
+                )}
               </div>
+
+              {/* ★ [핵심 혁신 1] 1번 ~ 22번 문항 난이도 히트맵 레일 (OMR 스펙트럼) */}
+              {archiveData && (
+                <div className="pt-3 border-t border-white/10 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-1">
+                    <span className="font-bold text-slate-300 flex items-center gap-1.5">
+                      <span>🗺️</span>
+                      <span>전체 문항 난이도 히트맵 스펙트럼 (1 ~ {archiveData.totalQuestions}번 원클릭 이동)</span>
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-400">
+                      초록/파랑: 기본/표준 | 주황: 준킬러(75~84점) | <span className="text-rose-400 font-bold">빨강: 킬러(90점 이상)</span>
+                    </span>
+                  </div>
+
+                  {/* 22개 문항 히트맵 칩스 (가로 레일) */}
+                  <div className="grid grid-cols-11 sm:grid-cols-22 gap-1.5 pt-1">
+                    {archiveData.questions.map(q => {
+                      const isKiller = q.aiTier === 'KILLER';
+                      const isSemi = q.aiTier === 'SEMI_KILLER';
+
+                      return (
+                        <div
+                          key={q.fileDriveId}
+                          onClick={() => handleHeatmapClick(q)}
+                          className={`p-1.5 rounded-lg text-center cursor-pointer transition-all transform hover:scale-110 ${
+                            isKiller
+                              ? 'bg-rose-600/40 hover:bg-rose-600/70 border-2 border-rose-400 shadow-md shadow-rose-900/40 scale-105'
+                              : isSemi
+                              ? 'bg-amber-500/25 hover:bg-amber-500/50 border border-amber-400'
+                              : 'bg-emerald-500/20 hover:bg-emerald-500/40 border border-emerald-400/30'
+                          }`}
+                          title={`${q.qNum}번: ${q.coreConcepts[0] || ''} (${q.aiScore}점)`}
+                        >
+                          <div className={`text-[10px] font-black ${isKiller ? 'text-rose-100 flex items-center justify-center gap-0.5' : isSemi ? 'text-amber-300' : 'text-emerald-300'}`}>
+                            {isKiller && <span>🔥</span>}
+                            <span>{q.qNum}</span>
+                          </div>
+                          <div className={`text-[8px] font-semibold ${isKiller ? 'text-rose-200' : 'text-slate-300'}`}>
+                            {q.aiScore}점
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ★ [핵심 혁신 2] 수평 난이도 스펙트럼 비율 바 & 서머리 스트립 */}
+              {archiveData && (
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-bold text-slate-300">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-rose-500 inline-block shadow-xs"></span>
+                      <span>🔥 킬러: <strong className="text-white">{archiveData.killerCount}개 ({archiveData.killerRatio}%)</strong> [{archiveData.questions.filter(q => q.aiTier === 'KILLER').map(q => `${q.qNum}번`).join(', ')}]</span>
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-amber-500 inline-block shadow-xs"></span>
+                      <span>⚡ 준킬러: <strong className="text-white">{archiveData.semiKillerCount}개 ({archiveData.semiKillerRatio}%)</strong></span>
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block shadow-xs"></span>
+                      <span>🌱 기본·표준: <strong className="text-white">{archiveData.standardCount + archiveData.basicCount}개</strong></span>
+                    </span>
+                  </div>
+
+                  {/* 미니 프로그레스 바 */}
+                  <div className="w-full sm:w-64 h-2.5 rounded-full bg-white/10 overflow-hidden flex shadow-inner">
+                    <div className="bg-rose-500 h-full" style={{ width: `${archiveData.killerRatio}%` }} title={`킬러 ${archiveData.killerRatio}%`}></div>
+                    <div className="bg-amber-400 h-full" style={{ width: `${archiveData.semiKillerRatio}%` }} title={`준킬러 ${archiveData.semiKillerRatio}%`}></div>
+                    <div className="bg-emerald-400 h-full" style={{ width: `${100 - archiveData.killerRatio - archiveData.semiKillerRatio}%` }} title="기본/표준"></div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+
+          {/* 2. 필터 칩 & 뷰 전환 컨트롤 바 */}
+          {archiveData && (
+            <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              {/* 필터 칩 */}
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 overflow-x-auto pb-1 sm:pb-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                    activeFilter === 'ALL'
+                      ? 'bg-violet-600 text-white font-black shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  전체 ({archiveData.questions.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('KILLER')}
+                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                    activeFilter === 'KILLER'
+                      ? 'bg-rose-600 text-white font-black shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  🔥 킬러 문항 ({archiveData.killerCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('SEMI_KILLER')}
+                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                    activeFilter === 'SEMI_KILLER'
+                      ? 'bg-amber-500 text-white font-black shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  ⚡ 준킬러 문항 ({archiveData.semiKillerCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveFilter('STANDARD')}
+                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                    activeFilter === 'STANDARD'
+                      ? 'bg-emerald-600 text-white font-black shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  🌱 기본·표준 문항 ({archiveData.standardCount + archiveData.basicCount})
+                </button>
+              </div>
+
+              {/* 뷰 모드 토글 (스마트 일람표 vs 카드 뷰) */}
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl shrink-0 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('list')}
+                  className={`px-3 py-1 rounded-lg text-xs font-black transition-all flex items-center gap-1 cursor-pointer ${
+                    viewMode === 'list'
+                      ? 'bg-white text-violet-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <LayoutList size={13} />
+                  <span>스마트 일람표</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('card')}
+                  className={`px-3 py-1 rounded-lg text-xs font-black transition-all flex items-center gap-1 cursor-pointer ${
+                    viewMode === 'card'
+                      ? 'bg-white text-violet-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <LayoutGrid size={13} />
+                  <span>카드 뷰</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 3. 본체: 로딩 / 빈 상태 / 일람표 / 카드 뷰 */}
+          {loadingAnalysis ? (
+            <div className="py-24 bg-white border border-slate-200 rounded-3xl flex flex-col items-center justify-center text-slate-400 gap-2 shadow-2xs">
+              <Loader2 size={32} className="animate-spin text-violet-600" />
+              <span className="text-xs font-bold text-slate-700">분석 아카이브를 불러오는 중...</span>
+            </div>
+          ) : !archiveData ? (
+            <div className="py-20 px-6 bg-white border border-slate-200 rounded-3xl flex flex-col items-center justify-center text-center space-y-4 shadow-2xs">
+              <div className="w-14 h-14 rounded-3xl bg-violet-100 text-violet-600 flex items-center justify-center shadow-xs">
+                <BookOpen size={28} />
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-black text-slate-900">
+                  아직 등록된 AI 분석 리포트가 없습니다
+                </h3>
+                <p className="text-xs text-slate-500 font-medium max-w-md">
+                  선택하신 <strong>[{selectedFolder?.name || '폴더'}]</strong>는 아직 MCP 문항 정밀 분석이 수행되지 않은 상태입니다.
+                </p>
+              </div>
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-bold text-slate-700 max-w-lg shadow-2xs leading-relaxed">
+                💡 대화창에서 <strong>&ldquo;‘{selectedFolder?.name || '해당'}’ 폴더 문제 분석해줘&rdquo;</strong>라고 요청하시면,<br />
+                AI(마누라)가 구글 드라이브 문제 HTML을 직접 뜯어보고 분석하여 이곳에 자동으로 아카이빙합니다.
+              </div>
+            </div>
+          ) : viewMode === 'list' ? (
+            /* ★ [핵심 혁신 3] 시원시원한 [스마트 리포트 일람표 (Table View)] */
+            <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-2xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50/80 border-b border-slate-200 text-slate-500 font-extrabold uppercase text-[11px]">
+                      <th className="py-3.5 px-4 w-16 text-center">번호</th>
+                      <th className="py-3.5 px-4 w-32">AI 난이도 등급</th>
+                      <th className="py-3.5 px-4 w-28">추론 단계</th>
+                      <th className="py-3.5 px-4 w-60">출제 핵심 개념 (원문)</th>
+                      <th className="py-3.5 px-4">오답 유발 치명적 함정 (Trap Point)</th>
+                      <th className="py-3.5 px-4 w-28 text-center">정밀 진단</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                    {filteredQuestions.map(q => {
+                      const isKiller = q.aiTier === 'KILLER';
+                      const isSemi = q.aiTier === 'SEMI_KILLER';
+                      const isHighlighted = highlightedQNum === q.qNum;
+
+                      return (
+                        <tr
+                          key={q.fileDriveId}
+                          id={`q-row-${q.qNum}`}
+                          className={`transition-all ${
+                            isHighlighted
+                              ? 'bg-violet-100 ring-2 ring-violet-500'
+                              : isKiller
+                              ? 'bg-rose-50/30 hover:bg-rose-50/60'
+                              : isSemi
+                              ? 'bg-amber-50/20 hover:bg-amber-50/50'
+                              : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="py-3.5 px-4 text-center">
+                            <span className={`w-7 h-7 rounded-lg font-black text-xs inline-flex items-center justify-center ${
+                              isKiller
+                                ? 'bg-rose-600 text-white shadow-xs'
+                                : isSemi
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                : 'bg-slate-100 text-slate-800'
+                            }`}>
+                              {q.qNum}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2.5 py-1 rounded-full font-black text-[11px] inline-flex items-center gap-1 shadow-2xs ${
+                              isKiller
+                                ? 'bg-rose-100 text-rose-900 border border-rose-300'
+                                : isSemi
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}>
+                              <span>{isKiller ? '🔥 킬러' : isSemi ? '⚡ 준킬러' : '🌱 기본'}</span>
+                              <span className="text-slate-400">|</span>
+                              <span>{q.aiScore}점</span>
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                              q.stepsCount >= 4 ? 'bg-rose-100 text-rose-900 font-extrabold' : 'bg-slate-100 text-slate-700'
+                            }`}>
+                              {q.stepsCount}단계 {q.stepsCount >= 4 ? '(복합)' : '(표준)'}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-slate-900 truncate" title={q.coreConcepts[0]}>
+                              {q.coreConcepts[0] || '단원 종합'}
+                            </div>
+                            <div className="text-[11px] text-slate-400 font-medium truncate" title={q.coreConcepts.slice(1).join(', ')}>
+                              {q.coreConcepts.slice(1).join(', ') || q.fileName}
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <div className={`p-2 rounded-xl text-[11px] border leading-relaxed ${
+                              isKiller
+                                ? 'bg-rose-100/70 text-rose-950 border-rose-200 font-semibold'
+                                : isSemi
+                                ? 'bg-amber-100/60 text-amber-950 border-amber-200 font-semibold'
+                                : 'bg-slate-50 text-slate-600 border-slate-200/60'
+                            }`}>
+                              {q.trapPoint}
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-4 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setModalQuestion(q)}
+                              className={`px-3 py-1.5 rounded-xl font-black text-[11px] transition-all cursor-pointer shadow-2xs ${
+                                isKiller
+                                  ? 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm'
+                                  : 'bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white'
+                              }`}
+                            >
+                              문제보기 ↗
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 테이블 하단 푸터 바 */}
+              <div className="px-6 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500 font-bold">
+                <div>
+                  표시 중: 전체 {archiveData.totalQuestions}문항 중 {filteredQuestions.length}문항
+                </div>
+                <div className="flex items-center gap-2">
+                  <span>정렬: 문항 번호순 (1 ~ {archiveData.totalQuestions})</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* 카드 뷰 모드 (개선된 와이드 카드 그리드) */
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {filteredQuestions.map(q => {
+                const isKiller = q.aiTier === 'KILLER';
+                const isSemi = q.aiTier === 'SEMI_KILLER';
+
+                return (
+                  <div
+                    key={q.fileDriveId}
+                    id={`q-row-${q.qNum}`}
+                    className={`bg-white rounded-3xl p-5 shadow-2xs hover:shadow-md transition-all space-y-3.5 border-2 ${
+                      isKiller
+                        ? 'border-rose-300 bg-rose-50/15'
+                        : isSemi
+                        ? 'border-amber-200 bg-amber-50/15'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className={`w-8 h-8 rounded-xl font-black text-sm flex items-center justify-center shrink-0 ${
+                          isKiller
+                            ? 'bg-rose-600 text-white shadow-xs'
+                            : isSemi
+                            ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                            : 'bg-slate-100 text-slate-800'
+                        }`}>
+                          {q.qNum}
+                        </span>
+                        <div>
+                          <h4 className="text-xs font-black text-slate-900">{q.displayName}</h4>
+                          <p className="text-[11px] text-slate-500 font-bold truncate max-w-[240px]">
+                            {q.coreConcepts[0] || '단원 종합'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <span className={`px-2.5 py-1 rounded-full font-black text-[11px] inline-flex items-center gap-1 shrink-0 ${
+                        isKiller
+                          ? 'bg-rose-100 text-rose-900 border border-rose-300'
+                          : isSemi
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                          : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      }`}>
+                        <span>{isKiller ? '🔥 킬러' : isSemi ? '⚡ 준킬러' : '🌱 기본'}</span>
+                        <span className="text-slate-400">|</span>
+                        <span>{q.aiScore}점</span>
+                      </span>
+                    </div>
+
+                    {/* 단계 & 개념 */}
+                    <div className="flex items-center justify-between text-[11px] bg-slate-50 p-2.5 rounded-xl border border-slate-200/60 font-bold">
+                      <span className="text-slate-500">추론 논리 단계:</span>
+                      <span className="text-slate-800 font-extrabold">{q.stepsCount}단계 {q.stepsCount >= 4 ? '(다단계 복합 추론)' : '(표준 논리)'}</span>
+                    </div>
+
+                    {/* 함정 포인트 (말줄임 없이 풀텍스트) */}
+                    <div className={`p-3 rounded-xl text-xs border leading-relaxed ${
+                      isKiller
+                        ? 'bg-rose-100/70 text-rose-950 border-rose-200 font-semibold'
+                        : isSemi
+                        ? 'bg-amber-100/60 text-amber-950 border-amber-200 font-semibold'
+                        : 'bg-slate-50 text-slate-600 border-slate-200/60'
+                    }`}>
+                      ⚠️ <strong>함정 요인:</strong> {q.trapPoint}
+                    </div>
+
+                    {/* 푸터 버튼 */}
+                    <div className="flex items-center justify-between pt-1">
+                      <div className="text-[10px] text-slate-400 font-bold truncate max-w-[65%]">
+                        {q.coreConcepts.slice(0, 2).map((c, i) => (
+                          <span key={i}>#{c.slice(0, 10)} </span>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setModalQuestion(q)}
+                        className={`px-3 py-1.5 rounded-xl font-black text-[11px] transition-all cursor-pointer ${
+                          isKiller
+                            ? 'bg-rose-600 text-white hover:bg-rose-700 shadow-sm'
+                            : 'bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white'
+                        }`}
+                      >
+                        문제보기 ↗
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
