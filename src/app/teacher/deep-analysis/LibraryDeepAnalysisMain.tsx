@@ -20,11 +20,9 @@ import {
   Loader2,
   BookOpen,
   Layers,
-  Clock,
   Compass,
   FileText
 } from 'lucide-react';
-import { formatDurationKo } from '@/lib/homeStudyTypes';
 import { supabase } from '@/lib/supabase';
 import QuestionDeepReportModal, { QuestionReportItem } from './QuestionDeepReportModal';
 
@@ -67,7 +65,6 @@ const GRADES = ['고2', '고1', '고3', '중3', '중2', '중1', '전체'];
 
 export default function LibraryDeepAnalysisMain() {
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [loadingFolders, setLoadingFolders] = useState<boolean>(true);
   const [allFolders, setAllFolders] = useState<LibraryFolderItem[]>([]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
@@ -75,8 +72,8 @@ export default function LibraryDeepAnalysisMain() {
   // 선택된 대상 폴더
   const [selectedFolder, setSelectedFolder] = useState<LibraryFolderItem | null>(null);
 
-  // 분석 상태 및 데이터
-  const [analyzing, setAnalyzing] = useState<boolean>(false);
+  // 아카이브 조회 상태 및 데이터 (Web UI는 순수 뷰어 역할)
+  const [loadingAnalysis, setLoadingAnalysis] = useState<boolean>(false);
   const [archiveData, setArchiveData] = useState<FolderArchiveData | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('ALL');
 
@@ -158,14 +155,11 @@ export default function LibraryDeepAnalysisMain() {
     }
   }, [currentGradeFolders, selectedFolder]);
 
-  // 3. 선택된 폴더의 AI 정밀 분석 데이터 로드
-  const fetchAnalysis = async (folder: LibraryFolderItem, refresh: boolean = false) => {
-    setAnalyzing(true);
+  // 3. 선택된 폴더의 아카이빙된 분석 데이터 조회 (Web UI는 순수 조회만 수행)
+  const fetchAnalysis = async (folder: LibraryFolderItem) => {
+    setLoadingAnalysis(true);
     try {
-      const url = `/api/monitoring/library-deep-analysis?folderId=${folder.drive_id}&folderName=${encodeURIComponent(
-        folder.name
-      )}&grade=${encodeURIComponent(folder.grade || selectedGrade)}${refresh ? '&refresh=true' : ''}`;
-
+      const url = `/api/monitoring/library-deep-analysis?folderId=${folder.drive_id}`;
       const res = await fetch(url);
       const json = await res.json();
       if (json.success && json.archive) {
@@ -177,7 +171,7 @@ export default function LibraryDeepAnalysisMain() {
       console.error('Failed to fetch analysis:', err);
       setArchiveData(null);
     } finally {
-      setAnalyzing(false);
+      setLoadingAnalysis(false);
     }
   };
 
@@ -201,9 +195,8 @@ export default function LibraryDeepAnalysisMain() {
   const filteredQuestions = useMemo(() => {
     if (!archiveData?.questions) return [];
     if (activeFilter === 'KILLER') return archiveData.questions.filter(q => q.aiTier === 'KILLER');
-    if (activeFilter === 'TIME_TRAP') return archiveData.questions.filter(q => q.fusionType === 'TIME_TRAP');
-    if (activeFilter === 'TRUE_KILLER') return archiveData.questions.filter(q => q.fusionType === 'TRUE_KILLER');
-    if (activeFilter === 'STANDARD') return archiveData.questions.filter(q => q.aiTier === 'STANDARD');
+    if (activeFilter === 'SEMI_KILLER') return archiveData.questions.filter(q => q.aiTier === 'SEMI_KILLER');
+    if (activeFilter === 'STANDARD') return archiveData.questions.filter(q => q.aiTier === 'STANDARD' || q.aiTier === 'BASIC');
     return archiveData.questions;
   }, [archiveData, activeFilter]);
 
@@ -214,15 +207,13 @@ export default function LibraryDeepAnalysisMain() {
       return;
     }
 
-    const headers = ['문항번호', '파일명', 'AI난이도(점수)', '난이도등급', '융합진단판정', '실제체류시간(분)', '열람학생수', '핵심개념', '치명적함정', '수업코칭팁'];
+    const headers = ['문항번호', '파일명', 'AI난이도(점수)', '난이도등급', '풀이단계', '핵심개념', '오답함정', '수업코칭팁'];
     const rows = archiveData.questions.map(q => [
       q.qNum,
       q.fileName,
       q.aiScore,
       q.aiTier === 'KILLER' ? '최고난도킬러' : q.aiTier === 'SEMI_KILLER' ? '준킬러' : '표준',
-      q.fusionLabel,
-      Math.round(q.actualDurationSec / 60),
-      q.studentsCount,
+      `${q.stepsCount}단계`,
       q.coreConcepts.join(' / '),
       q.trapPoint.replace(/,/g, ' '),
       q.coachingTip.replace(/,/g, ' ')
@@ -233,7 +224,7 @@ export default function LibraryDeepAnalysisMain() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `Eduest_AI난이도진단_${archiveData.folderName}_${selectedGrade}.csv`);
+    link.setAttribute('download', `Eduest_문항난이도진단_${archiveData.folderName}_${selectedGrade}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -309,28 +300,23 @@ export default function LibraryDeepAnalysisMain() {
           <div className="flex items-center gap-2.5">
             <span className="text-xl sm:text-2xl font-black tracking-tight flex items-center gap-2">
               <Microscope size={24} className="text-violet-300" />
-              <span>라이브러리 문제 난이도 AI 정밀 분석 & 아카이빙 센터</span>
+              <span>라이브러리 및 모의평가 문제 AI 난이도 정밀 분석 센터</span>
             </span>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-500/30 text-violet-200 font-extrabold border border-violet-400/30">
-              MCP AI Engine
+              MCP Analysis Viewer
             </span>
           </div>
           <p className="text-xs font-medium text-slate-300 leading-relaxed">
-            "단순히 체류시간이 길다고 다 킬러일까요?" <strong>AI/MCP가 문제 HTML(수식, 개념, 함정, 풀이단계)을 열람하여 객관적 난이도를 판정</strong>하고,
-            <strong>실제 학생들의 체류시간 데이터와 결합</strong>하여 진짜 킬러 문항과 시간 정체 함정을 명쾌하게 아카이빙합니다.
+            대화창에서 AI(MCP)에게 문제 분석을 지시하면, AI가 구글 드라이브 HTML 문제(수식, 핵심개념, 함정, 풀이단계)를 심층 분석하여
+            이곳에 아카이빙합니다. 웹 화면은 아카이빙된 정밀 진단서를 언제든지 열람하고 인쇄할 수 있는 전용 뷰어입니다.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => selectedFolder && fetchAnalysis(selectedFolder, true)}
-            disabled={analyzing || !selectedFolder}
-            className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white text-xs font-black flex items-center gap-2 shadow-lg shadow-violet-900/40 transition-all cursor-pointer"
-          >
-            {analyzing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-            <span>{analyzing ? 'AI 정밀 진단 중...' : 'AI 난이도 재분석 실행 (MCP)'}</span>
-          </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-[11px] font-bold text-violet-200 bg-violet-900/60 border border-violet-700/50 px-3.5 py-2 rounded-2xl flex items-center gap-1.5">
+            <Sparkles size={14} className="text-violet-300" />
+            <span>AI MCP 연동 아카이브</span>
+          </div>
         </div>
       </div>
 
@@ -359,7 +345,10 @@ export default function LibraryDeepAnalysisMain() {
 
         <button
           type="button"
-          onClick={fetchFolders}
+          onClick={() => {
+            fetchFolders();
+            if (selectedFolder) fetchAnalysis(selectedFolder);
+          }}
           className="p-2 rounded-2xl bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-all cursor-pointer shadow-2xs"
           title="새로고침"
         >
@@ -401,7 +390,7 @@ export default function LibraryDeepAnalysisMain() {
           </div>
 
           <div className="p-3 bg-violet-50 border border-violet-200/80 rounded-2xl text-[11px] font-bold text-violet-900 leading-relaxed">
-            💡 <strong>원클릭 힌트:</strong> 분석하고 싶은 폴더를 클릭하시면 해당 폴더의 문제 HTML 파일들을 실시간 파싱하여 AI 난이도 진단서를 보여줍니다.
+            💡 <strong>안내:</strong> 폴더를 클릭하시면 해당 폴더의 아카이빙된 AI 문항 난이도 진단서를 즉시 열람하실 수 있습니다.
           </div>
         </div>
 
@@ -443,15 +432,29 @@ export default function LibraryDeepAnalysisMain() {
               </div>
             </div>
 
-            {/* KPI 4분할 카드 */}
-            {analyzing ? (
-              <div className="py-12 flex flex-col items-center justify-center text-slate-400 gap-2">
+            {/* 로딩 / 빈 상태 / KPI 4분할 카드 */}
+            {loadingAnalysis ? (
+              <div className="py-16 flex flex-col items-center justify-center text-slate-400 gap-2">
                 <Loader2 size={28} className="animate-spin text-violet-600" />
-                <span className="text-xs font-bold text-slate-700">구글 드라이브 문제 HTML 파싱 및 AI 난이도 평가 진행 중...</span>
+                <span className="text-xs font-bold text-slate-700">분석 아카이브를 불러오는 중...</span>
               </div>
             ) : !archiveData ? (
-              <div className="py-8 text-center text-xs font-bold text-slate-400">
-                아직 이 폴더에 대한 AI 정밀 분석 데이터가 없습니다. 상단의 <strong>[AI 난이도 재분석 실행]</strong> 버튼을 눌러주세요!
+              <div className="py-14 px-6 flex flex-col items-center justify-center text-center space-y-3 bg-slate-50/70 border border-slate-200/80 rounded-2xl">
+                <div className="w-12 h-12 rounded-2xl bg-violet-100 text-violet-600 flex items-center justify-center shadow-xs">
+                  <BookOpen size={24} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-sm font-black text-slate-800">
+                    아직 등록된 AI 분석 리포트가 없습니다
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium max-w-md">
+                    선택하신 <strong>[{selectedFolder?.name || '폴더'}]</strong>는 아직 MCP 문항 정밀 분석이 수행되지 않은 상태입니다.
+                  </p>
+                </div>
+                <div className="mt-2 p-3 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 max-w-lg shadow-2xs">
+                  💡 대화창에서 <strong>&ldquo;‘{selectedFolder?.name || '해당'}’ 폴더 문제 분석해줘&rdquo;</strong>라고 요청하시면,<br />
+                  AI가 구글 드라이브 문제 HTML을 정밀 분석하여 이곳에 결과가 자동으로 아카이빙됩니다.
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -512,7 +515,7 @@ export default function LibraryDeepAnalysisMain() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
                   <Layers size={15} className="text-violet-600" />
-                  <span>문항별 AI 평가 진단서 & 학생 체류시간 융합 매트릭스</span>
+                  <span>문항별 AI 난이도 &amp; 핵심 개념 분석 목록</span>
                 </span>
                 
                 {/* 필터 칩 */}
@@ -520,56 +523,56 @@ export default function LibraryDeepAnalysisMain() {
                   <button
                     type="button"
                     onClick={() => setActiveFilter('ALL')}
-                    className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'ALL' ? 'bg-violet-600 text-white font-extrabold' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                      activeFilter === 'ALL' ? 'bg-violet-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                     }`}
                   >
                     전체 ({archiveData.questions.length})
                   </button>
                   <button
                     type="button"
-                    onClick={() => setActiveFilter('TRUE_KILLER')}
-                    className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'TRUE_KILLER' ? 'bg-rose-600 text-white font-extrabold' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    💥 진짜 킬러
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveFilter('TIME_TRAP')}
-                    className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'TIME_TRAP' ? 'bg-amber-500 text-white font-extrabold' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    ⚠️ 시간 정체 함정
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setActiveFilter('KILLER')}
-                    className={`px-2 py-0.5 rounded-lg transition-all cursor-pointer ${
-                      activeFilter === 'KILLER' ? 'bg-violet-600 text-white font-extrabold' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                      activeFilter === 'KILLER' ? 'bg-rose-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                     }`}
                   >
-                    🔥 AI 킬러
+                    🔥 킬러 문항 ({archiveData.killerCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveFilter('SEMI_KILLER')}
+                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                      activeFilter === 'SEMI_KILLER' ? 'bg-amber-500 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    ⚡ 준킬러 문항 ({archiveData.semiKillerCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveFilter('STANDARD')}
+                    className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                      activeFilter === 'STANDARD' ? 'bg-indigo-600 text-white font-extrabold shadow-2xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    🌱 표준 문항 ({archiveData.standardCount})
                   </button>
                 </div>
               </div>
 
               {/* 카드 그리드 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[500px] overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 max-h-[540px] overflow-y-auto pr-1">
                 {filteredQuestions.map(question => {
-                  const isTimeTrap = question.fusionType === 'TIME_TRAP';
-                  const isTrueKiller = question.fusionType === 'TRUE_KILLER';
+                  const isKiller = question.aiTier === 'KILLER';
+                  const isSemiKiller = question.aiTier === 'SEMI_KILLER';
 
                   return (
                     <div
                       key={question.fileDriveId}
                       className={`bg-white rounded-2xl p-4 shadow-sm hover:shadow-md transition-all space-y-3 border-2 ${
-                        isTrueKiller
-                          ? 'border-rose-400 bg-rose-50/20'
-                          : isTimeTrap
-                          ? 'border-amber-300 bg-amber-50/20'
+                        isKiller
+                          ? 'border-rose-200 hover:border-rose-300'
+                          : isSemiKiller
+                          ? 'border-amber-200 hover:border-amber-300'
                           : 'border-slate-200/80 hover:border-slate-300'
                       }`}
                     >
@@ -577,7 +580,7 @@ export default function LibraryDeepAnalysisMain() {
                         <div>
                           <div className="flex items-center gap-2">
                             <span className={`w-6 h-6 rounded-lg font-black text-xs flex items-center justify-center shrink-0 ${
-                              isTrueKiller ? 'bg-rose-100 text-rose-900' : isTimeTrap ? 'bg-amber-100 text-amber-900' : 'bg-slate-100 text-slate-800'
+                              isKiller ? 'bg-rose-100 text-rose-900' : isSemiKiller ? 'bg-amber-100 text-amber-900' : 'bg-slate-100 text-slate-800'
                             }`}>
                               {question.qNum}
                             </span>
@@ -591,39 +594,26 @@ export default function LibraryDeepAnalysisMain() {
                         </div>
 
                         <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full shrink-0 ${
-                          isTrueKiller
+                          isKiller
                             ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                            : isTimeTrap
+                            : isSemiKiller
                             ? 'bg-amber-100 text-amber-800 border border-amber-300'
                             : 'bg-slate-100 text-slate-700'
                         }`}>
-                          {question.fusionLabel}
+                          {isKiller ? '🔥 킬러급' : isSemiKiller ? '⚡ 준킬러급' : '🌱 표준 기출'} ({question.aiScore}점)
                         </span>
                       </div>
 
-                      {/* AI vs 체류시간 비교 박스 */}
+                      {/* 난이도 & 풀이 단계 요약 박스 */}
                       <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5 text-[11px]">
                         <div className="flex items-center justify-between font-bold">
-                          <span className="text-slate-600">AI 판정 난이도:</span>
-                          <span className={`font-extrabold ${
-                            question.aiTier === 'KILLER' ? 'text-rose-600' : question.aiTier === 'SEMI_KILLER' ? 'text-amber-600' : 'text-slate-800'
-                          }`}>
-                            {question.aiTier === 'KILLER' ? '🔥 킬러' : question.aiTier === 'SEMI_KILLER' ? '⚡ 준킬러' : '🌱 표준'} ({question.aiScore}점 · {question.stepsCount}단계)
+                          <span className="text-slate-600">풀이 요구 단계:</span>
+                          <span className="font-extrabold text-slate-800">
+                            {question.stepsCount}단계 {question.stepsCount >= 4 ? '(다단계 복합 추론)' : '(표준 논리)'}
                           </span>
                         </div>
-                        <div className="flex items-center justify-between font-bold">
-                          <span className="text-slate-600">실제 학생 체류시간:</span>
-                          <span className="font-extrabold text-slate-900">
-                            {question.actualDurationSec > 0 ? (
-                              <span className="text-rose-600 font-black">{formatDurationKo(question.actualDurationSec)}</span>
-                            ) : (
-                              '미열람'
-                            )}
-                            {question.studentsCount > 0 && ` (${question.studentsCount}명)`}
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-slate-600 pt-1 border-t border-slate-200 leading-relaxed truncate">
-                          💡 <strong>진단:</strong> {question.fusionDesc}
+                        <div className="text-[10px] text-rose-700 pt-1 border-t border-slate-200 leading-relaxed truncate">
+                          ⚠️ <strong>함정 요인:</strong> {question.trapPoint}
                         </div>
                       </div>
 

@@ -8,16 +8,12 @@ import {
   Zap,
   CheckCircle2,
   AlertTriangle,
-  Lightbulb,
   Printer,
   Compass,
   Layers,
-  Clock,
   BookOpen,
-  HelpCircle,
   Sparkles
 } from 'lucide-react';
-import { formatDurationKo } from '@/lib/homeStudyTypes';
 
 export interface QuestionReportItem {
   fileDriveId: string;
@@ -30,13 +26,7 @@ export interface QuestionReportItem {
   coreConcepts: string[];
   trapPoint: string;
   coachingTip: string;
-  actualDurationSec: number;
-  studentsCount: number;
-  viewsCount: number;
-  solutionRatio: number;
-  fusionType: 'TRUE_KILLER' | 'TIME_TRAP' | 'FAST_SKIP' | 'STANDARD';
-  fusionLabel: string;
-  fusionDesc: string;
+  previewText?: string;
 }
 
 interface QuestionDeepReportModalProps {
@@ -58,8 +48,6 @@ export default function QuestionDeepReportModal({
 
   const isKiller = question.aiTier === 'KILLER';
   const isSemiKiller = question.aiTier === 'SEMI_KILLER';
-  const isTimeTrap = question.fusionType === 'TIME_TRAP';
-  const isTrueKiller = question.fusionType === 'TRUE_KILLER';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-200">
@@ -77,13 +65,13 @@ export default function QuestionDeepReportModal({
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-black tracking-tight">{question.displayName} AI 심층 난이도 진단 보고서</h3>
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
-                  isTrueKiller
+                  isKiller
                     ? 'bg-rose-500 text-white shadow-xs'
-                    : isTimeTrap
+                    : isSemiKiller
                     ? 'bg-amber-400 text-slate-950 shadow-xs'
                     : 'bg-violet-500/40 text-violet-200 border border-violet-400/30'
                 }`}>
-                  {question.fusionLabel}
+                  {isKiller ? '🔥 킬러급' : isSemiKiller ? '⚡ 준킬러급' : '🌱 표준 기출'} ({question.aiScore}점)
                 </span>
               </div>
               <p className="text-xs text-slate-300 font-medium mt-0.5">
@@ -116,7 +104,7 @@ export default function QuestionDeepReportModal({
               </div>
 
               {/* iframe 문제 뷰어 */}
-              <div className="flex-1 min-h-[380px] bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs relative">
+              <div className="flex-1 min-h-[400px] bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs relative">
                 <iframe
                   src={`/api/student/file-content?fileId=${question.fileDriveId}&raw=true`}
                   title={question.displayName}
@@ -133,57 +121,35 @@ export default function QuestionDeepReportModal({
           {/* 우측: AI 정밀 난이도 진단서 (7열) */}
           <div className="md:col-span-7 p-5 sm:p-6 overflow-y-auto space-y-4">
             
-            {/* 융합 진단 배너 */}
-            <div className={`p-4 rounded-2xl border-2 space-y-1.5 ${
-              isTrueKiller
-                ? 'bg-rose-50/70 border-rose-300 text-rose-950'
-                : isTimeTrap
-                ? 'bg-amber-50/80 border-amber-300 text-amber-950'
-                : 'bg-violet-50/70 border-violet-200 text-violet-950'
-            }`}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black flex items-center gap-1.5">
-                  {isTrueKiller ? <Flame size={15} className="text-rose-600" /> : <AlertTriangle size={15} className="text-amber-600" />}
-                  <span>AI 종합 진단 판정: {question.fusionLabel}</span>
-                </span>
-                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-white/80 border border-slate-200 shadow-2xs">
-                  {isTimeTrap ? '체류시간(77분) ≠ 진짜 킬러(X)' : '체류시간 × 난이도 일치'}
-                </span>
-              </div>
-              <p className="text-xs font-medium leading-relaxed">
-                {question.fusionDesc}
-              </p>
-            </div>
-
             {/* 난이도 게이지 & 3분할 스펙 */}
             <div className="grid grid-cols-3 gap-3">
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-1">
-                <div className="text-[10px] font-bold text-slate-400">AI 객관 난이도</div>
-                <div className={`text-lg font-black ${isKiller ? 'text-rose-600' : isSemiKiller ? 'text-amber-600' : 'text-violet-600'}`}>
+                <div className="text-[10px] font-bold text-slate-400">AI 정밀 평가 난이도</div>
+                <div className={`text-xl font-black ${isKiller ? 'text-rose-600' : isSemiKiller ? 'text-amber-600' : 'text-violet-600'}`}>
                   {question.aiScore}점 <span className="text-xs text-slate-400">/ 100</span>
                 </div>
                 <div className={`text-[10px] font-extrabold rounded py-0.5 ${
                   isKiller ? 'bg-rose-100 text-rose-800' : isSemiKiller ? 'bg-amber-100 text-amber-800' : 'bg-violet-100 text-violet-800'
                 }`}>
-                  {isKiller ? '🔥 킬러급' : isSemiKiller ? '⚡ 준킬러급' : '🌱 표준 기출'}
+                  {isKiller ? '🔥 킬러 등급' : isSemiKiller ? '⚡ 준킬러 등급' : '🌱 표준 기출'}
                 </div>
               </div>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-1">
                 <div className="text-[10px] font-bold text-slate-400">풀이 논리 단계</div>
-                <div className="text-lg font-black text-slate-800">{question.stepsCount}단계</div>
+                <div className="text-xl font-black text-slate-800">{question.stepsCount}단계</div>
                 <div className="text-[10px] font-bold text-slate-600 bg-slate-200 rounded py-0.5">
-                  {question.stepsCount >= 4 ? '다단계 복합 추론' : '표준 추론'}
+                  {question.stepsCount >= 4 ? '다단계 복합 추론' : '표준 논리 전개'}
                 </div>
               </div>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-1">
-                <div className="text-[10px] font-bold text-slate-400">실제 학생 체류시간</div>
-                <div className="text-lg font-black text-rose-600">
-                  {question.actualDurationSec > 0 ? formatDurationKo(question.actualDurationSec) : '미열람'}
+                <div className="text-[10px] font-bold text-slate-400">주요 출제 테마</div>
+                <div className="text-xs font-black text-violet-900 truncate mt-1">
+                  {question.coreConcepts[0] || '단원 종합'}
                 </div>
-                <div className="text-[10px] font-bold text-slate-500 bg-slate-100 rounded py-0.5">
-                  학생 {question.studentsCount}명 ({question.viewsCount}회)
+                <div className="text-[10px] font-bold text-violet-600 bg-violet-100 rounded py-0.5 mt-1">
+                  수학 핵심 역량
                 </div>
               </div>
             </div>
@@ -210,7 +176,7 @@ export default function QuestionDeepReportModal({
             <div className="border border-rose-200 bg-rose-50/40 rounded-2xl p-4 space-y-1.5">
               <h4 className="text-xs font-black text-rose-900 flex items-center gap-1.5">
                 <AlertTriangle size={14} className="text-rose-600" />
-                <span>학생들이 걸려든 치명적 함정 (Trap Point)</span>
+                <span>오답을 유발하는 치명적 함정 (Trap Point)</span>
               </h4>
               <p className="text-xs text-rose-950 leading-relaxed font-medium">
                 {question.trapPoint}

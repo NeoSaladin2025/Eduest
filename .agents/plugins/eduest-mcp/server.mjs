@@ -2113,7 +2113,7 @@ function evaluateProblemContent(html, fileName) {
 
 server.tool(
   'eduest_analyze_library_question_difficulty',
-  '모의평가 또는 라이브러리 특정 폴더(또는 단일 문항)의 문제 HTML을 열람/파싱하여 객관적 학업 난이도(킬러/준킬러/표준), 요구 개념, 풀이 단계, 함정 요인을 정밀 분석하고, 학생 실제 체류시간과 결합하여 "진짜 킬러" vs "시간 정체 함정"을 자동 진단 및 아카이빙함.',
+  '모의평가 또는 라이브러리 특정 폴더의 문제 HTML을 열람/파싱하여 순수 객관적 학업 난이도(킬러/준킬러/표준), 요구 핵심 개념, 풀이 단계, 오답 유발 함정 요인을 정밀 분석하고, 교사용 수업 코칭 팁을 생성하여 Supabase에 아카이빙함.',
   {
     folder_name: z.string().optional().describe('분석할 모의평가 또는 라이브러리 폴더 이름 (예: 4차, 2학기 기말)'),
     grade: z.string().optional().default('고2').describe('학년 (예: 고2, 고1, 중3)'),
@@ -2128,19 +2128,21 @@ server.tool(
         const { data } = await supabase.from('exam_library').select('*').eq('drive_id', folder_drive_id).maybeSingle();
         targetFolder = data;
       } else if (folder_name) {
-        const { data } = await supabase.from('exam_library').select('*').eq('type', 'folder').ilike('name', `%${folder_name}%`);
+        const { data } = await supabase.from('exam_library').select('*').eq('type', 'folder').ilike('name', %%);
         if (data && data.length > 0) {
-          targetFolder = data.find(f => !grade || f.grade?.includes(grade)) || data[0];
+          targetFolder = data.find(f => f.name === folder_name && (!grade || f.grade?.includes(grade)))
+            || data.find(f => !grade || f.grade?.includes(grade))
+            || data[0];
         }
       }
 
       if (!targetFolder && !file_drive_id) {
-        return { content: [{ type: 'text', text: `❌ 분석 대상 폴더를 찾을 수 없습니다. (폴더명: ${folder_name || '-'}, 학년: ${grade || '-'})` }] };
+        return { content: [{ type: 'text', text: ❌ 분석 대상 폴더를 찾을 수 없습니다. (폴더명: , 학년: ) }] };
       }
 
       const folderId = targetFolder ? targetFolder.drive_id : 'single_file';
       const fName = targetFolder ? targetFolder.name : '개별 문항';
-      const archiveKey = `library_analysis_archive_${folderId}`;
+      const archiveKey = library_analysis_archive_;
 
       // 1. 기존 아카이브 확인
       if (!force_refresh && targetFolder) {
@@ -2148,60 +2150,37 @@ server.tool(
         if (cached && cached.questions && cached.questions.length > 0) {
           const qLines = cached.questions.slice(0, 10).map((q, idx) => {
             const badge = q.aiTier === 'KILLER' ? '🔥 킬러' : q.aiTier === 'SEMI_KILLER' ? '⚡ 준킬러' : '🌱 표준';
-            const dur = q.actualDurationSec > 0 ? formatDurationKo(q.actualDurationSec) : '미열람';
-            return `${idx + 1}. [${q.displayName}] ${badge} (${q.aiScore}점) | 체류: ${dur} [${q.fusionLabel}]\n   • 핵심개념: ${q.coreConcepts.join(', ')}\n   • 함정요인: ${q.trapPoint}`;
+            return ${idx + 1}. []  (점 · 단계)\n   • 핵심개념: \n   • 오답함정: ;
           }).join('\n\n');
 
-          const report = `
-🔬 [${fName}] 문제 난이도 AI 정밀 분석 보고서 (아카이브 로드)
+          const report = 
+🔬 [] 문제 난이도 AI 정밀 분석 보고서 (기존 아카이브 로드)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 종합 평가:
-- 총 문항 수: ${cached.totalQuestions}문항
-- 킬러 문항: ${cached.killerCount}개 (${cached.killerRatio}%) | 준킬러 문항: ${cached.semiKillerCount}개 (${cached.semiKillerRatio}%)
-- 시험 종합 난이도: ${cached.examRating} (평균 ${cached.avgScore}점)
+- 총 문항 수: 문항
+- 킬러 문항: 개 (%) | 준킬러 문항: 개 (%)
+- 시험 종합 난이도:  (평균 점)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 문항별 AI 난이도 & 체류시간 융합 진단:
-${qLines}
+📋 주요 문항별 AI 난이도 & 핵심 개념 진단:
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 요약: 체류시간이 길어도 AI 난이도가 준킬러인 경우(예: 12번 문항), 킬러가 아니라 무식한 계산 지옥에 빠진 '시간 정체 함정형'으로 분류됩니다.
-          `.trim();
+💡 안내: 이미 분석 완료되어 Supabase에 아카이빙된 리포트입니다. 웹의 [라이브러리 정밀 분석] 화면에서 전체 문항을 확인하실 수 있습니다.
+          .trim();
           return { content: [{ type: 'text', text: report }] };
         }
       }
 
-      // 2. 신규 분석
+      // 2. 신규 분석 (구글 드라이브 문제 HTML 파싱)
       const { data: files } = await supabase.from('exam_library').select('*').eq('parent_id', folderId).eq('type', 'file');
       const htmlFiles = (files || []).filter(f => f.name.endsWith('.html'));
       if (htmlFiles.length === 0) {
-        return { content: [{ type: 'text', text: `ℹ️ [${fName}] 폴더 내에 분석 가능한 HTML 문제 파일이 없습니다.` }] };
+        return { content: [{ type: 'text', text: ℹ️ [] 폴더 내에 분석 가능한 HTML 문제 파일이 없습니다. }] };
       }
 
       htmlFiles.sort((a, b) => {
         const na = parseInt((a.name.match(/\d+/) || [0])[0], 10);
         const nb = parseInt((b.name.match(/\d+/) || [0])[0], 10);
         return na - nb;
-      });
-
-      const sessionsData = await getLibraryRecord('home_study_sessions', { records: {} });
-      const dwellMap = {};
-      Object.values(sessionsData.records || {}).forEach(r => {
-        const stName = r.student_name;
-        (r.sessions || []).forEach(s => {
-          (s.activities || []).forEach(a => {
-            if (a.mode !== 'library' || (a.duration_sec || 0) <= 0) return;
-            const dur = a.duration_sec || 0;
-            const title = a.title || '';
-            htmlFiles.forEach(f => {
-              const cleanBase = f.name.replace(/\.html?$/i, '');
-              if (title.includes(cleanBase) || title.includes(`[${cleanBase}]`)) {
-                if (!dwellMap[cleanBase]) dwellMap[cleanBase] = { durationSec: 0, students: new Set(), views: 0 };
-                dwellMap[cleanBase].durationSec += dur;
-                dwellMap[cleanBase].students.add(stName);
-                dwellMap[cleanBase].views += 1;
-              }
-            });
-          });
-        });
       });
 
       const drive = getGoogleDrive();
@@ -2215,44 +2194,26 @@ ${qLines}
         } catch {}
 
         const analysis = evaluateProblemContent(html, file.name);
-        const cleanBase = file.name.replace(/\.html?$/i, '');
-        const dwell = dwellMap[cleanBase] || { durationSec: 0, students: new Set(), views: 0 };
-
-        let fusionLabel = '✅ 표준 정답 문항';
-        let fusionDesc = '난이도와 소요 시간이 적절하게 일치함.';
-        if (analysis.score >= 85 && dwell.durationSec >= 1200) {
-          fusionLabel = '💥 진짜 킬러 문항 (True Killer)';
-          fusionDesc = '복합 추론 킬러 문항으로 정답 도출에 심혈을 기울임. 수업 판서 해설 필수!';
-        } else if (analysis.score < 85 && dwell.durationSec >= 1800) {
-          fusionLabel = '⚠️ 시간 정체 함정형 (Time Trap)';
-          fusionDesc = '체류시간이 비정상적으로 김! 무식한 계산 지옥이나 대칭성 성질을 간과했을 가능성 높음.';
-        } else if (analysis.score >= 85 && dwell.views > 0 && dwell.durationSec < 180) {
-          fusionLabel = '⚡ 즉시 포기/찍기 의심 (Fast Skip)';
-          fusionDesc = '킬러 문항임에도 체류시간 3분 미만으로 즉시 포기/찍기 의심됨.';
-        }
 
         questionReports.push({
           fileDriveId: file.drive_id,
           fileName: file.name,
           qNum: analysis.qNum,
-          displayName: `${analysis.qNum}번 문항 (${file.name})`,
+          displayName: ${analysis.qNum}번 문항 (),
           aiScore: analysis.score,
           aiTier: analysis.tier,
           stepsCount: analysis.stepsCount,
           coreConcepts: analysis.coreConcepts,
           trapPoint: analysis.trapPoint,
-          coachingTip: analysis.coachingTip,
-          actualDurationSec: dwell.durationSec,
-          studentsCount: dwell.students.size,
-          viewsCount: dwell.views,
-          fusionLabel,
-          fusionDesc
+          coachingTip: analysis.coachingTip
         });
       }
 
       const totalCount = questionReports.length;
       const killerCount = questionReports.filter(q => q.aiTier === 'KILLER').length;
       const semiKillerCount = questionReports.filter(q => q.aiTier === 'SEMI_KILLER').length;
+      const standardCount = questionReports.filter(q => q.aiTier === 'STANDARD').length;
+      const basicCount = totalCount - killerCount - semiKillerCount - standardCount;
       const avgScore = totalCount > 0 ? Math.round(questionReports.reduce((acc, q) => acc + q.aiScore, 0) / totalCount) : 0;
       let examRating = avgScore >= 75 ? '불모의고사 🔥' : avgScore >= 65 ? '상급 모의고사 ⚡' : '적정 난이도 ⚖️';
 
@@ -2263,6 +2224,8 @@ ${qLines}
         totalQuestions: totalCount,
         killerCount,
         semiKillerCount,
+        standardCount,
+        basicCount,
         killerRatio: Math.round((killerCount / (totalCount || 1)) * 100),
         semiKillerRatio: Math.round((semiKillerCount / (totalCount || 1)) * 100),
         avgScore,
@@ -2272,32 +2235,31 @@ ${qLines}
       };
 
       if (targetFolder) {
-        await saveLibraryRecord(archiveKey, `${fName}_difficulty_analysis.json`, payload);
+        await saveLibraryRecord(archiveKey, ${fName}_difficulty_analysis.json, payload);
       }
 
       const qLines = questionReports.slice(0, 10).map((q, idx) => {
         const badge = q.aiTier === 'KILLER' ? '🔥 킬러' : q.aiTier === 'SEMI_KILLER' ? '⚡ 준킬러' : '🌱 표준';
-        const dur = q.actualDurationSec > 0 ? formatDurationKo(q.actualDurationSec) : '미열람';
-        return `${idx + 1}. [${q.displayName}] ${badge} (${q.aiScore}점) | 체류: ${dur} [${q.fusionLabel}]\n   • 핵심개념: ${q.coreConcepts.join(', ')}\n   • 함정요인: ${q.trapPoint}`;
+        return ${idx + 1}. []  (점 · 단계)\n   • 핵심개념: \n   • 오답함정: ;
       }).join('\n\n');
 
-      const report = `
-🔬 [${fName}] 문제 난이도 AI 정밀 분석 보고서 (신규 생성 & 아카이빙 완료)
+      const report = 
+🔬 [] 문제 난이도 AI 정밀 분석 보고서 (신규 생성 & Supabase 아카이빙 완료)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 종합 평가:
-- 총 문항 수: ${payload.totalQuestions}문항
-- 킬러 문항: ${payload.killerCount}개 (${payload.killerRatio}%) | 준킬러 문항: ${payload.semiKillerCount}개 (${payload.semiKillerRatio}%)
-- 시험 종합 난이도: ${payload.examRating} (평균 ${payload.avgScore}점)
+- 총 문항 수: 문항
+- 킬러 문항: 개 (%) | 준킬러: 개 (%) | 표준: 개
+- 시험 종합 난이도:  (평균 점)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 문항별 AI 난이도 & 체류시간 융합 진단:
-${qLines}
+📋 주요 문항별 AI 난이도 & 핵심 개념 진단:
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 요약: 문제 HTML 파싱 완료! 결과가 Supabase에 아카이빙되어 대시보드와 즉시 동기화됩니다.
-      `.trim();
+💡 안내: 구글 드라이브 문제 HTML 정밀 분석 완료! 결과가 Supabase에 아카이빙되어 웹의 [라이브러리 정밀 분석] 대시보드에서 즉시 열람하실 수 있습니다.
+      .trim();
 
       return { content: [{ type: 'text', text: report }] };
     } catch (err) {
-      return { content: [{ type: 'text', text: `❌ AI 난이도 정밀 분석 실패: ${err.message}` }] };
+      return { content: [{ type: 'text', text: ❌ AI 난이도 정밀 분석 실패:  }] };
     }
   }
 );
