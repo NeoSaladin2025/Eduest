@@ -38,6 +38,7 @@ import {
   Unlock,
   Camera,
   Printer,
+  Download,
   Bell,
   Star,
   BarChart3,
@@ -56,6 +57,7 @@ import RealtimeProctorTab from './RealtimeProctorTab';
 import DescriptiveGradingModal from './DescriptiveGradingModal';
 import QuestionDiffModal from './QuestionDiffModal';
 import ExamPrintModal from './ExamPrintModal';
+import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
 import LiveExamMonitoringModal from './LiveExamMonitoringModal';
 import TeacherBatchGradingModal from './TeacherBatchGradingModal';
 import FilterChipBadge from './FilterChipBadge';
@@ -383,6 +385,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
   // 🖨️ 시험지 인쇄 모달 상태
   const [printModalExam, setPrintModalExam] = useState<ExamPaper | null>(null);
+  const [downloadingPdfExamId, setDownloadingPdfExamId] = useState<string | null>(null);
+  const [pdfDownloadProgress, setPdfDownloadProgress] = useState<string>('');
+
+  const handleDownloadExamPdf = async (exam: ExamPaper) => {
+    if (downloadingPdfExamId) return;
+    try {
+      setDownloadingPdfExamId(exam.id);
+      setPdfDownloadProgress('준비 중...');
+      await downloadExamAsPdf(exam, {
+        academyName: 'Eduest 수학학원',
+        onProgress: (status) => setPdfDownloadProgress(status),
+      });
+    } catch (err) {
+      console.error('PDF 다운로드 실패:', err);
+      alert('PDF 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setDownloadingPdfExamId(null);
+      setPdfDownloadProgress('');
+    }
+  };
 
   // 1. 초기 데이터 로드 (시험지 목록, 학생 목록)
   const loadInitialData = async () => {
@@ -3475,6 +3497,25 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           <Printer size={14} />
                           출력
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadExamPdf(exam)}
+                          disabled={downloadingPdfExamId === exam.id}
+                          className="px-3 py-2 bg-blue-50 hover:bg-blue-100 disabled:bg-blue-50/50 text-blue-700 disabled:text-blue-400 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border border-blue-200/80 shadow-2xs group"
+                          title="이 시험지를 A4 규격 PDF 파일로 즉시 다운로드"
+                        >
+                          {downloadingPdfExamId === exam.id ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin text-blue-600" />
+                              <span>{pdfDownloadProgress || '생성 중...'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
+                              <span>PDF 저장</span>
+                            </>
+                          )}
+                        </button>
                       </div>
 
                       <button
@@ -5493,6 +5534,25 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 >
                   <Printer size={14} />
                   <span>시험지 인쇄</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resultsModalExam && handleDownloadExamPdf(resultsModalExam)}
+                  disabled={downloadingPdfExamId === resultsModalExam?.id}
+                  className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 disabled:bg-blue-50/50 text-blue-700 disabled:text-blue-400 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border border-blue-200 cursor-pointer"
+                  title="이 시험지를 A4 규격 PDF로 즉시 다운로드"
+                >
+                  {downloadingPdfExamId === resultsModalExam?.id ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin text-blue-600" />
+                      <span>{pdfDownloadProgress || '생성 중...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={14} />
+                      <span>PDF 저장</span>
+                    </>
+                  )}
                 </button>
                 <button
                   onClick={() => setResultsModalExam(null)}

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Printer,
+  Download,
   X,
   ZoomIn,
   ZoomOut,
@@ -1148,6 +1149,50 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     });
   };
 
+  // 📥 현재 설정 그대로 PDF 파일 직접 다운로드
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
+  const handleDownloadPdfFromModal = async () => {
+    if (!exam || isDownloadingPdf) return;
+    const printArea = document.getElementById('eduest-print-area');
+    if (!printArea) {
+      alert('인쇄 영역을 찾을 수 없습니다.');
+      return;
+    }
+    try {
+      setIsDownloadingPdf(true);
+      const html2pdfModule = await import('html2pdf.js');
+      const html2pdf = html2pdfModule.default || (html2pdfModule as any);
+      const safeTitle = (exam.title || '시험지').replace(/[\/:*?"<>|]/g, '_').trim();
+      const opt = {
+        margin: 0,
+        filename: `${safeTitle}_시험지.pdf`,
+        image: { type: 'jpeg' as const, quality: 0.98 },
+        html2canvas: {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          scrollY: 0,
+          scrollX: 0,
+          windowWidth: 794,
+        },
+        jsPDF: {
+          unit: 'mm',
+          format: 'a4',
+          orientation: 'portrait' as const,
+        },
+        pagebreak: {
+          mode: ['css', 'legacy'],
+        },
+      };
+      await html2pdf().set(opt).from(printArea).save();
+    } catch (e) {
+      console.error('PDF download error:', e);
+      alert('PDF 생성 중 오류가 발생했습니다.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   // 모든 문항 이미지 사전 로딩 후 독립 iframe을 통해 브라우저 인쇄창 호출 (A4 1:1 완벽 분할)
   // 다중 학생 선택 시: 복합기 스테이플러가 각 학생마다 따로 찍히도록 학생별 개별 Print Job으로 분리 순차 전송
   const handleTriggerPrint = async () => {
@@ -1573,6 +1618,27 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 ) : (
                   <span>인쇄하기 (PDF 저장)</span>
                 )}
+              </>
+            )}
+          </button>
+
+          {/* PDF 파일 바로 다운로드 버튼 */}
+          <button
+            type="button"
+            onClick={handleDownloadPdfFromModal}
+            disabled={isDownloadingPdf || isPreparingPrint}
+            className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-black text-xs shadow-md shadow-blue-600/30 flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+            title="현재 화면에 보이는 설정 그대로 PDF 파일 다운로드"
+          >
+            {isDownloadingPdf ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                <span>PDF 생성 중...</span>
+              </>
+            ) : (
+              <>
+                <Download size={16} />
+                <span>PDF 다운로드</span>
               </>
             )}
           </button>
