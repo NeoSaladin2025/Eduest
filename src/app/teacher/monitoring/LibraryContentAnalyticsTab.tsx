@@ -34,6 +34,9 @@ interface LibraryFolderItem {
   grade: string;
   parent_id?: string | null;
   type?: string;
+  isParent?: boolean;
+  subFolderCount?: number;
+  parentPath?: string;
 }
 
 interface FolderTreeNode {
@@ -65,6 +68,9 @@ interface AnalyzedFolderData {
   files: FileStatItem[];
   maxFileDuration: number;
   killerQuestion?: FileStatItem;
+  isParent?: boolean;
+  subFolderCount?: number;
+  parentPath?: string;
 }
 
 const GRADES = ['전체', '고2', '고1', '고3', '중3', '중2', '중1'];
@@ -120,7 +126,53 @@ export default function LibraryContentAnalyticsTab() {
     fetchData();
   }, [selectedDays]);
 
-  // 2. 현재 선택된 학년의 폴더 목록
+  // 2. 전체 폴더에 대한 맵 (ID -> 폴더, 부모 -> 자식들, 자손 탐색, 부모 경로 생성)
+  const folderMaps = useMemo(() => {
+    const byId = new Map<string, LibraryFolderItem>();
+    const childrenMap = new Map<string, LibraryFolderItem[]>();
+
+    allFolders.forEach(f => {
+      byId.set(f.drive_id, f);
+      if (f.parent_id) {
+        if (!childrenMap.has(f.parent_id)) childrenMap.set(f.parent_id, []);
+        childrenMap.get(f.parent_id)!.push(f);
+      }
+    });
+
+    // 특정 폴더의 모든 하위 자손 폴더 리스트 재귀 반환
+    const getDescendants = (parentId: string): LibraryFolderItem[] => {
+      const result: LibraryFolderItem[] = [];
+      const queue = [parentId];
+      const visited = new Set<string>([parentId]);
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        const kids = childrenMap.get(cur) || [];
+        for (const k of kids) {
+          if (!visited.has(k.drive_id)) {
+            visited.add(k.drive_id);
+            result.push(k);
+            queue.push(k.drive_id);
+          }
+        }
+      }
+      return result;
+    };
+
+    // 특정 폴더의 부모 경로 문자열 반환 (예: "2학기 기말 > 미적분1 모의평가")
+    const getParentPath = (folder: { parent_id?: string | null }): string => {
+      const parts: string[] = [];
+      let cur = folder.parent_id ? byId.get(folder.parent_id) : null;
+      while (cur) {
+        parts.unshift(cur.name);
+        cur = cur.parent_id ? byId.get(cur.parent_id) : null;
+      }
+      return parts.join(' > ');
+    };
+
+    return { byId, childrenMap, getDescendants, getParentPath };
+  }, [allFolders]);
+
+  // 3. 현재 선택된 학년의 폴더 목록
   const currentGradeFolders = useMemo(() => {
     if (selectedGrade === '전체' || selectedGrade === 'ALL') {
       return allFolders;
@@ -128,7 +180,7 @@ export default function LibraryContentAnalyticsTab() {
     return allFolders.filter(f => f.grade && f.grade.startsWith(selectedGrade));
   }, [allFolders, selectedGrade]);
 
-  // 3. 계층형 트리 구성 (상위 ➔ 하위 ➔ 최하위 단원)
+  // 4. 계층형 트리 구성 (상위 ➔ 하위 ➔ 최하위 단원)
   const folderTree = useMemo(() => {
     const map = new Map<string, FolderTreeNode>();
     currentGradeFolders.forEach(f => {
@@ -162,22 +214,30 @@ export default function LibraryContentAnalyticsTab() {
     return roots;
   }, [currentGradeFolders, selectedGrade]);
 
-  // 학년 변경 시 장바구니 기본값 세팅 (해당 학년의 대표 폴더 2~3개 자동 추천)
+  // 학년 변경 시 장바구니 기본값 세팅 (대표 폴더 및 그 하위폴더 자동 추천 담기)
   useEffect(() => {
     if (currentGradeFolders.length > 0 && selectedFoldersCart.length === 0) {
-      // 4차, 5차 등 기출/단원 폴더 우선 추천
-      const sample = currentGradeFolders.filter(f => 
-        f.name.includes('차') || f.name.includes('기출') || f.name.includes('모의')
+      // '2학기 기말' 또는 기출/모의고사 대표 상위폴더 우선 추천
+      const sampleParent = currentGradeFolders.find(f => 
+        f.name === '2학기 기말' || f.name.includes('기말') || f.name.includes('모의')
       );
-      if (sample.length > 0) {
-        setSelectedFoldersCart(sample.slice(0, 3));
+      if (sampleParent) {
+        const descendants = folderMaps.getDescendants(sampleParent.drive_id);
+        setSelectedFoldersCart([sampleParent, ...descendants]);
       } else {
-        setSelectedFoldersCart(currentGradeFolders.slice(0, 2));
+        const top2 = currentGradeFolders.slice(0, 2);
+        const autoCart: LibraryFolderItem[] = [];
+        top2.forEach(p => {
+          autoCart.push(p);
+          const desc = folderMaps.getDescendants(p.drive_id);
+          autoCart.push(...desc);
+        });
+        setSelectedFoldersCart(autoCart);
       }
     }
-  }, [currentGradeFolders]);
+  }, [currentGradeFolders, folderMaps]);
 
-  // 트리 폴더 토글 핸들러
+  // 트리 폴더 접기/펼치기 토글
   const toggleFolderExpand = (folderId: string) => {
     setExpandedFolderIds(prev => {
       const next = new Set(prev);
@@ -187,22 +247,65 @@ export default function LibraryContentAnalyticsTab() {
     });
   };
 
-  // 장바구니 담기 / 빼기 토글
-  const toggleCartFolder = (folder: LibraryFolderItem) => {
+  // ★ 핵심: 상위폴더를 넣으면 하위폴더도 자동으로 쏙! 들어가고, 해제 시 함께 빠지는 토글 핸들러
+  const handleToggleFolderWithDescendants = (node: FolderTreeNode) => {
+    const descendants = folderMaps.getDescendants(node.drive_id);
+    const selfItem: LibraryFolderItem = {
+      drive_id: node.drive_id,
+      name: node.name,
+      grade: node.grade,
+      parent_id: node.parent_id,
+      type: 'folder',
+      isParent: descendants.length > 0,
+      subFolderCount: descendants.length,
+      parentPath: folderMaps.getParentPath(node)
+    };
+
+    const allToHandle: LibraryFolderItem[] = [
+      selfItem,
+      ...descendants.map(d => ({
+        drive_id: d.drive_id,
+        name: d.name,
+        grade: d.grade,
+        parent_id: d.parent_id,
+        type: 'folder',
+        isParent: folderMaps.childrenMap.has(d.drive_id),
+        subFolderCount: folderMaps.getDescendants(d.drive_id).length,
+        parentPath: folderMaps.getParentPath(d)
+      }))
+    ];
+
+    const allIds = new Set(allToHandle.map(item => item.drive_id));
+
     setSelectedFoldersCart(prev => {
-      const exists = prev.some(item => item.drive_id === folder.drive_id);
-      if (exists) {
-        return prev.filter(item => item.drive_id !== folder.drive_id);
+      const isAlreadyInCart = prev.some(item => item.drive_id === node.drive_id);
+      if (isAlreadyInCart) {
+        // 상위폴더 해제 -> 상위폴더 및 그 하위 폴더들 일괄 쏙 빼기!
+        return prev.filter(item => !allIds.has(item.drive_id));
       } else {
-        return [...prev, folder];
+        // 상위폴더 담기 -> 상위폴더 및 그 하위 폴더들 일괄 쏙 담기!
+        const existingIds = new Set(prev.map(item => item.drive_id));
+        const newItems = allToHandle.filter(item => !existingIds.has(item.drive_id));
+        return [...prev, ...newItems];
       }
     });
+
+    // 하위폴더가 있다면 트리를 자동으로 활짝 펼쳐서 하위폴더가 담긴 것을 시각적으로 확인
+    if (descendants.length > 0) {
+      setExpandedFolderIds(prev => {
+        const next = new Set(prev);
+        next.add(node.drive_id);
+        descendants.forEach(d => {
+          if (folderMaps.childrenMap.has(d.drive_id)) next.add(d.drive_id);
+        });
+        return next;
+      });
+    }
   };
 
   // "다 때려넣기" 핸들러 (해당 학년 전체 폴더 일괄 담기)
   const handleAddAllFolders = () => {
     if (currentGradeFolders.length === 0) return;
-    // 중복 제거하며 병합
     const existingIds = new Set(selectedFoldersCart.map(f => f.drive_id));
     const toAdd = currentGradeFolders.filter(f => !existingIds.has(f.drive_id));
     setSelectedFoldersCart(prev => [...prev, ...toAdd]);
@@ -214,120 +317,104 @@ export default function LibraryContentAnalyticsTab() {
     setFocusedFolderKey(null);
   };
 
-  // 장바구니 개별 삭제
+  // 장바구니 개별 삭제 (상위폴더 삭제 시 그 하위폴더들도 함께 정리)
   const handleRemoveFromCart = (driveId: string) => {
-    setSelectedFoldersCart(prev => prev.filter(f => f.drive_id !== driveId));
-    if (focusedFolderKey === driveId) {
+    const descendants = folderMaps.getDescendants(driveId);
+    const toRemoveIds = new Set([driveId, ...descendants.map(d => d.drive_id)]);
+
+    setSelectedFoldersCart(prev => prev.filter(f => !toRemoveIds.has(f.drive_id)));
+    if (focusedFolderKey && toRemoveIds.has(focusedFolderKey)) {
       setFocusedFolderKey(null);
     }
   };
 
-  // 4. 세션 로그 파싱 및 선택된 장바구니 폴더별/파일별 체류시간 집계
+  // 5. 세션 로그 파싱 및 선택된 장바구니 폴더별/파일별 체류시간 집계 (상위폴더 포함 주욱 분석)
   const analyzedResults = useMemo(() => {
     if (selectedFoldersCart.length === 0) return [];
 
-    // 폴더별 매핑 딕셔너리
-    const folderDataMap: Record<string, {
-      folderItem: LibraryFolderItem;
-      durationSec: number;
-      students: Set<string>;
-      sessions: number;
-      fileMap: Record<string, {
+    const resultList: AnalyzedFolderData[] = selectedFoldersCart.map(folder => {
+      // 이 폴더가 매칭해야 할 대상 폴더명들: 폴더 본인 이름 + 하위 모든 자손 폴더 이름들
+      const descendants = folderMaps.getDescendants(folder.drive_id);
+      const isParent = descendants.length > 0;
+      const targetNames = [folder.name, ...descendants.map(d => d.name)];
+
+      let totalDurationSec = 0;
+      const uniqueStudents = new Set<string>();
+      let totalSessions = 0;
+      const fileMap: Record<string, {
         durationSec: number;
         students: Set<string>;
         views: number;
         solutionViews: number;
-      }>;
-    }> = {};
+      }> = {};
 
-    selectedFoldersCart.forEach(folder => {
-      folderDataMap[folder.name] = {
-        folderItem: folder,
-        durationSec: 0,
-        students: new Set<string>(),
-        sessions: 0,
-        fileMap: {},
-      };
-    });
+      rawSessions.forEach(r => {
+        const stName = r.student_name;
+        (r.sessions || []).forEach(ses => {
+          (ses.activities || []).forEach(act => {
+            if (act.mode !== 'library' || (act.duration_sec || 0) <= 0) return;
+            const dur = act.duration_sec || 0;
+            const title = act.title || '';
+            const sub = act.sub_detail || '';
 
-    // 세션 로그 파싱
-    rawSessions.forEach(r => {
-      const stName = r.student_name;
-      (r.sessions || []).forEach(ses => {
-        (ses.activities || []).forEach(act => {
-          if (act.mode !== 'library' || act.duration_sec <= 0) return;
+            const clean = title.replace(/^라이브러리\s*>\s*/i, '').trim();
+            if (!clean || clean === '홈 화면') return;
 
-          const dur = act.duration_sec;
-          const title = act.title || '';
-          const sub = act.sub_detail || '';
+            let targetFolder = '';
+            let targetDoc = '';
 
-          // 정규식 파싱: "라이브러리 > [4차] > 0001" 또는 "라이브러리 > 2학기 기말 > 0012"
-          const clean = title.replace(/^라이브러리\s*>\s*/i, '').trim();
-          if (!clean || clean === '홈 화면') return;
+            const bracketMatch = clean.match(/\[(.*?)\](?:\s*>\s*(.*?))?$/);
+            if (bracketMatch) {
+              targetFolder = bracketMatch[1].trim();
+              if (bracketMatch[2]) targetDoc = bracketMatch[2].trim();
+            } else if (clean.includes('>')) {
+              const parts = clean.split('>').map(p => p.trim());
+              targetFolder = parts[parts.length - 2] || parts[0];
+              targetDoc = parts[parts.length - 1];
+            } else {
+              targetFolder = clean;
+            }
 
-          let targetFolder = '';
-          let targetDoc = '';
+            // 매칭 검사:
+            // 1. targetFolder가 targetNames에 포함되거나
+            // 2. clean 전체 경로에 targetNames 중 하나가 포함된 경우
+            const isMatch = targetNames.some(tn => 
+              targetFolder === tn || 
+              targetFolder.includes(tn) || 
+              tn.includes(targetFolder) ||
+              clean.includes(tn)
+            );
 
-          const bracketMatch = clean.match(/\[(.*?)\](?:\s*>\s*(.*?))?$/);
-          if (bracketMatch) {
-            targetFolder = bracketMatch[1].trim();
-            if (bracketMatch[2]) targetDoc = bracketMatch[2].trim();
-          } else if (clean.includes('>')) {
-            const parts = clean.split('>').map(p => p.trim());
-            targetFolder = parts[parts.length - 2] || parts[0];
-            targetDoc = parts[parts.length - 1];
-          } else {
-            targetFolder = clean;
-          }
+            if (isMatch) {
+              totalDurationSec += dur;
+              uniqueStudents.add(stName);
+              totalSessions += 1;
 
-          if (!targetFolder) return;
-
-          // 장바구니에 담긴 폴더 중 매칭되는 폴더 찾기
-          const matchedFolderKey = Object.keys(folderDataMap).find(cartName => 
-            cartName === targetFolder ||
-            cartName.includes(targetFolder) ||
-            targetFolder.includes(cartName)
-          );
-
-          if (matchedFolderKey) {
-            const fEntry = folderDataMap[matchedFolderKey];
-            fEntry.durationSec += dur;
-            fEntry.students.add(stName);
-            fEntry.sessions += 1;
-
-            if (targetDoc) {
-              const cleanDoc = targetDoc.replace(/\.html?$/i, '');
-              if (!fEntry.fileMap[cleanDoc]) {
-                fEntry.fileMap[cleanDoc] = {
-                  durationSec: 0,
-                  students: new Set<string>(),
-                  views: 0,
-                  solutionViews: 0,
-                };
-              }
-              const fileEntry = fEntry.fileMap[cleanDoc];
-              fileEntry.durationSec += dur;
-              fileEntry.students.add(stName);
-              fileEntry.views += 1;
-              if (sub.includes('해설')) {
-                fileEntry.solutionViews += 1;
+              if (targetDoc) {
+                const cleanDoc = targetDoc.replace(/\.html?$/i, '');
+                if (!fileMap[cleanDoc]) {
+                  fileMap[cleanDoc] = {
+                    durationSec: 0,
+                    students: new Set<string>(),
+                    views: 0,
+                    solutionViews: 0,
+                  };
+                }
+                const fileEntry = fileMap[cleanDoc];
+                fileEntry.durationSec += dur;
+                fileEntry.students.add(stName);
+                fileEntry.views += 1;
+                if (sub.includes('해설')) {
+                  fileEntry.solutionViews += 1;
+                }
               }
             }
-          }
+          });
         });
       });
-    });
 
-    // 정돈 및 통계 계산
-    const resultList: AnalyzedFolderData[] = selectedFoldersCart.map(folder => {
-      const entry = folderDataMap[folder.name] || {
-        durationSec: 0,
-        students: new Set<string>(),
-        sessions: 0,
-        fileMap: {}
-      };
-
-      const fileList: FileStatItem[] = Object.entries(entry.fileMap).map(([fileName, data]) => {
+      // 파일 리스트 정렬
+      const fileList: FileStatItem[] = Object.entries(fileMap).map(([fileName, data]) => {
         let status: 'killer' | 'hard' | 'normal' | 'skipped' = 'normal';
         if (data.durationSec >= 3600 || (data.durationSec >= 1800 && data.solutionViews >= 3)) {
           status = 'killer';
@@ -337,7 +424,6 @@ export default function LibraryContentAnalyticsTab() {
           status = 'skipped';
         }
 
-        // 문항 번호 포맷팅 (0012 ➔ 12번 문항)
         const numMatch = fileName.match(/(\d+)/);
         const displayName = numMatch ? `${parseInt(numMatch[1], 10)}번 문항 (${fileName}.html)` : `${fileName}.html`;
 
@@ -352,7 +438,6 @@ export default function LibraryContentAnalyticsTab() {
         };
       });
 
-      // 체류시간 높은 순 정렬
       fileList.sort((a, b) => b.durationSec - a.durationSec);
 
       let maxFSec = 1;
@@ -364,12 +449,15 @@ export default function LibraryContentAnalyticsTab() {
         folderKey: folder.drive_id,
         folderName: folder.name,
         grade: folder.grade || selectedGrade,
-        totalDurationSec: entry.durationSec,
-        uniqueStudents: entry.students,
-        totalSessions: entry.sessions,
+        totalDurationSec,
+        uniqueStudents,
+        totalSessions,
         files: fileList,
         maxFileDuration: maxFSec,
         killerQuestion: fileList.length > 0 && fileList[0].durationSec >= 1800 ? fileList[0] : undefined,
+        isParent,
+        subFolderCount: descendants.length,
+        parentPath: folderMaps.getParentPath(folder),
       };
     });
 
@@ -377,7 +465,7 @@ export default function LibraryContentAnalyticsTab() {
     resultList.sort((a, b) => b.totalDurationSec - a.totalDurationSec);
 
     return resultList;
-  }, [selectedFoldersCart, rawSessions, selectedGrade]);
+  }, [selectedFoldersCart, rawSessions, selectedGrade, folderMaps]);
 
   // 분석 실행 및 스무스 스크롤 트리거
   const handleStartAnalysis = () => {
@@ -419,13 +507,16 @@ export default function LibraryContentAnalyticsTab() {
       return;
     }
 
-    const headers = ['폴더명', '문항(파일명)', '총체류(분)', '학생수(명)', '열람세션(회)', '해설열람비율(%)', '특성'];
+    const headers = ['폴더구분', '폴더명', '소속경로', '문항(파일명)', '총체류(분)', '학생수(명)', '열람세션(회)', '해설열람비율(%)', '특성'];
     const rows: (string | number)[][] = [];
 
     analyzedResults.forEach(folder => {
+      const folderType = folder.isParent ? `상위통합(${folder.subFolderCount}개)` : '단원';
       if (folder.files.length === 0) {
         rows.push([
+          folderType,
           folder.folderName,
+          folder.parentPath || '-',
           '세부 파일 없음(폴더열람)',
           Math.round(folder.totalDurationSec / 60),
           folder.uniqueStudents.size,
@@ -437,7 +528,9 @@ export default function LibraryContentAnalyticsTab() {
         folder.files.forEach(file => {
           const solPct = file.views > 0 ? Math.round((file.solutionViews / file.views) * 100) : 0;
           rows.push([
+            folderType,
             folder.folderName,
+            folder.parentPath || '-',
             file.displayName,
             Math.round(file.durationSec / 60),
             file.students.size,
@@ -464,7 +557,9 @@ export default function LibraryContentAnalyticsTab() {
   const renderTreeNode = (node: FolderTreeNode, depth: number = 0) => {
     const isExpanded = expandedFolderIds.has(node.drive_id);
     const isSelected = selectedFoldersCart.some(f => f.drive_id === node.drive_id);
-    const hasChildren = node.subFolders.length > 0;
+    const descendants = folderMaps.getDescendants(node.drive_id);
+    const hasChildren = node.subFolders.length > 0 || descendants.length > 0;
+    const descendantCount = descendants.length;
 
     return (
       <div key={node.drive_id} className="space-y-1">
@@ -494,22 +589,26 @@ export default function LibraryContentAnalyticsTab() {
               {node.name}
             </span>
             {hasChildren && (
-              <span className="text-[10px] text-slate-400 font-normal">
-                ({node.subFolders.length})
+              <span className="text-[10px] text-violet-700 bg-violet-100 px-1.5 py-0.2 rounded-md font-extrabold shrink-0">
+                하위 {descendantCount}개
               </span>
             )}
           </div>
 
           <button
             type="button"
-            onClick={() => toggleCartFolder(node)}
+            onClick={() => handleToggleFolderWithDescendants(node)}
             className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 transition-all cursor-pointer ${
               isSelected
-                ? 'bg-violet-600 text-white shadow-2xs'
+                ? 'bg-violet-600 text-white shadow-2xs hover:bg-violet-700'
+                : hasChildren
+                ? 'bg-violet-50 hover:bg-violet-600 text-violet-700 hover:text-white border border-violet-200'
                 : 'bg-white hover:bg-violet-50 text-slate-600 hover:text-violet-700 border border-slate-200'
             }`}
           >
-            {isSelected ? '✓ 담김' : '+ 담기'}
+            {isSelected 
+              ? (hasChildren ? '✓ 하위포함 담김' : '✓ 담김') 
+              : (hasChildren ? `+ 하위(${descendantCount}개) 쏙 담기` : '+ 담기')}
           </button>
         </div>
 
@@ -522,6 +621,12 @@ export default function LibraryContentAnalyticsTab() {
     );
   };
 
+  const cartParentCount = useMemo(() => {
+    return selectedFoldersCart.filter(f => folderMaps.getDescendants(f.drive_id).length > 0).length;
+  }, [selectedFoldersCart, folderMaps]);
+
+  const cartChildCount = selectedFoldersCart.length - cartParentCount;
+
   return (
     <div className="w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6 animate-in fade-in duration-200">
       
@@ -532,19 +637,19 @@ export default function LibraryContentAnalyticsTab() {
             <span className="text-xl sm:text-2xl font-black tracking-tight flex items-center gap-2.5">
               <span>📚 라이브러리 컨텐츠 활용 및 이용률 분석실</span>
               <span className="text-xs px-2.5 py-0.5 rounded-full bg-violet-500/20 text-violet-200 font-extrabold border border-violet-400/30">
-                v1.1 계층형 미시 분석
+                v1.2 계층형 자동 연동
               </span>
             </span>
           </div>
           <p className="text-xs font-medium text-slate-300 leading-relaxed">
-            원하는 폴더를 <strong>장바구니에 쏙쏙 담거나 다 때려넣고</strong>,
-            폴더 단위 체류시간뿐만 아니라 <strong>그 안의 개별 파일(문항 번호)마다 머문 시간까지 촥!</strong> 정밀 분석합니다.
+            상위폴더를 담으면 <strong>모든 하위폴더까지 자동으로 쏙! 들어가서 주욱 정밀 분석</strong>됩니다.
+            폴더 단위 총 체류시간뿐만 아니라 <strong>그 안의 개별 문항(0001, 0012...)마다 머문 시간까지 촥!</strong> 시각화합니다.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-violet-300 bg-white/10 px-3 py-1.5 rounded-2xl border border-white/10">
-            실시간 문항별 Dwell Time 연동
+            상위 ➔ 하위 자동 포함 분석 지원
           </span>
         </div>
       </div>
@@ -609,8 +714,8 @@ export default function LibraryContentAnalyticsTab() {
                 <Folder size={16} className="text-violet-600" />
                 <span>[{selectedGrade === '전체' ? '전체' : selectedGrade}] 라이브러리 폴더 트리 탐색</span>
               </div>
-              <span className="text-[11px] font-bold text-slate-400">
-                상위 ➔ 하위 ➔ 최하위 단원
+              <span className="text-[11px] font-extrabold text-violet-600 bg-violet-50 px-2 py-0.5 rounded-md">
+                상위 클릭 시 하위 자동 포함
               </span>
             </div>
 
@@ -648,7 +753,7 @@ export default function LibraryContentAnalyticsTab() {
             <div className="flex items-center justify-between pb-3 border-b border-violet-100">
               <div className="text-sm font-black text-violet-950 flex items-center gap-2">
                 <ShoppingCart size={16} className="text-violet-600" />
-                <span>분석 대상 장바구니 ({selectedFoldersCart.length}개 선택됨)</span>
+                <span>분석 대상 장바구니 ({selectedFoldersCart.length}개)</span>
               </div>
               {selectedFoldersCart.length > 0 && (
                 <button
@@ -671,36 +776,55 @@ export default function LibraryContentAnalyticsTab() {
                   </div>
                   <div className="text-xs font-black text-slate-700">장바구니가 비어 있습니다.</div>
                   <div className="text-[11px] font-bold text-slate-400 leading-relaxed">
-                    좌측 트리에서 분석하고 싶은 폴더의 <strong>[+ 담기]</strong> 버튼을 누르거나 <strong>[다 때려넣기]</strong>를 눌러주세요!
+                    좌측 트리에서 상위폴더의 <strong>[+ 하위 쏙 담기]</strong> 버튼을 누르면 모든 하위폴더까지 함께 쏙 들어옵니다!
                   </div>
                 </div>
               ) : (
-                selectedFoldersCart.map(f => (
-                  <div
-                    key={f.drive_id}
-                    className="p-3 bg-violet-50/70 border border-violet-200 rounded-2xl flex items-center justify-between gap-2 text-xs"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Folder size={14} className="text-violet-600 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="font-black text-slate-900 truncate" title={f.name}>
-                          {f.name}
-                        </div>
-                        <div className="text-[10px] text-violet-600 font-bold">
-                          {f.grade} 라이브러리
+                selectedFoldersCart.map(f => {
+                  const descendants = folderMaps.getDescendants(f.drive_id);
+                  const isParent = descendants.length > 0;
+                  const parentPath = folderMaps.getParentPath(f);
+
+                  return (
+                    <div
+                      key={f.drive_id}
+                      className={`p-3 border rounded-2xl flex items-center justify-between gap-2 text-xs transition-all ${
+                        isParent
+                          ? 'bg-purple-100/70 border-purple-300 shadow-2xs'
+                          : 'bg-violet-50/70 border-violet-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={isParent ? 'text-purple-700' : 'text-violet-600'}>
+                          {isParent ? <FolderOpen size={16} /> : <Library size={14} />}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-black text-slate-900 truncate" title={f.name}>
+                              {f.name}
+                            </span>
+                            {isParent && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded-md bg-purple-600 text-white font-extrabold shrink-0">
+                                상위 (+하위 {descendants.length}개)
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-bold truncate">
+                            {parentPath ? `${parentPath} > ` : ''}{f.grade} 라이브러리
+                          </div>
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFromCart(f.drive_id)}
+                        className="p-1.5 rounded-lg hover:bg-rose-100 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0"
+                        title={isParent ? '상위 및 하위폴더 함께 장바구니에서 빼기' : '장바구니에서 빼기'}
+                      >
+                        ✕
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveFromCart(f.drive_id)}
-                      className="p-1 rounded-lg hover:bg-violet-200 text-violet-700 transition-colors cursor-pointer shrink-0"
-                      title="장바구니에서 빼기"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -708,7 +832,7 @@ export default function LibraryContentAnalyticsTab() {
           {/* 장바구니 요약 & 메인 액션 버튼 */}
           <div className="space-y-2.5 pt-2">
             <div className="p-3 bg-purple-50 border border-purple-100 rounded-2xl text-[11px] font-bold text-purple-900 text-center">
-              💡 선택된 <strong>{selectedFoldersCart.length}개 폴더</strong>의 총 체류시간 및 세부 문항(파일)을 비교 분석합니다.
+              💡 선택된 <strong>총 {selectedFoldersCart.length}개 폴더</strong> (상위 {cartParentCount}개 · 하위 단원 {cartChildCount}개)를 하단에 주욱 분석합니다.
             </div>
 
             <button
@@ -804,9 +928,23 @@ export default function LibraryContentAnalyticsTab() {
                             }`}>
                               {idx + 1}
                             </span>
-                            <span className="text-xs font-black text-slate-900 truncate" title={folder.folderName}>
-                              {folder.folderName}
-                            </span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-black text-slate-900 truncate" title={folder.folderName}>
+                                  {folder.folderName}
+                                </span>
+                                {folder.isParent && (
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded-md bg-purple-100 text-purple-800 font-bold border border-purple-200 shrink-0">
+                                    📂 상위 통합 ({folder.subFolderCount}개)
+                                  </span>
+                                )}
+                              </div>
+                              {folder.parentPath && (
+                                <div className="text-[10px] text-slate-400 truncate">
+                                  소속: {folder.parentPath}
+                                </div>
+                              )}
+                            </div>
                           </div>
                           <span className={`text-xs font-black shrink-0 ${isFocused ? 'text-violet-700' : 'text-slate-800'}`}>
                             {formatDurationKo(folder.totalDurationSec)}
@@ -840,7 +978,7 @@ export default function LibraryContentAnalyticsTab() {
             </div>
 
             <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl text-[11px] font-medium text-slate-600 leading-relaxed">
-              💡 <strong>선생님 요약:</strong> 학생들이 가장 많이 집중하는 폴더일수록 시험 대비 기출 문항의 오답 재검토 빈도가 높습니다.
+              💡 <strong>선생님 요약:</strong> 상위폴더를 넣으면 하위 모든 단원 폴더가 자동 포함되어, 각 단원별 체류시간 순위 및 미이용 단원이 한눈에 비교됩니다.
             </div>
           </div>
 
@@ -852,14 +990,17 @@ export default function LibraryContentAnalyticsTab() {
                 <div>
                   <div className="text-xs font-black text-purple-950 flex items-center gap-1.5">
                     <FileText size={14} className="text-purple-700" />
-                    <span>[{currentFocusedFolder?.folderName || '선택된 폴더'}] ➔ 문항(파일)별 머문 시간 랭킹</span>
+                    <span>
+                      [{currentFocusedFolder?.folderName || '선택된 폴더'}]
+                      {currentFocusedFolder?.isParent ? ' (하위 통합)' : ''} ➔ 문항(파일)별 머문 시간 랭킹
+                    </span>
                   </div>
                   <div className="text-[11px] font-bold text-purple-700/80 mt-0.5">
-                    총 {currentFocusedFolder?.files.length || 0}개 파일 열람 기록 · 학생들이 가장 오래 고민한 킬러 문항 분석
+                    총 {currentFocusedFolder?.files.length || 0}개 파일 열람 기록 · {currentFocusedFolder?.isParent ? '전체 하위 단원 통합 ' : ''}학생들이 가장 오래 고민한 킬러 문항 분석
                   </div>
                 </div>
                 <span className="text-[10px] font-extrabold px-2.5 py-1 rounded-lg bg-purple-200 text-purple-900">
-                  Micro Drill-Down
+                  {currentFocusedFolder?.isParent ? 'Aggregate Drill-Down' : 'Micro Drill-Down'}
                 </span>
               </div>
 

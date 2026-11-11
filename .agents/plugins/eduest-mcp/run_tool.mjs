@@ -130,7 +130,7 @@ async function execute() {
             targetFolder = clean;
           }
           if (!targetFolder) return;
-          if (toolArgs.folder_name && !targetFolder.toLowerCase().includes(toolArgs.folder_name.toLowerCase())) return;
+          if (toolArgs.folder_name && !targetFolder.toLowerCase().includes(toolArgs.folder_name.toLowerCase()) && !clean.toLowerCase().includes(toolArgs.folder_name.toLowerCase())) return;
 
           if (!folderStats[targetFolder]) {
             folderStats[targetFolder] = { duration: 0, students: new Set(), sessions: 0, files: {} };

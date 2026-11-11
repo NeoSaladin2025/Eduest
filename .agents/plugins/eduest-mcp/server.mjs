@@ -1923,8 +1923,8 @@ server.tool(
 
             if (!targetFolder) return;
 
-            // 특정 폴더 필터가 있는 경우
-            if (folder_name && !targetFolder.toLowerCase().includes(folder_name.toLowerCase())) {
+            // 특정 폴더 필터가 있는 경우 (상위폴더 포함 경로 매칭)
+            if (folder_name && !targetFolder.toLowerCase().includes(folder_name.toLowerCase()) && !clean.toLowerCase().includes(folder_name.toLowerCase())) {
               return;
             }
 
