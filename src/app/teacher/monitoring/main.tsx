@@ -112,9 +112,6 @@ export default function MonitoringCenterMain() {
           >
             <Library size={15} />
             <span>컨텐츠(라이브러리) 분석</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-100 text-purple-700 font-extrabold border border-purple-200">
-              NEW
-            </span>
           </button>
 
           <button

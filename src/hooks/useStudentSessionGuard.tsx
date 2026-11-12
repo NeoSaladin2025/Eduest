@@ -8,7 +8,7 @@ interface StudentSessionGuardOptions {
   studentId?: string;
   studentName?: string;
   enabled?: boolean;
-  onLogout?: () => void;
+  onLogout?: (reason?: 'timeout' | 'duplicate_login' | 'manual') => void;
   // 설정값 (기본: 10분 = 600,000ms, 경고: 만료 1분 전 = 60,000ms)
   timeoutMs?: number;
   warningMs?: number;
@@ -108,7 +108,7 @@ export function useStudentSessionGuard({
         setShowInactivityWarning(false);
         setKickedOutReason('timeout');
         clearInterval(interval);
-        if (onLogout) onLogout();
+        if (onLogout) onLogout('timeout');
       } else if (remainingMs <= warningMs) {
         // 1분 미만 남음 -> 경고 모달 표시 및 카운트다운
         setShowInactivityWarning(true);
@@ -147,7 +147,7 @@ export function useStudentSessionGuard({
         // 다른 기기나 다른 브라우저에서 새로 접속함 -> 현재 기기 세션 강제 종료
         console.warn(`[EDUEST Auth] Duplicate login detected for student ${studentId}. Kicking current session.`);
         setKickedOutReason('duplicate_login');
-        if (onLogout) onLogout();
+        if (onLogout) onLogout('duplicate_login');
       }
     });
 

@@ -22,9 +22,11 @@ import {
   Trash2,
   Check,
   ArrowDown,
-  FileText
+  FileText,
+  Calendar
 } from 'lucide-react';
 import { formatDurationKo, StudentHomeStudyDayRecord } from '@/lib/homeStudyTypes';
+import { StudentLibrarySessionRecord, LibrarySessionActivityItem } from '@/lib/libraryAnalyticsTypes';
 import { supabase } from '@/lib/supabase';
 
 interface LibraryFolderItem {
@@ -95,11 +97,23 @@ const GRADES = ['전체', '고2', '고1', '고3', '중3', '중2', '중1'];
 
 export default function LibraryContentAnalyticsTab() {
   const [selectedGrade, setSelectedGrade] = useState<string>('고2');
+  
+  // 📅 기간 설정: 프리셋 모드(7, 14, 30일) vs 달력 직접 설정 모드(시작일-종료일)
+  const [dateMode, setDateMode] = useState<'preset' | 'custom'>('preset');
   const [selectedDays, setSelectedDays] = useState<number>(30); // 7, 14, 30
+  const [startDate, setStartDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split('T')[0];
+  });
+  const [endDate, setEndDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string>('');
+
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Raw DB data
+  // Raw DB data: 전용 콘텐츠 분석 세션 + 기존 가정학습 세션(과거 호환)
+  const [dedicatedSessions, setDedicatedSessions] = useState<StudentLibrarySessionRecord[]>([]);
   const [rawSessions, setRawSessions] = useState<StudentHomeStudyDayRecord[]>([]);
   const [allFolders, setAllFolders] = useState<LibraryFolderItem[]>([]);
 
@@ -110,21 +124,35 @@ export default function LibraryContentAnalyticsTab() {
   const [hasTriggeredAnalysis, setHasTriggeredAnalysis] = useState<boolean>(false);
   const [expandedStudent, setExpandedStudent] = useState<{ fileName: string; studentName: string } | null>(null);
 
-  // 1. 데이터 로드 (세션 30일치 + 라이브러리 전체 폴더)
+  // 1. 데이터 로드 (신규 전용 세션 + 기존 가정학습 세션 + 라이브러리 전체 폴더)
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [sessionsRes, { data: folderData, error: folderErr }] = await Promise.all([
-        fetch(`/api/monitoring/home-study/sessions?days=${selectedDays}`),
+      // 쿼리 파라미터 생성
+      let dateQuery = '';
+      if (dateMode === 'custom' && startDate && endDate) {
+        dateQuery = `startDate=${startDate}&endDate=${endDate}`;
+      } else {
+        dateQuery = `days=${selectedDays}`;
+      }
+
+      const [dedicatedRes, legacyRes, { data: folderData, error: folderErr }] = await Promise.all([
+        fetch(`/api/monitoring/library-analytics/sessions?${dateQuery}`),
+        fetch(`/api/monitoring/home-study/sessions?${dateQuery}`),
         supabase
           .from('exam_library')
           .select('drive_id, name, grade, parent_id, type')
           .eq('type', 'folder')
       ]);
 
-      const sessionsData = await sessionsRes.json();
-      if (sessionsData.success && Array.isArray(sessionsData.records)) {
-        setRawSessions(sessionsData.records);
+      const dedicatedData = await dedicatedRes.json();
+      if (dedicatedData.success && Array.isArray(dedicatedData.records)) {
+        setDedicatedSessions(dedicatedData.records);
+      }
+
+      const legacyData = await legacyRes.json();
+      if (legacyData.success && Array.isArray(legacyData.records)) {
+        setRawSessions(legacyData.records);
       }
 
       if (!folderErr && folderData) {
@@ -134,6 +162,9 @@ export default function LibraryContentAnalyticsTab() {
         );
         setAllFolders(cleanFolders);
       }
+
+      const now = new Date();
+      setLastRefreshedAt(now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err) {
       console.error('Failed to load library analytics data:', err);
     } finally {
@@ -143,7 +174,7 @@ export default function LibraryContentAnalyticsTab() {
 
   useEffect(() => {
     fetchData();
-  }, [selectedDays]);
+  }, [selectedDays, dateMode]);
 
   // 2. 전체 폴더에 대한 맵 (ID -> 폴더, 부모 -> 자식들, 자손 탐색, 부모 경로 생성)
   const folderMaps = useMemo(() => {
@@ -347,14 +378,15 @@ export default function LibraryContentAnalyticsTab() {
     }
   };
 
-  // 5. 세션 로그 파싱 및 선택된 장바구니 폴더별/파일별 체류시간 집계 (상위폴더 포함 주욱 분석)
+  // 5. 세션 로그 파싱 및 선택된 장바구니 폴더별/파일별 체류시간 집계 (신규 전용 세션 + 기존 과거 세션 병합)
   const analyzedResults = useMemo(() => {
     if (selectedFoldersCart.length === 0) return [];
 
     const resultList: AnalyzedFolderData[] = selectedFoldersCart.map(folder => {
-      // 이 폴더가 매칭해야 할 대상 폴더명들: 폴더 본인 이름 + 하위 모든 자손 폴더 이름들
+      // 이 폴더가 매칭해야 할 대상 폴더 drive_id 목록 및 이름들
       const descendants = folderMaps.getDescendants(folder.drive_id);
       const isParent = descendants.length > 0;
+      const targetFolderIds = new Set([folder.drive_id, ...descendants.map(d => d.drive_id)]);
       const targetNames = [folder.name, ...descendants.map(d => d.name)];
 
       let totalDurationSec = 0;
@@ -368,6 +400,70 @@ export default function LibraryContentAnalyticsTab() {
         solutionViews: number;
       }> = {};
 
+      // 🌟 [트랙 A: 신규 전용 콘텐츠 분석 세션 집계 (Folder ID 기반 100% 정밀 매칭)]
+      dedicatedSessions.forEach(r => {
+        const stName = r.student_name;
+        (r.sessions || []).forEach(ses => {
+          let sessionMatched = false;
+          (ses.items || []).forEach(item => {
+            if (!item.folderDriveId || !targetFolderIds.has(item.folderDriveId)) return;
+            const dur = item.durationSec || 0;
+            const views = item.openCount || 1;
+            const solViews = item.solutionViews || 0;
+
+            totalDurationSec += dur;
+            uniqueStudents.add(stName);
+            sessionMatched = true;
+
+            // 순수 폴더 탐색이 아닌 개별 문항 열람인 경우
+            if (item.fileName && item.fileName !== '__folder_explore__') {
+              const cleanDoc = item.fileName.replace(/\.html?$/i, '');
+              if (!fileMap[cleanDoc]) {
+                fileMap[cleanDoc] = {
+                  durationSec: 0,
+                  students: new Set<string>(),
+                  studentMap: {},
+                  views: 0,
+                  solutionViews: 0,
+                };
+              }
+              const fileEntry = fileMap[cleanDoc];
+              fileEntry.durationSec += dur;
+              fileEntry.students.add(stName);
+              fileEntry.views += views;
+              fileEntry.solutionViews += solViews;
+
+              if (!fileEntry.studentMap[stName]) {
+                fileEntry.studentMap[stName] = {
+                  studentId: r.student_id || stName,
+                  studentName: stName,
+                  totalDurationSec: 0,
+                  openCount: 0,
+                  avgDurationSec: 0,
+                  lastViewedAt: ses.started_at || r.date || '',
+                  history: [],
+                };
+              }
+              const stEntry = fileEntry.studentMap[stName];
+              stEntry.totalDurationSec += dur;
+              stEntry.openCount += views;
+              stEntry.avgDurationSec = stEntry.openCount > 0 ? Math.round(stEntry.totalDurationSec / stEntry.openCount) : 0;
+              const actTime = ses.started_at || r.date || '';
+              if (actTime && (!stEntry.lastViewedAt || new Date(actTime) > new Date(stEntry.lastViewedAt))) {
+                stEntry.lastViewedAt = actTime;
+              }
+              stEntry.history.push({
+                sessionIndex: stEntry.openCount,
+                durationSec: dur,
+                timestamp: actTime,
+              });
+            }
+          });
+          if (sessionMatched) totalSessions += 1;
+        });
+      });
+
+      // 🌟 [트랙 B: 기존 레거시 세션 데이터 호환 집계 (과거 30일치 보존)]
       rawSessions.forEach(r => {
         const stName = r.student_name;
         (r.sessions || []).forEach(ses => {
@@ -520,7 +616,7 @@ export default function LibraryContentAnalyticsTab() {
     resultList.sort((a, b) => b.totalDurationSec - a.totalDurationSec);
 
     return resultList;
-  }, [selectedFoldersCart, rawSessions, selectedGrade, folderMaps]);
+  }, [selectedFoldersCart, dedicatedSessions, rawSessions, selectedGrade, folderMaps]);
 
   // 분석 실행 및 스무스 스크롤 트리거
   const handleStartAnalysis = () => {
@@ -730,28 +826,76 @@ export default function LibraryContentAnalyticsTab() {
           ))}
         </div>
 
-        {/* 기간 선택 + 새로고침 */}
-        <div className="flex items-center gap-2.5">
+        {/* 기간 선택 + 달력 시작-종료 설정 + 새로고침 */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* 기간 템플릿 드롭다운 */}
           <div className="flex items-center bg-slate-100 px-3 py-1.5 rounded-2xl border border-slate-200 text-xs font-bold text-slate-700 gap-1.5">
-            <Clock size={13} className="text-violet-600" />
+            <Clock size={13} className="text-violet-600 shrink-0" />
             <select
-              value={selectedDays}
-              onChange={e => setSelectedDays(Number(e.target.value))}
+              value={dateMode === 'custom' ? 'custom' : selectedDays}
+              onChange={e => {
+                if (e.target.value === 'custom') {
+                  setDateMode('custom');
+                } else {
+                  setDateMode('preset');
+                  setSelectedDays(Number(e.target.value));
+                }
+              }}
               className="bg-transparent outline-none font-black text-slate-800 cursor-pointer"
             >
               <option value={7}>최근 7일간</option>
               <option value={14}>최근 14일간 (2주)</option>
               <option value={30}>최근 30일간 (한 달)</option>
+              <option value="custom">📅 직접 기간 설정 (달력)</option>
             </select>
           </div>
 
+          {/* 달력 날짜 범위 (시작일 ~ 종료일) 설정 인풋 */}
+          <div className="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1 rounded-2xl border border-slate-200 text-xs">
+            <Calendar size={13} className="text-violet-600 shrink-0" />
+            <input
+              type="date"
+              value={startDate}
+              onChange={e => {
+                setStartDate(e.target.value);
+                setDateMode('custom');
+              }}
+              className="bg-white border border-slate-200 rounded-lg px-2 py-0.5 text-xs font-bold text-slate-700 outline-none focus:border-violet-500 cursor-pointer"
+              title="분석 시작일"
+            />
+            <span className="text-slate-400 font-bold">~</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={e => {
+                setEndDate(e.target.value);
+                setDateMode('custom');
+              }}
+              className="bg-white border border-slate-200 rounded-lg px-2 py-0.5 text-xs font-bold text-slate-700 outline-none focus:border-violet-500 cursor-pointer"
+              title="분석 종료일"
+            />
+            {dateMode === 'custom' && (
+              <button
+                type="button"
+                onClick={fetchData}
+                className="px-2 py-0.5 rounded-lg bg-violet-600 text-white text-[11px] font-black hover:bg-violet-700 transition-all cursor-pointer shadow-2xs"
+              >
+                조회
+              </button>
+            )}
+          </div>
+
+          {/* 새로고침 버튼 + 갱신 시간 */}
           <button
             type="button"
             onClick={fetchData}
-            className="p-2 rounded-2xl bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-all cursor-pointer shadow-2xs"
-            title="새로고침"
+            className="flex items-center gap-1.5 p-2 px-3 rounded-2xl bg-white border border-slate-200 text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-all cursor-pointer shadow-2xs"
+            title="최신 분석 데이터 불러오기"
           >
-            <RotateCcw size={15} />
+            <RotateCcw size={14} className={loading ? 'animate-spin text-violet-600' : ''} />
+            <span className="text-[11px] font-bold hidden sm:inline">
+              {lastRefreshedAt ? `${lastRefreshedAt} 갱신` : '새로고침'}
+            </span>
           </button>
         </div>
       </div>

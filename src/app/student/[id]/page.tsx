@@ -18,6 +18,7 @@ import {
   ActivitySpan, 
   DEFAULT_HOME_STUDY_RULES 
 } from '@/lib/homeStudyTypes';
+import { LibrarySessionActivityItem } from '@/lib/libraryAnalyticsTypes';
 
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 
@@ -209,6 +210,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   // 🌟 [사용자 요청] 선생님의 9분 무입력 자동로그아웃 개별/일괄 제어 상태 (true이면 9분 무입력 타이머 정지)
   const [isAutoLogoutDisabled, setIsAutoLogoutDisabled] = useState(false);
 
+  // 🌟 [라이브러리 콘텐츠 분석 전용] 로그아웃 시 1회 플러시 호출을 위한 Ref
+  const flushLibraryAnalyticsRef = useRef<(reason?: 'manual' | 'timeout' | 'exit') => void>(() => {});
+
   // 🛡️ 10분 무입력 자동 로그아웃 및 1계정 1로그인(단일 세션) 실시간 감지
   // 🌟 [시험 & 인강 & 선생님 자율설정 집중 모드]
   const { renderModals: renderSessionGuardModals } = useStudentSessionGuard({
@@ -216,7 +220,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     studentName: student?.name,
     enabled: !!student?.id && (!student?.has_password && !student?.password || pwdVerified),
     pauseInactivityTimeout: mode === 'test' || mode === 'video' || isAutoLogoutDisabled,
-    onLogout: () => {
+    onLogout: (reason) => {
+      // 🌟 [역연산 적용] 타임아웃 자동 로그아웃 시 방치 시간 차감 후 서버로 1회 전송
+      flushLibraryAnalyticsRef.current(reason === 'timeout' ? 'timeout' : 'manual');
       setPwdVerified(false);
     },
   });
@@ -874,6 +880,223 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
   }, [flushHomeStudySession]);
 
+  // =========================================================================
+  // 📚 [라이브러리 콘텐츠 활용 분석 전용 파이프라인] (로그아웃 기점 역연산 배치)
+  // - 기존 실시간 감시 및 가정학습 분석과 완전 격리
+  // - 학원 수업 시간표(isTimeExcluded)와 무관하게 24시간 1초 단위로 독립 누적
+  // - 타임아웃 자동 로그아웃 시 10분 방치시간 역연산 차감 후 1회 전송
+  // =========================================================================
+  const libraryAccumulatorRef = useRef<{
+    started_at: string;
+    last_active_time: number;
+    last_item_key: string | null;
+    items: Map<string, LibrarySessionActivityItem>;
+  }>({
+    started_at: new Date().toISOString(),
+    last_active_time: Date.now(),
+    last_item_key: null,
+    items: new Map(),
+  });
+
+  // 사용자 인터랙션(터치, 클릭, 키다운, 스크롤) 시 활성 시각 갱신
+  useEffect(() => {
+    const handleUserTouch = () => {
+      libraryAccumulatorRef.current.last_active_time = Date.now();
+    };
+    const events = ['touchstart', 'mousedown', 'keydown', 'scroll', 'click'];
+    events.forEach(evt => window.addEventListener(evt, handleUserTouch, { passive: true }));
+    return () => {
+      events.forEach(evt => window.removeEventListener(evt, handleUserTouch));
+    };
+  }, []);
+
+  // 라이브러리 세션 플러시 함수 (로그아웃, 탭 종료, 모드 변경 시 호출)
+  const flushLibraryAnalyticsSession = useCallback((reason: 'manual' | 'timeout' | 'exit' = 'manual') => {
+    if (!student?.id) return;
+    const acc = libraryAccumulatorRef.current;
+    if (!acc || acc.items.size === 0) return;
+
+    // 🌟 [역연산 핵심 로직] 타임아웃 무입력 자동 로그아웃 시 방치된 시간(idleSec)을 마지막 문항에서 차감!
+    if (reason === 'timeout' && acc.last_item_key) {
+      const idleMs = Math.max(0, Date.now() - acc.last_active_time);
+      const idleSec = Math.floor(idleMs / 1000);
+      const lastItem = acc.items.get(acc.last_item_key);
+      if (lastItem && idleSec > 0) {
+        lastItem.durationSec = Math.max(0, lastItem.durationSec - idleSec);
+      }
+    }
+
+    const validItems: LibrarySessionActivityItem[] = Array.from(acc.items.values()).filter(
+      item => (item.durationSec || 0) > 0 || (item.openCount || 0) > 0
+    );
+
+    if (validItems.length === 0) return;
+
+    const payload = {
+      studentId: student.id,
+      studentName: student.name,
+      studentGrade: student.grade,
+      session: {
+        started_at: acc.started_at,
+        ended_at: new Date().toISOString(),
+        items: validItems,
+      },
+    };
+
+    // 누적기 리셋
+    libraryAccumulatorRef.current = {
+      started_at: new Date().toISOString(),
+      last_active_time: Date.now(),
+      last_item_key: null,
+      items: new Map(),
+    };
+
+    try {
+      localStorage.removeItem(`eduest_lib_pending_${student.id}`);
+    } catch {}
+
+    const url = '/api/monitoring/library-analytics/sessions';
+    if (reason === 'exit' && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      try {
+        const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        navigator.sendBeacon(url, blob);
+        return;
+      } catch {}
+    }
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  }, [student?.id, student?.name, student?.grade]);
+
+  // 상단 useStudentSessionGuard 콜백 연동용 Ref 등록
+  useEffect(() => {
+    flushLibraryAnalyticsRef.current = flushLibraryAnalyticsSession;
+  }, [flushLibraryAnalyticsSession]);
+
+  // 라이브러리 전용 1초 인터벌 타이머
+  useEffect(() => {
+    if (!student?.id) return;
+
+    const timer = setInterval(() => {
+      // 딴짓 중이거나 브라우저 탭 비활성이면 누적 일시정지
+      if (isAwayRef.current || document.hidden) return;
+
+      // 오직 라이브러리 모드에서만 누적! (학원 수업 시간표와 무관하게 24시간 작동)
+      if (mode !== 'library') return;
+
+      const activeFolder = currentActiveFolder || (currentPath.length > 0 ? currentPath[currentPath.length - 1] : null);
+      const folderDriveId = activeFolder?.drive_id || activeFolder?.id || 'library_root';
+      const folderName = activeFolder?.name || '라이브러리';
+      const folderParentPath = currentPath.length > 0 ? currentPath.map((p: any) => p.name).join(' > ') : '';
+      const isDoc = showReviewer && selectedRecord?.name;
+      const fileName = isDoc ? selectedRecord.name.replace(/\.html?$/i, '') : '__folder_explore__';
+      const fileId = selectedRecord?.id || selectedRecord?.drive_id;
+      const docDisplayName = isDoc ? selectedRecord.name : undefined;
+      const itemKey = `${folderDriveId}___${fileName}`;
+
+      const acc = libraryAccumulatorRef.current;
+      let item = acc.items.get(itemKey);
+      if (!item) {
+        item = {
+          folderDriveId,
+          folderName,
+          folderParentPath,
+          fileId,
+          fileName,
+          docDisplayName,
+          durationSec: 0,
+          openCount: 0,
+          solutionViews: 0,
+        };
+        acc.items.set(itemKey, item);
+      }
+
+      item.durationSec += 1;
+
+      // 이전 문항/폴더와 위치가 달라졌을 때 진입 횟수 누적
+      if (acc.last_item_key !== itemKey) {
+        item.openCount += 1;
+        if (selectedTab === 'solution') {
+          item.solutionViews += 1;
+        }
+        acc.last_item_key = itemKey;
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [student?.id, mode, showReviewer, selectedRecord, currentActiveFolder, currentPath, selectedTab]);
+
+  // 1분 주기 로컬스토리지 스냅샷 (비정상 앱 종료 대비)
+  useEffect(() => {
+    if (!student?.id) return;
+    const backupTimer = setInterval(() => {
+      const acc = libraryAccumulatorRef.current;
+      if (acc.items.size > 0) {
+        const validItems = Array.from(acc.items.values()).filter(
+          i => (i.durationSec || 0) > 0 || (i.openCount || 0) > 0
+        );
+        if (validItems.length > 0) {
+          try {
+            localStorage.setItem(`eduest_lib_pending_${student.id}`, JSON.stringify({
+              started_at: acc.started_at,
+              items: validItems,
+            }));
+          } catch {}
+        }
+      }
+    }, 60000);
+
+    return () => clearInterval(backupTimer);
+  }, [student?.id]);
+
+  // 컴포넌트 마운트 시 이전 미전송 데이터 복구(Reconciliation)
+  useEffect(() => {
+    if (!student?.id) return;
+    try {
+      const pendingRaw = localStorage.getItem(`eduest_lib_pending_${student.id}`);
+      if (pendingRaw) {
+        const pending = JSON.parse(pendingRaw);
+        if (pending && Array.isArray(pending.items) && pending.items.length > 0) {
+          fetch('/api/monitoring/library-analytics/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              studentId: student.id,
+              studentName: student.name,
+              studentGrade: student.grade,
+              session: {
+                started_at: pending.started_at || new Date().toISOString(),
+                ended_at: new Date().toISOString(),
+                items: pending.items,
+              },
+            }),
+            keepalive: true,
+          }).then(() => {
+            localStorage.removeItem(`eduest_lib_pending_${student.id}`);
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+  }, [student?.id, student?.name, student?.grade]);
+
+  // 브라우저 탭 닫기, 페이지 전환 시 Beacon 1회 플러시
+  useEffect(() => {
+    const handleExit = () => {
+      flushLibraryAnalyticsSession('exit');
+    };
+    window.addEventListener('beforeunload', handleExit);
+    window.addEventListener('pagehide', handleExit);
+    return () => {
+      window.removeEventListener('beforeunload', handleExit);
+      window.removeEventListener('pagehide', handleExit);
+      flushLibraryAnalyticsSession('exit');
+    };
+  }, [flushLibraryAnalyticsSession]);
+
   // 학생 복습 데이터 로드 (Local Cache -> Cloud DB 실시간 동기화)
   useEffect(() => {
     if (!resolvedParams.id) return;
@@ -1103,6 +1326,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       alert("🔥 시험이 진행 중입니다! 종료 또는 일시 정지 후에 이동할 수 있습니다.");
       return;
     }
+    if (mode === 'library' && newMode !== 'library') {
+      flushLibraryAnalyticsSession('manual');
+    }
     setMode(newMode);
     setCurrentPath([]);
   };
@@ -1148,6 +1374,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       return;
     }
 
+    if (mode === 'library' && newMode !== 'library') {
+      flushLibraryAnalyticsSession('manual');
+    }
     setMode(newMode);
     setCurrentPath([]);
     setIsTopMenuOpen(false);
