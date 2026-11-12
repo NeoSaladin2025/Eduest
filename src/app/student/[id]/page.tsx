@@ -4,7 +4,7 @@ import React, { useState, useEffect, use, useRef, useCallback, useMemo } from 'r
 import { 
   Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck, PlaySquare 
 } from 'lucide-react';
-import { useStudentData } from './useStudentData';
+import { useStudentData, checkContentHasStrategy } from './useStudentData';
 import StudentHomeworkView from './StudentHomeworkView';
 import StudentReviewExplorer from './StudentReviewExplorer';
 import StudentTest2View from './StudentTest2View';
@@ -128,10 +128,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const checkRecordHasStrategy = (record: any): boolean => {
     if (!record) return false;
     const fileId = record.solutionUrl || record.id;
-    if (strategyMap && (strategyMap[record.id] || strategyMap[fileId])) return true;
+    if (strategyMap && (strategyMap[record.id] === true || strategyMap[fileId] === true)) return true;
+    if (strategyMap && (strategyMap[record.id] === false || strategyMap[fileId] === false)) return false;
     const cached = dataCache.current[`${record.id}_solution`] || dataCache.current[`${fileId}_solution`];
-    if (cached && (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략'))) {
-      return true;
+    if (cached) {
+      return checkContentHasStrategy(cached);
     }
     return false;
   };

@@ -12,6 +12,13 @@ const supabase = createClient(
 const GAS_LIBRARY_PROXY = '/api/gas/library';
 const FAST_FILE_PROXY = '/api/drive/library/file';
 
+// 🌟 추가전략(.strategy-run-result) 실제 수록 여부 정밀 판별 함수
+// (CSS 정의나 JS 스크립트 boilerplate 텍스트가 아닌 실제 HTML 렌더링 태그 요소 존재 여부만 정밀 검사)
+export const checkContentHasStrategy = (content: string | null | undefined): boolean => {
+  if (!content) return false;
+  return /<[^>]+class\s*=\s*["'][^"']*\b(strategy-run-result|strategy-result-toggle|strategy-result-body)\b[^"']*["']/i.test(content);
+};
+
 export function useStudentData(studentId: string) {
   // --- 상태 관리 ---
   const [student, setStudent] = useState<any>(null);
@@ -200,8 +207,9 @@ export function useStudentData(studentId: string) {
     // 1단계: 인메모리 캐시 확인 (즉시 0ms)
     if (dataCache.current[cacheKey]) {
       const cached = dataCache.current[cacheKey];
-      if (type === 'html' && cached && (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략'))) {
-        setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+      if (type === 'html') {
+        const hasStrat = checkContentHasStrategy(cached);
+        setStrategyMap(prev => prev[fileId] === hasStrat ? prev : ({ ...prev, [fileId]: hasStrat }));
       }
       return cached;
     }
@@ -210,8 +218,9 @@ export function useStudentData(studentId: string) {
     const idbData = await getCachedContent(cacheKey);
     if (idbData) {
       dataCache.current[cacheKey] = idbData;
-      if (type === 'html' && (idbData.includes('strategy-run-result') || idbData.includes('deck-tag-strategy') || idbData.includes('추가전략'))) {
-        setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+      if (type === 'html') {
+        const hasStrat = checkContentHasStrategy(idbData);
+        setStrategyMap(prev => prev[fileId] === hasStrat ? prev : ({ ...prev, [fileId]: hasStrat }));
       }
       return idbData;
     }
@@ -225,8 +234,9 @@ export function useStudentData(studentId: string) {
         if (type === 'html') d = d.replace(/[₩¥]/g, '\\');
         dataCache.current[cacheKey] = d;
         setCachedContent(cacheKey, d); // 비동기 백그라운드 영구 캐싱
-        if (type === 'html' && (d.includes('strategy-run-result') || d.includes('deck-tag-strategy') || d.includes('추가전략'))) {
-          setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+        if (type === 'html') {
+          const hasStrat = checkContentHasStrategy(d);
+          setStrategyMap(prev => prev[fileId] === hasStrat ? prev : ({ ...prev, [fileId]: hasStrat }));
         }
         return d;
       }
@@ -259,15 +269,15 @@ export function useStudentData(studentId: string) {
       const fileId = item.solutionUrl || item.id;
       if (!fileId) continue;
       const cacheKey = `${fileId}_solution`;
-      const cached = dataCache.current[cacheKey];
+      const cached = dataCache.current[cacheKey] || dataCache.current[`${item.id}_solution`];
       if (cached) {
-        if (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략')) {
-          setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true, [item.id]: true }));
-        }
+        const hasStrat = checkContentHasStrategy(cached);
+        setStrategyMap(prev => prev[fileId] === hasStrat && prev[item.id] === hasStrat ? prev : ({ ...prev, [fileId]: hasStrat, [item.id]: hasStrat }));
       } else {
         getCachedContent(cacheKey).then(idb => {
-          if (idb && (idb.includes('strategy-run-result') || idb.includes('deck-tag-strategy') || idb.includes('추가전략'))) {
-            setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true, [item.id]: true }));
+          if (idb) {
+            const hasStrat = checkContentHasStrategy(idb);
+            setStrategyMap(prev => prev[fileId] === hasStrat && prev[item.id] === hasStrat ? prev : ({ ...prev, [fileId]: hasStrat, [item.id]: hasStrat }));
           }
         }).catch(() => {});
       }
