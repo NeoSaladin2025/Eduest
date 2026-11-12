@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, use, useRef, useCallback } from 'react';
+import React, { useState, useEffect, use, useRef, useCallback, useMemo } from 'react';
 import { 
   Loader2, Database, Library, ArrowLeft, ArrowRight, ChevronRight, Lock, Zap, BookOpen, FileCheck, PlaySquare 
 } from 'lucide-react';
@@ -102,9 +102,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     examLibrary, 
     loading, 
     dataCache, 
+    strategyMap,
     fetchFileContent,
     prefetchItem,
     startStealthPrefetch, 
+    scanStrategyForItems,
     extractNumber 
   } = useStudentData(resolvedParams.id);
 
@@ -118,6 +120,79 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [selectedTab, setSelectedTab] = useState<'problem' | 'board' | 'solution'>('problem');
   const [contentData, setContentData] = useState<string | null>(null);
   const [isContentLoading, setIsContentLoading] = useState(false);
+
+  // 🌟 [사용자 요청] 10개 단위 문제 묶음 점프 탭 상태 관리
+  const CHUNK_SIZE = 10;
+  const [activeChunkIdx, setActiveChunkIdx] = useState<number>(0);
+
+  const checkRecordHasStrategy = (record: any): boolean => {
+    if (!record) return false;
+    const fileId = record.solutionUrl || record.id;
+    if (strategyMap && (strategyMap[record.id] || strategyMap[fileId])) return true;
+    const cached = dataCache.current[`${record.id}_solution`] || dataCache.current[`${fileId}_solution`];
+    if (cached && (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략'))) {
+      return true;
+    }
+    return false;
+  };
+
+  const totalChunks = Math.ceil(selectedList.length / CHUNK_SIZE);
+  const chunks = useMemo(() => {
+    const list: Array<{
+      chunkIdx: number;
+      label: string;
+      startIdx: number;
+      endIdx: number;
+      items: any[];
+      hasStrategyCount: number;
+      strategyQNums: string[];
+    }> = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, selectedList.length);
+      const items = selectedList.slice(start, end);
+      const stratItems = items.filter(it => checkRecordHasStrategy(it));
+      const strategyQNums = stratItems.map(it => {
+        const m = it.name.match(/(\d+)번/);
+        return m ? `${m[1]}번` : it.name.replace(/\.html?$/i, '');
+      });
+      list.push({
+        chunkIdx: i,
+        label: `${start + 1} ~ ${end}`,
+        startIdx: start,
+        endIdx: end,
+        items,
+        hasStrategyCount: stratItems.length,
+        strategyQNums,
+      });
+    }
+    return list;
+  }, [selectedList, totalChunks, strategyMap, dataCache]);
+
+  const currentChunkData = chunks[activeChunkIdx] || chunks[0];
+  const currentChunkItems = currentChunkData?.items || [];
+
+  useEffect(() => {
+    if (!selectedRecord || selectedList.length === 0) return;
+    const recordIdx = selectedList.findIndex(r => r.id === selectedRecord.id);
+    if (recordIdx >= 0) {
+      const chunkIdx = Math.floor(recordIdx / CHUNK_SIZE);
+      if (chunkIdx !== activeChunkIdx) {
+        setActiveChunkIdx(chunkIdx);
+      }
+    }
+  }, [selectedRecord, selectedList, activeChunkIdx]);
+
+  const handleChunkClick = (chunk: (typeof chunks)[0]) => {
+    setActiveChunkIdx(chunk.chunkIdx);
+    if (chunk.items.length > 0) {
+      const isSelectedInChunk = chunk.items.some(it => it.id === selectedRecord?.id);
+      if (!isSelectedInChunk) {
+        setSelectedRecord(chunk.items[0]);
+        startStealthPrefetch(selectedList, chunk.startIdx, mode === 'library' ? 'html' : 'image');
+      }
+    }
+  };
 
   // 🌟 [사용자 요청] 학생 복습 폴더 및 체크 항목 상태 관리
   const [reviewData, setReviewData] = useState<StudentReviewData>({ folders: [], items: [] });
@@ -1002,6 +1077,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     setSelectedTab(file.solutionUrl ? 'solution' : 'problem');
     setShowReviewer(true);
     startStealthPrefetch(mappedList, 0, file.type);
+    scanStrategyForItems(mappedList);
   };
 
   // 라이브러리 초기 진입 및 학년별 필터링
@@ -1099,6 +1175,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       setSelectedTab('solution');
       setSelectedRecord(files[0]);
       startStealthPrefetch(files, 0, 'html');
+      scanStrategyForItems(files);
     } else {
       alert("이 폴더는 비어있거나 준비 중입니다! 📁");
     }
@@ -1543,109 +1620,204 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
         {showReviewer && (
           <div className="flex flex-col gap-6 animate-in slide-in-from-bottom-10 duration-1000 pb-10">
-            <div className="flex items-center gap-3 bg-white/5 p-4 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
-              <button onClick={() => {setShowReviewer(false); setContentData(null);}} className="shrink-0 w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-500/20 transition-all" title="뒤로가기">
-                <ArrowLeft size={24}/>
-              </button>
+            {/* 🌟 [사용자 요청] 2단 구성 네비게이션: 1단(컨트롤+10개 청크탭+범례) / 2단(10개 문항 한눈에 보이는 그리드) */}
+            <div className="flex flex-col gap-3 bg-white/5 p-4 md:p-5 rounded-[32px] border border-white/10 backdrop-blur-3xl shadow-2xl">
+              
+              {/* Row 1: 뒤로가기 버튼 + 전체담기/해제 (라이브러리) + (비라이브러리시 해설/문제 토글) + 10개 단위 점프 탭 + 범례 */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <button 
+                  onClick={() => { setShowReviewer(false); setContentData(null); }} 
+                  className="shrink-0 w-11 h-11 md:w-12 md:h-12 rounded-2xl bg-white/5 flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-500/20 transition-all border border-white/5" 
+                  title="뒤로가기"
+                >
+                  <ArrowLeft size={22}/>
+                </button>
 
-              {/* 🌟 [사용자 요청 2번 스샷] 라이브러리 모드일 때 회차 전체 담기 / 해제 컨트롤 */}
-              {mode === 'library' && (
-                <div className="hidden sm:flex items-center gap-1.5 shrink-0 pr-2 border-r border-white/10 text-xs">
-                  <button
-                    onClick={handleSelectAllInCurrentFolder}
-                    className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded-xl font-bold transition-all border border-indigo-500/30 whitespace-nowrap"
-                    title="이 회차의 모든 문제를 복습(Review)에 담기"
-                  >
-                    ✓ 전체 담기
-                  </button>
-                  <button
-                    onClick={handleDeselectAllInCurrentFolder}
-                    className="px-2 py-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-slate-200 rounded-xl font-bold transition-all border border-white/5 whitespace-nowrap"
-                    title="이 회차의 모든 문제 복습 해제"
-                  >
-                    ✕ 해제
-                  </button>
+                {/* 🌟 [사용자 요청 2번 스샷] 라이브러리 모드일 때 회차 전체 담기 / 해제 컨트롤 */}
+                {mode === 'library' && (
+                  <div className="flex items-center gap-1.5 shrink-0 pr-2 border-r border-white/10 text-xs">
+                    <button
+                      onClick={handleSelectAllInCurrentFolder}
+                      className="px-2.5 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white rounded-xl font-bold transition-all border border-indigo-500/30 whitespace-nowrap cursor-pointer"
+                      title="이 회차의 모든 문제를 복습(Review)에 담기"
+                    >
+                      ✓ 전체 담기
+                    </button>
+                    <button
+                      onClick={handleDeselectAllInCurrentFolder}
+                      className="px-2 py-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-slate-200 rounded-xl font-bold transition-all border border-white/5 whitespace-nowrap cursor-pointer"
+                      title="이 회차의 모든 문제 복습 해제"
+                    >
+                      ✕ 해제
+                    </button>
+                  </div>
+                )}
+
+                {/* 🌟 [사용자 요청] 문제원본 버튼 삭제! (mode !== 'library'일 때만 해설/문제 탭 토글 유지) */}
+                {mode !== 'library' && (
+                  <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10 shrink-0">
+                    <button
+                      onClick={() => setSelectedTab('solution')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                        selectedTab === 'solution'
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      해설 보기
+                    </button>
+                    <button
+                      onClick={() => setSelectedTab('problem')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
+                        selectedTab === 'problem'
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      문제 원본
+                    </button>
+                  </div>
+                )}
+
+                {/* 🌟 10개 단위 점프 버튼들 (1~10, 11~20, 21~30 ...) */}
+                {chunks.length > 1 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-hide">
+                    {chunks.map((chunk) => {
+                      const isActive = activeChunkIdx === chunk.chunkIdx;
+                      return (
+                        <button
+                          key={chunk.chunkIdx}
+                          onClick={() => handleChunkClick(chunk)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all whitespace-nowrap cursor-pointer border ${
+                            isActive
+                              ? 'bg-indigo-600 text-white font-black border-indigo-400 shadow-[0_0_16px_rgba(99,102,241,0.6)] scale-[1.02]'
+                              : 'bg-white/5 text-slate-300 font-bold border-white/10 hover:border-white/25 hover:bg-white/10 hover:text-white'
+                          }`}
+                          title={
+                            chunk.hasStrategyCount > 0
+                              ? `${chunk.label}번 문항 (⚡ 추가전략 ${chunk.hasStrategyCount}개 수록: ${chunk.strategyQNums.join(', ')})`
+                              : `${chunk.label}번 문항`
+                          }
+                        >
+                          <span>{chunk.label}</span>
+                          {chunk.hasStrategyCount > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-400 text-slate-950 shadow-[0_0_8px_rgba(245,158,11,0.8)] animate-pulse">
+                              ⚡{chunk.hasStrategyCount}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* 🌟 범례 (Legend) */}
+                <div className="hidden lg:flex items-center gap-3 text-xs text-slate-300 bg-black/40 px-3.5 py-1.5 rounded-xl border border-white/10 ml-auto shrink-0 select-none">
+                  <span className="text-slate-400 font-bold">📖 범례:</span>
+                  <span className="flex items-center gap-1.5 text-slate-300">
+                    <span className="w-2.5 h-2.5 rounded bg-white/20 inline-block border border-white/30" />
+                    <span>일반 해설</span>
+                  </span>
+                  <span className="flex items-center gap-1.5 text-amber-300 font-bold">
+                    <span className="w-2.5 h-2.5 rounded bg-amber-400 inline-block shadow-[0_0_8px_rgba(245,158,11,0.8)]" />
+                    <span>⚡ 추가전략 수록</span>
+                  </span>
+                  <span className="flex items-center gap-1.5 text-indigo-300 font-bold">
+                    <span className="w-2.5 h-2.5 rounded bg-indigo-500 inline-block shadow-[0_0_8px_rgba(99,102,241,0.8)]" />
+                    <span>🟣 현재 열람</span>
+                  </span>
                 </div>
-              )}
-
-              <div className="w-[1px] h-10 bg-white/10 mx-1 hidden sm:block" />
-
-              {/* 문제 / 해설 탭 전환 토글 버튼 */}
-              <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10 shrink-0">
-                <button
-                  onClick={() => setSelectedTab('solution')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-                    selectedTab === 'solution'
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  해설 보기
-                </button>
-                <button
-                  onClick={() => setSelectedTab('problem')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all ${
-                    selectedTab === 'problem'
-                      ? 'bg-indigo-600 text-white shadow-md'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  문제 원본
-                </button>
               </div>
 
-              <div className="flex-1 flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x items-center">
-                {selectedList.map((record, idx) => {
-                  const 번Match = record.name.match(/(\d+)번/);
-                  const reviewLabel = 번Match ? 번Match[1] : String(idx + 1);
-                  const isLibrary = mode === 'library';
-                  const libraryLabel = record.name.replace(/\.html?$/i, '');
-                  const isChecked = isRecordChecked(record.id);
+              {/* Row 2: 10개 문제 문항 그리드 (가로 드래그 없이 한 화면에 10개가 쏙 들어오는 10컬럼 그리드) */}
+              {mode === 'library' || chunks.length > 1 ? (
+                <div className="grid grid-cols-5 sm:grid-cols-10 gap-2 w-full pt-1">
+                  {currentChunkItems.map((record, idx) => {
+                    const isLibrary = mode === 'library';
+                    const libraryLabel = record.name.replace(/\.html?$/i, '');
+                    const isChecked = isRecordChecked(record.id);
+                    const isSelected = selectedRecord?.id === record.id;
+                    const hasStrategy = checkRecordHasStrategy(record);
+                    const actualIdx = (currentChunkData?.startIdx ?? 0) + idx;
 
-                  return (
-                    <div key={record.id} className="shrink-0 flex flex-col items-center gap-1.5 snap-center">
+                    return (
+                      <div key={record.id} className="flex flex-col items-center gap-1 w-full relative">
+                        <button
+                          onClick={() => {
+                            setSelectedRecord(record);
+                            startStealthPrefetch(selectedList, actualIdx, isLibrary ? 'html' : 'image');
+                          }}
+                          onMouseEnter={() => {
+                            prefetchItem(record, isLibrary ? 'html' : 'image');
+                          }}
+                          className={`relative w-full py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center font-black transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-gradient-to-b from-indigo-500 to-indigo-600 text-white shadow-[0_0_24px_rgba(99,102,241,0.7)] scale-[1.03] ring-2 ring-indigo-300 z-10'
+                              : hasStrategy
+                                ? 'bg-gradient-to-b from-amber-500/20 to-orange-500/10 text-amber-200 border border-amber-400/80 hover:border-amber-300 hover:bg-amber-500/30 shadow-[0_0_16px_rgba(245,158,11,0.3)]'
+                                : 'bg-white/5 text-slate-300 border border-white/10 hover:border-white/30 hover:bg-white/10 hover:text-white'
+                          }`}
+                          title={hasStrategy ? `${libraryLabel} (⚡ 추가전략 수록 문항!)` : libraryLabel}
+                        >
+                          {/* 추가전략 네온 뱃지 */}
+                          {hasStrategy && (
+                            <span className="absolute -top-2.5 -right-1 px-1.5 py-0.5 rounded-full text-[9px] font-black bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 shadow-[0_0_10px_rgba(245,158,11,0.9)] animate-pulse flex items-center gap-0.5 tracking-tighter">
+                              ⚡ 전략
+                            </span>
+                          )}
+                          <span className="text-xs md:text-sm tracking-tight truncate max-w-full">
+                            {libraryLabel}
+                          </span>
+                        </button>
+
+                        {/* 복습 체크박스 */}
+                        {isLibrary && (
+                          <label
+                            onClick={(e) => e.stopPropagation()}
+                            className={`flex items-center justify-center gap-1 w-full cursor-pointer select-none py-0.5 rounded-lg text-[10px] font-bold transition-all ${
+                              isChecked
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'text-slate-400 hover:text-slate-200 bg-white/5 border border-white/10 hover:border-white/20'
+                            }`}
+                            title="체크 시 이 문제가 복습(Review)에 해당 회차 폴더로 자동 정리됩니다"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleRecordReview(record)}
+                              className="w-3 h-3 rounded border-white/30 text-indigo-600 focus:ring-0 cursor-pointer accent-indigo-600"
+                            />
+                            <span className="text-[10px]">복습</span>
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex gap-3 overflow-x-auto py-2 scrollbar-hide snap-x items-center">
+                  {selectedList.map((record, idx) => {
+                    const 번Match = record.name.match(/(\d+)번/);
+                    const reviewLabel = 번Match ? 번Match[1] : String(idx + 1);
+                    return (
                       <button
-                        title={isLibrary ? libraryLabel : undefined}
-                        onClick={() => { 
-                          setSelectedRecord(record); 
-                          startStealthPrefetch(selectedList, idx, isLibrary ? 'html' : 'image');
+                        key={record.id}
+                        onClick={() => {
+                          setSelectedRecord(record);
+                          startStealthPrefetch(selectedList, idx, 'image');
                         }}
-                        onMouseEnter={() => {
-                          prefetchItem(record, isLibrary ? 'html' : 'image');
-                        }}
-                        className={`rounded-2xl flex items-center justify-center font-black transition-all ${
-                          isLibrary
-                            ? `px-3.5 py-2 md:px-4 md:py-2.5 text-xs md:text-sm min-w-[70px] ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-[1.02]' : 'bg-white/5 text-slate-400 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
-                            : `w-14 h-14 md:w-16 md:h-16 text-lg ${selectedRecord?.id === record.id ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110' : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'}`
+                        className={`w-14 h-14 md:w-16 md:h-16 rounded-2xl flex items-center justify-center text-lg font-black transition-all ${
+                          selectedRecord?.id === record.id
+                            ? 'bg-indigo-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.5)] scale-110'
+                            : 'bg-white/5 text-slate-500 border border-white/5 hover:border-white/20 hover:text-slate-200'
                         }`}
                       >
-                        {isLibrary ? <span className="truncate">{libraryLabel}</span> : reviewLabel}
+                        {reviewLabel}
                       </button>
-
-                      {/* 🌟 [2번 스샷 반영] 각 파일리스트 하단 체크박스 (체크 시 학생 복습 폴더에 자동 정리) */}
-                      {isLibrary && (
-                        <label 
-                          onClick={(e) => e.stopPropagation()} 
-                          className={`flex items-center gap-1 cursor-pointer select-none px-2 py-0.5 rounded-lg text-[10px] font-black transition-all ${
-                            isChecked
-                              ? 'bg-indigo-600 text-white shadow-xs'
-                              : 'text-slate-400 hover:text-slate-200 bg-white/5 border border-white/10 hover:border-white/20'
-                          }`}
-                          title="체크 시 이 문제가 복습(Review)에 해당 회차 폴더로 자동 정리됩니다"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => handleToggleRecordReview(record)}
-                            className="w-3.5 h-3.5 rounded border-white/30 text-indigo-600 focus:ring-0 cursor-pointer accent-indigo-600"
-                          />
-                          <span>복습</span>
-                        </label>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="bg-white/5 border border-white/10 rounded-[48px] md:rounded-[64px] overflow-hidden flex flex-col min-h-[750px] lg:min-h-[850px] relative shadow-3xl backdrop-blur-3xl">
               <div className="flex-1 flex items-center justify-center p-4 md:p-8 bg-gradient-to-br from-transparent to-indigo-950/20 overflow-auto relative min-h-[600px]">

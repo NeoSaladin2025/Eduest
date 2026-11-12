@@ -19,6 +19,7 @@ export function useStudentData(studentId: string) {
   const [cartridges, setCartridges] = useState<string[]>([]);
   const [examLibrary, setExamLibrary] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [strategyMap, setStrategyMap] = useState<Record<string, boolean>>({});
 
   // 캐시 및 프리패치 큐
   const dataCache = useRef<{ [key: string]: string }>({});
@@ -198,13 +199,20 @@ export function useStudentData(studentId: string) {
     
     // 1단계: 인메모리 캐시 확인 (즉시 0ms)
     if (dataCache.current[cacheKey]) {
-      return dataCache.current[cacheKey];
+      const cached = dataCache.current[cacheKey];
+      if (type === 'html' && cached && (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략'))) {
+        setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+      }
+      return cached;
     }
 
     // 2단계: 브라우저 영구 IndexedDB 캐시 확인 (0~2ms)
     const idbData = await getCachedContent(cacheKey);
     if (idbData) {
       dataCache.current[cacheKey] = idbData;
+      if (type === 'html' && (idbData.includes('strategy-run-result') || idbData.includes('deck-tag-strategy') || idbData.includes('추가전략'))) {
+        setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+      }
       return idbData;
     }
 
@@ -217,6 +225,9 @@ export function useStudentData(studentId: string) {
         if (type === 'html') d = d.replace(/[₩¥]/g, '\\');
         dataCache.current[cacheKey] = d;
         setCachedContent(cacheKey, d); // 비동기 백그라운드 영구 캐싱
+        if (type === 'html' && (d.includes('strategy-run-result') || d.includes('deck-tag-strategy') || d.includes('추가전략'))) {
+          setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true }));
+        }
         return d;
       }
     } catch (e) {
@@ -238,6 +249,28 @@ export function useStudentData(studentId: string) {
       await fetchFileContent(fileId, type);
     } finally {
       prefetchQueue.current.delete(cacheKey);
+    }
+  };
+
+  // 🌟 폴더 진입 시 IndexedDB/캐시에서 추가전략 존재 여부 일괄 비동기 감지
+  const scanStrategyForItems = async (items: any[]) => {
+    if (!items || items.length === 0) return;
+    for (const item of items) {
+      const fileId = item.solutionUrl || item.id;
+      if (!fileId) continue;
+      const cacheKey = `${fileId}_solution`;
+      const cached = dataCache.current[cacheKey];
+      if (cached) {
+        if (cached.includes('strategy-run-result') || cached.includes('deck-tag-strategy') || cached.includes('추가전략')) {
+          setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true, [item.id]: true }));
+        }
+      } else {
+        getCachedContent(cacheKey).then(idb => {
+          if (idb && (idb.includes('strategy-run-result') || idb.includes('deck-tag-strategy') || idb.includes('추가전략'))) {
+            setStrategyMap(prev => prev[fileId] ? prev : ({ ...prev, [fileId]: true, [item.id]: true }));
+          }
+        }).catch(() => {});
+      }
     }
   };
 
@@ -269,9 +302,11 @@ export function useStudentData(studentId: string) {
     examLibrary,
     loading,
     dataCache,
+    strategyMap,
     fetchFileContent,
     prefetchItem,
     startStealthPrefetch,
+    scanStrategyForItems,
     extractNumber
   };
 }
