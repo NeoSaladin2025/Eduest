@@ -101,6 +101,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     cartridges, 
     examLibrary, 
     loading, 
+    libraryLoading,
     dataCache, 
     strategyMap,
     fetchFileContent,
@@ -1274,8 +1275,10 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     }
   };
 
-  // 비번 잠금 화면 (로딩 끝, 비번 있는 학생, 미인증)
-  const isLocked = !loading && (student?.has_password || student?.password) && !pwdVerified;
+  // 🌟 [초고속 0.00초 진입] 비번 잠금 화면 (비번이 있는 학생이고, 미인증 상태)
+  // 라이브러리 전체 로딩(!loading)을 기다릴 필요 없이 학생 정보만 있으면 즉각 0.00초 뿅 표출!
+  const hasPassword = Boolean(student?.has_password || student?.password);
+  const isLocked = Boolean(student && hasPassword && !pwdVerified);
   if (isLocked) {
     return (
       <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6">
@@ -1313,7 +1316,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     );
   }
 
-  if (loading && !showReviewer) return (
+  // 첫 방문 기기여서 학생 프로필조차 아직 없는 0.05초 동안만 최소한의 대기 표출
+  if (loading && !student && !showReviewer) return (
     <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center gap-6">
       <Loader2 className="animate-spin text-indigo-500" size={60} />
       <p className="text-white font-black text-2xl tracking-tighter animate-pulse uppercase italic">Syncing Eduest...</p>
@@ -1587,7 +1591,13 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                         <div className="text-xl font-black text-slate-600 group-hover:text-white uppercase">GO BACK</div>
                       </div>
                     )}
-                    {displayLibrary.filter(f => !f.name?.includes('쌍둥이')).map(folder => {
+                    {displayLibrary.length === 0 && libraryLoading ? (
+                      <div className="col-span-full py-20 flex flex-col items-center justify-center space-y-4 bg-white/5 border border-dashed border-white/10 rounded-[64px]">
+                        <Loader2 className="animate-spin text-indigo-500" size={48} />
+                        <p className="text-slate-400 font-bold text-sm tracking-wide">라이브러리 목록 동기화 중...</p>
+                      </div>
+                    ) : (
+                      displayLibrary.filter(f => !f.name?.includes('쌍둥이')).map(folder => {
                       const isUnlocked = isFolderAccessible(folder, student?.unlocked_folders);
                       const isLocked = !isUnlocked;
 
@@ -1611,8 +1621,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                           {!isLocked && <ArrowRight className="absolute right-12 bottom-12 opacity-0 group-hover:opacity-100 transition-all text-white" size={40}/>}
                         </div>
                       );
-                    })}
-                  </>
+                    })
+                  )}
+                </>
                 )}
               </div>
             )}

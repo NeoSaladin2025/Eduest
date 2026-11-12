@@ -21,11 +21,21 @@ export const checkContentHasStrategy = (content: string | null | undefined): boo
 
 export function useStudentData(studentId: string) {
   // --- 상태 관리 ---
-  const [student, setStudent] = useState<any>(null);
+  // 🌟 [초고속 0ms 즉시 뿅!] 이전에 접속한 기기라면 localStorage에서 프로필(이름, 비밀번호 유무 등)을 즉시 0ms 동기 복원
+  const [student, setStudent] = useState<any>(() => {
+    if (typeof window !== 'undefined' && studentId) {
+      try {
+        const cached = localStorage.getItem(`eduest_student_profile_${studentId}`);
+        if (cached) return JSON.parse(cached);
+      } catch (e) {}
+    }
+    return null;
+  });
   const [allRecords, setAllRecords] = useState<any[]>([]);
   const [cartridges, setCartridges] = useState<string[]>([]);
   const [examLibrary, setExamLibrary] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [studentLoading, setStudentLoading] = useState(() => !student);
+  const [libraryLoading, setLibraryLoading] = useState(true);
   const [strategyMap, setStrategyMap] = useState<Record<string, boolean>>({});
 
   // 캐시 및 프리패치 큐
@@ -100,36 +110,70 @@ export function useStudentData(studentId: string) {
     if (!studentId) return;
 
     const initPage = async () => {
+      // 🌟 [1단계: 0.05초 초고속 학생 프로필 로드]
+      // 메인 화면 진입 및 4자리 PIN 입력창 표출에 필요한 학생 기본 정보만 최우선 조회
       try {
-        setLoading(true);
-        
-        // 1. 학생 기본 정보 로드 (보안: password 컬럼을 아예 DB에 요청하지 않음!)
         const { data: studentData } = await supabase
           .from('students')
           .select('id, name, grade, drive_folder_id, is_unlocked, unlocked_folders')
           .eq('id', studentId)
           .single();
-          
-        if (!studentData) return;
 
-        // 2. 비밀번호 설정 여부는 전용 보안 API로 확인 (비밀번호 내용은 전송하지 않음)
-        let hasPassword = false;
-        try {
-          const checkRes = await fetch(`/api/student/verify-password?studentId=${encodeURIComponent(studentId)}`);
-          const checkData = await checkRes.json();
-          hasPassword = !!checkData.hasPassword;
-        } catch (e) {
-          console.error('Check password status error:', e);
+        if (studentData) {
+          // 비밀번호 설정 여부는 전용 보안 API로 확인 (비밀번호 내용은 전송하지 않음)
+          let hasPassword = false;
+          try {
+            const checkRes = await fetch(`/api/student/verify-password?studentId=${encodeURIComponent(studentId)}`);
+            const checkData = await checkRes.json();
+            hasPassword = !!checkData.hasPassword;
+          } catch (e) {
+            console.error('Check password status error:', e);
+          }
+
+          const profile = {
+            ...studentData,
+            has_password: hasPassword,
+          };
+          setStudent(profile);
+
+          // 다음번 방문 시 0.00초 즉시 뿅 표출을 위해 브라우저 로컬 스토리지에 캐싱
+          try {
+            localStorage.setItem(`eduest_student_profile_${studentId}`, JSON.stringify(profile));
+          } catch (e) {}
+          setStudentLoading(false);
+
+          // 🌟 복습 기록 로드 (Google Apps Script 연동 - 비동기 백그라운드)
+          if (studentData.drive_folder_id) {
+            fetch(GAS_LIBRARY_PROXY, { 
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                action: 'get_student_records', 
+                studentFolderId: studentData.drive_folder_id, 
+                apiKey: "eduest_super_secret_key_1234" 
+              }) 
+            })
+            .then(res => res.json())
+            .then(revData => {
+              if (revData?.success) {
+                const records = revData.records || [];
+                setAllRecords(records);
+                setCartridges(Array.from(new Set(records.map((r: any) => (r.name.match(/\[(.*?)\]/) || [null, "기본"])[1]))));
+              }
+            })
+            .catch(() => {});
+          }
         }
+      } catch (err) {
+        console.error("Student Profile Load Error:", err);
+      } finally {
+        setStudentLoading(false);
+      }
 
-        setStudent({
-          ...studentData,
-          has_password: hasPassword,
-        });
-
-        // 2. 라이브러리 트리 로드 (전체 구조를 가져와야 부모-자식 연결이 유지됨)
-        // PostgREST 기본 max-rows(예: 1000) 때문에 한 번에만 select 하면 하위 폴더 행이 잘리고
-        // 형제 폴더가 화면에서 사라질 수 있음 → 페이지 단위로 모두 수집
+      // 🌟 [2단계: 백그라운드 비동기 라이브러리 트리 로드]
+      // 학생이 비번을 치고 있거나 복습/숙제를 보는 동안 백그라운드에서 조용히 병렬로 가져옴! (화면 차단 0%)
+      try {
+        setLibraryLoading(true);
         const pageSize = 1000;
         let from = 0;
         const dbLibrary: any[] = [];
@@ -148,29 +192,10 @@ export function useStudentData(studentId: string) {
         if (dbLibrary.length > 0) {
           setExamLibrary(buildTree(dbLibrary));
         }
-
-        // 3. 복습 기록 로드 (Google Apps Script 연동)
-        fetch(GAS_LIBRARY_PROXY, { 
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            action: 'get_student_records', 
-            studentFolderId: studentData.drive_folder_id, 
-            apiKey: "eduest_super_secret_key_1234" 
-          }) 
-        })
-        .then(res => res.json())
-        .then(revData => {
-          if (revData.success) {
-            const records = revData.records || [];
-            setAllRecords(records);
-            setCartridges(Array.from(new Set(records.map((r: any) => (r.name.match(/\[(.*?)\]/) || [null, "기본"])[1]))));
-          }
-        });
       } catch (err) {
-        console.error("Data Load Error:", err);
+        console.error("Library Load Error:", err);
       } finally {
-        setLoading(false);
+        setLibraryLoading(false);
       }
     };
 
@@ -189,7 +214,13 @@ export function useStudentData(studentId: string) {
         (payload) => {
           // 🔥 실시간 업데이트: unlocked_folders 배열 포함 전체 상태 갱신
           console.log("실시간 데이터 동기화 완료 ⚡", payload.new);
-          setStudent(payload.new);
+          setStudent((prev: any) => {
+            const next = { ...prev, ...payload.new };
+            try {
+              localStorage.setItem(`eduest_student_profile_${studentId}`, JSON.stringify(next));
+            } catch (e) {}
+            return next;
+          });
         }
       )
       .subscribe();
@@ -310,7 +341,9 @@ export function useStudentData(studentId: string) {
     allRecords,
     cartridges,
     examLibrary,
-    loading,
+    loading: studentLoading,
+    studentLoading,
+    libraryLoading,
     dataCache,
     strategyMap,
     fetchFileContent,
