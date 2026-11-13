@@ -36,6 +36,7 @@ import { parseQuestionFromHtmlClient } from '@/lib/clientQuestionParser';
 
 interface StudentReviewExplorerProps {
   studentId: string;
+  studentGrade?: string;
   reviewData: StudentReviewData;
   onUpdateReviewData: (newData: StudentReviewData) => void;
   onOpenFileForReview: (file: ReviewItem, fileList: ReviewItem[]) => void;
@@ -43,6 +44,7 @@ interface StudentReviewExplorerProps {
 
 export default function StudentReviewExplorer({
   studentId,
+  studentGrade,
   reviewData,
   onUpdateReviewData,
   onOpenFileForReview,
@@ -1314,6 +1316,7 @@ export default function StudentReviewExplorer({
       {testModalState && (
         <ReviewTestModal
           studentId={studentId}
+          studentGrade={studentGrade}
           items={testModalState.items}
           title={testModalState.title}
           folderId={testModalState.folderId}

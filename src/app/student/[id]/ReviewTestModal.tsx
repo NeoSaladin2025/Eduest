@@ -30,15 +30,19 @@ import {
   Minimize2,
   Trash2,
   ThumbsUp,
-  ThumbsDown
+  ThumbsDown,
+  Calculator
 } from 'lucide-react';
 import { ReviewItem, StudentReviewData, ReviewTestHistory, ReviewTestResultItem, ReviewLapRecord } from './types';
 import ReviewSolutionModal from './ReviewSolutionModal';
 import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
 import { parseQuestionFromHtmlClient, ExtractedQuestionResult } from '@/lib/clientQuestionParser';
+import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
+import { areMathAnswersEquivalent } from '@/lib/mathFormulaUtils';
 
 interface ReviewTestModalProps {
   studentId: string;
+  studentGrade?: string;
   items: ReviewItem[];
   title?: string;
   folderId?: string | null;
@@ -49,6 +53,7 @@ interface ReviewTestModalProps {
 
 export default function ReviewTestModal({
   studentId,
+  studentGrade,
   items,
   title = '복습 테스트',
   folderId = null,
@@ -67,6 +72,13 @@ export default function ReviewTestModal({
 
   // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
   const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
+
+  // 🧮 단답형 수식 입력 패드 상태 & 입력창 ref
+  const [showMathKeypad, setShowMathKeypad] = useState<boolean>(true);
+  const [activeSubLabel, setActiveSubLabel] = useState<string>('');
+  const shortAnswerInputRef = useRef<HTMLInputElement | null>(null);
+  const subInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const activeSubInputRef = useRef<HTMLInputElement | null>(null);
 
   // 📝 서술형 문항 3-Way 제출 모드 관리: 'PAPER' | 'PHOTO' | 'TEXT'
   const [descriptiveSubmitModes, setDescriptiveSubmitModes] = useState<Record<string, 'PAPER' | 'PHOTO' | 'TEXT'>>({});
@@ -488,7 +500,16 @@ export default function ReviewTestModal({
     // 1. 공백 제거 후 완전 일치
     if (cUser === cCorrect || (cRaw && cUser === cRaw)) return true;
 
-    // 2. 스마트 단위 제거 후 핵심 값 비교
+    // 2. 수식 동치 채점 (분수/괄호/제곱근/곱셈 순서 등 대수 동치 지원)
+    if (
+      !isMultipleChoice &&
+      (areMathAnswersEquivalent(userAns, correctAns) ||
+        (rawAns && areMathAnswersEquivalent(userAns, rawAns)))
+    ) {
+      return true;
+    }
+
+    // 3. 스마트 단위 제거 후 핵심 값 비교
     const strippedUser = stripUnitsAndExtras(userAns);
     const strippedCorrect = stripUnitsAndExtras(correctAns);
     const strippedRaw = stripUnitsAndExtras(rawAns);
@@ -497,13 +518,13 @@ export default function ReviewTestModal({
       return true;
     }
 
-    // 3. 객관식(1~5) 전용 매칭
+    // 4. 객관식(1~5) 전용 매칭
     if (isMultipleChoice) {
       const symbolMap: Record<string, string> = {
         '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5',
       };
       const normUser = symbolMap[userAns.trim()] || userAns.trim();
-      const correctNumMatch = cCorrect.match(/^([1-5])/);
+      const correctNumMatch = cCorrect.match(/^([1-5])(?:\s*번)?$/);
       if (correctNumMatch && correctNumMatch[1] === normUser) return true;
     }
 
@@ -1314,7 +1335,7 @@ export default function ReviewTestModal({
                   const descriptiveMode = descriptiveSubmitModes[currentItem.id] || (isDirectPaperChecked ? 'PAPER' : (isPhotoSubmission ? 'PHOTO' : 'TEXT'));
 
                   return (
-                    <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[32px] p-5 md:p-6 flex flex-col justify-between space-y-5">
+                    <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[32px] p-5 md:p-6 flex flex-col justify-between space-y-5 overflow-y-auto">
                       <div>
                         <div className="flex items-center justify-between mb-1">
                           <h4 className="text-base font-black text-white flex items-center gap-2">
@@ -1410,51 +1431,149 @@ export default function ReviewTestModal({
                                   </span>
                                 </div>
 
-                                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                                <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                                   {subLabels.map((lbl: string) => {
                                     const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
                                     const val = subAnsMap[lbl] || '';
+                                    const targetLabel = activeSubLabel && subLabels.includes(activeSubLabel) ? activeSubLabel : subLabels[0];
+                                    const isActiveSub = targetLabel === lbl;
                                     return (
-                                      <div key={lbl} className="flex items-center gap-2 bg-white/5 p-1.5 rounded-2xl border border-white/10 focus-within:border-violet-500">
+                                      <div
+                                        key={lbl}
+                                        className={`flex items-center gap-2 p-1.5 rounded-2xl border transition-colors ${
+                                          isActiveSub
+                                            ? 'bg-violet-500/10 border-violet-500/60'
+                                            : 'bg-white/5 border-white/10 focus-within:border-violet-500'
+                                        }`}
+                                      >
                                         <span className="w-10 text-center font-black text-xs text-violet-400 shrink-0">
                                           {lbl}
                                         </span>
                                         <input
+                                          ref={(el) => {
+                                            subInputRefs.current[lbl] = el;
+                                            if (isActiveSub) activeSubInputRef.current = el;
+                                          }}
                                           type="text"
                                           value={val}
+                                          onFocus={() => {
+                                            setActiveSubLabel(lbl);
+                                            activeSubInputRef.current = subInputRefs.current[lbl] || null;
+                                          }}
                                           onChange={e => handleSubAnswerChange(currentItem.id, lbl, e.target.value)}
-                                          placeholder="정답 입력"
+                                          placeholder="정답 또는 수식 입력"
                                           className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2 px-3 text-white font-black text-sm focus:outline-none placeholder:text-slate-600 text-center"
                                         />
                                       </div>
                                     );
                                   })}
                                 </div>
+
+                                {/* 🧮 복습 소문항용 수식 패드 */}
+                                {(() => {
+                                  const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                                  const targetLabel = activeSubLabel && subLabels.includes(activeSubLabel) ? activeSubLabel : subLabels[0];
+                                  const targetVal = subAnsMap[targetLabel] || '';
+                                  return (
+                                    <div className="pt-1 space-y-2">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
+                                          패드 대상: <strong className="text-violet-300">{targetLabel}</strong>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setShowMathKeypad(prev => !prev)}
+                                          className={`px-2.5 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                                            showMathKeypad
+                                              ? 'bg-violet-600/30 text-violet-200 border-violet-500/50'
+                                              : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                                          }`}
+                                        >
+                                          <Calculator size={12} />
+                                          {showMathKeypad ? '패드 접기' : '수식 패드'}
+                                        </button>
+                                      </div>
+                                      {!showMathKeypad && targetVal && (
+                                        <MathFormulaPreview value={targetVal} theme="dark" showHeader />
+                                      )}
+                                      {showMathKeypad && (
+                                        <MathKeypad
+                                          value={targetVal}
+                                          onChange={nextVal => handleSubAnswerChange(currentItem.id, targetLabel, nextVal)}
+                                          inputRef={activeSubInputRef}
+                                          theme="dark"
+                                          compact
+                                          grade={studentGrade}
+                                        />
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             ) : (
-                              /* 일반 단일 단답형 입력칸 + 소문항 분할 버튼 */
+                              /* 일반 단일 단답형 입력칸 + 소문항 분할 버튼 + 수식 패드 */
                               <div className="space-y-2.5">
-                                <div className="flex items-center justify-between">
-                                  <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                                    단답형 답안 직접 입력
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <label className="text-[11px] font-black text-slate-400 tracking-wide whitespace-nowrap">
+                                    단답형 답안
                                   </label>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleAddSubQuestion(currentItem.id)}
-                                    className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                                    title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
-                                  >
-                                    <Plus size={11} /> (1), (2) 소문항으로 분할
-                                  </button>
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowMathKeypad(prev => !prev)}
+                                      className={`text-[10px] px-2.5 py-1 rounded-lg font-black flex items-center gap-1 border transition-colors cursor-pointer whitespace-nowrap ${
+                                        showMathKeypad
+                                          ? 'bg-indigo-600/30 text-indigo-200 border-indigo-400/50'
+                                          : 'bg-white/5 text-slate-300 border-white/15 hover:bg-white/10'
+                                      }`}
+                                      title="수식 입력 패드 토글"
+                                    >
+                                      <Calculator size={11} />
+                                      {showMathKeypad ? '패드 접기' : '수식 패드'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddSubQuestion(currentItem.id)}
+                                      className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                                      title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
+                                    >
+                                      <Plus size={11} /> 소문항 분할
+                                    </button>
+                                  </div>
                                 </div>
 
-                                <input
-                                  type="text"
-                                  value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
-                                  onChange={e => handleAnswerSelect(currentItem.id, e.target.value)}
-                                  placeholder="정답 입력 (예: 42, -5 등)"
-                                  className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3 px-4 text-center text-base font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
-                                />
+                                {(() => {
+                                  const singleVal =
+                                    currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__'
+                                      ? ''
+                                      : typeof currentAnswer === 'string'
+                                      ? currentAnswer
+                                      : '';
+                                  return (
+                                    <>
+                                      <input
+                                        ref={shortAnswerInputRef}
+                                        type="text"
+                                        value={singleVal}
+                                        onChange={e => handleAnswerSelect(currentItem.id, e.target.value)}
+                                        placeholder="정답 입력 (예: 42, (x+2)(x-3), 3/4)"
+                                        className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3 px-4 text-center text-base font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                                      />
+                                      {!showMathKeypad && singleVal && (
+                                        <MathFormulaPreview value={singleVal} theme="dark" showHeader />
+                                      )}
+                                      {showMathKeypad && (
+                                        <MathKeypad
+                                          value={singleVal}
+                                          onChange={nextVal => handleAnswerSelect(currentItem.id, nextVal)}
+                                          inputRef={shortAnswerInputRef}
+                                          theme="dark"
+                                          grade={studentGrade}
+                                        />
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             )}
                           </div>

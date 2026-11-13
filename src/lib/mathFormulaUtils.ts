@@ -319,9 +319,9 @@ export function toLatexForPreview(input: string): string {
   // 분수 변환: (a)/(b) 또는 simple a/b
   // 괄호 분수 (a)/(b)
   s = s.replace(/\(([^()]+)\)\s*\/\s*\(([^()]+)\)/g, '\\frac{$1}{$2}');
-  s = s.replace(/\(([^()]+)\)\s*\/\s*([a-zA-Z0-9√\\{}^_]+)/g, '\\frac{$1}{$2}');
-  s = s.replace(/([a-zA-Z0-9√\\{}^_]+)\s*\/\s*\(([^()]+)\)/g, '\\frac{$1}{$2}');
-  s = s.replace(/([a-zA-Z0-9√\\{}^_]+)\s*\/\s*([a-zA-Z0-9√\\{}^_]+)/g, '\\frac{$1}{$2}');
+  s = s.replace(/\(([^()]+)\)\s*\/\s*([a-zA-Z0-9πθαβ√\\{}^_]+)/g, '\\frac{$1}{$2}');
+  s = s.replace(/([a-zA-Z0-9πθαβ√\\{}^_]+)\s*\/\s*\(([^()]+)\)/g, '\\frac{$1}{$2}');
+  s = s.replace(/([a-zA-Z0-9πθαβ√\\{}^_]+)\s*\/\s*([a-zA-Z0-9πθαβ√\\{}^_]+)/g, '\\frac{$1}{$2}');
 
   // 지수/아래첨자 괄호 변환: x^(n+1) -> x^{n+1}
   s = s.replace(/\^\(([^()]+)\)/g, '^{$1}');
@@ -352,8 +352,11 @@ export function toLatexForPreview(input: string): string {
     .replace(/∪/g, '\\cup ')
     .replace(/∩/g, '\\cap ')
     .replace(/∅/g, '\\emptyset ')
+    .replace(/∑/g, '\\sum ')
+    .replace(/∫/g, '\\int ')
+    .replace(/□/g, '\\square ')
     .replace(/°/g, '^{\\circ}')
-    .replace(/\b(sin|cos|tan|ln|log)\b/g, '\\$1');
+    .replace(/(?<![\\a-zA-Z])(lim|sin|cos|tan|ln|log)(?![a-zA-Z])/g, '\\$1');
 
   return s;
 }

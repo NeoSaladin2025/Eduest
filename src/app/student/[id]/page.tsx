@@ -1793,6 +1793,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
               /* 🌟 [2번 스샷 반영] 윈도우 탐색기 스타일 복습 관리 화면 */
               <StudentReviewExplorer
                 studentId={student?.id}
+                studentGrade={student?.grade}
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
                 onOpenFileForReview={handleOpenFileForReview}

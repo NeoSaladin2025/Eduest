@@ -5140,6 +5140,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                         inputRef={activeAnswerInputRef}
                                         theme="light"
                                         compact
+                                        grade={examGrade}
                                       />
                                     </div>
                                   )}
@@ -5241,6 +5242,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                       inputRef={activeAnswerInputRef}
                                       theme="light"
                                       compact
+                                      grade={examGrade}
                                     />
                                   </div>
                                 )}

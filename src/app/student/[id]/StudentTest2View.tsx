@@ -3488,24 +3488,24 @@ export default function StudentTest2View({
                               return (
                                 <div className="pt-1 space-y-2">
                                   <div className="flex items-center justify-between gap-2">
-                                    <span className="text-[10px] font-bold text-slate-400">
-                                      수식 패드 대상: <strong className="text-violet-300">{targetLabel}</strong>
+                                    <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">
+                                      패드 대상: <strong className="text-violet-300">{targetLabel}</strong>
                                     </span>
                                     <button
                                       type="button"
                                       onClick={() => setShowMathKeypad(prev => !prev)}
-                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-colors cursor-pointer ${
+                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                                         showMathKeypad
                                           ? 'bg-violet-600/30 text-violet-200 border-violet-500/50'
                                           : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
                                       }`}
                                     >
                                       <Calculator size={12} />
-                                      {showMathKeypad ? '수식 패드 접기' : '공학/수식 패드 열기'}
+                                      {showMathKeypad ? '패드 접기' : '수식 패드'}
                                     </button>
                                   </div>
                                   {!showMathKeypad && targetVal && (
-                                    <MathFormulaPreview value={targetVal} theme="dark" />
+                                    <MathFormulaPreview value={targetVal} theme="dark" showHeader />
                                   )}
                                   {showMathKeypad && (
                                     <MathKeypad
@@ -3514,6 +3514,7 @@ export default function StudentTest2View({
                                       inputRef={activeSubInputRef}
                                       theme="dark"
                                       compact
+                                      grade={studentGrade}
                                     />
                                   )}
                                 </div>
@@ -3523,31 +3524,31 @@ export default function StudentTest2View({
                         ) : (
                           /* 2-B: 일반 단일 단답형 입력칸 + 소문항 분할 버튼 */
                           <div className="space-y-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                                단답형 답안 직접 입력
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <label className="text-[11px] font-black text-slate-400 tracking-wide whitespace-nowrap">
+                                단답형 답안
                               </label>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 shrink-0">
                                 <button
                                   type="button"
                                   onClick={() => setShowMathKeypad(prev => !prev)}
-                                  className={`text-[10px] px-2 py-0.5 rounded-lg font-black flex items-center gap-1 border transition-colors cursor-pointer ${
+                                  className={`text-[10px] px-2.5 py-1 rounded-lg font-black flex items-center gap-1 border transition-colors cursor-pointer whitespace-nowrap ${
                                     showMathKeypad
                                       ? 'bg-indigo-600/30 text-indigo-200 border-indigo-400/50'
                                       : 'bg-white/5 text-slate-300 border-white/15 hover:bg-white/10'
                                   }`}
-                                  title="인수분해, 분수, 루트, 공학함수 입력 패드 토글"
+                                  title="수식 입력 패드 토글"
                                 >
                                   <Calculator size={11} />
-                                  {showMathKeypad ? '수식패드 접기' : '수식패드'}
+                                  {showMathKeypad ? '패드 접기' : '수식 패드'}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleAddSubQuestion(question.id)}
-                                  className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                  className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                                   title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
                                 >
-                                  <Plus size={11} /> (1), (2) 소문항으로 분할
+                                  <Plus size={11} /> 소문항 분할
                                 </button>
                               </div>
                             </div>
@@ -3566,11 +3567,11 @@ export default function StudentTest2View({
                                     type="text"
                                     value={singleVal}
                                     onChange={e => handleAnswerSelect(question.id, e.target.value)}
-                                    placeholder="정답 입력 (예: 83, (x+2)(x-3), 3/4 등)"
-                                    className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                                    placeholder="정답 입력 (예: 83, (x+2)(x-3), 3/4)"
+                                    className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
                                   />
                                   {!showMathKeypad && singleVal && (
-                                    <MathFormulaPreview value={singleVal} theme="dark" />
+                                    <MathFormulaPreview value={singleVal} theme="dark" showHeader />
                                   )}
                                   {showMathKeypad && (
                                     <MathKeypad
@@ -3578,6 +3579,7 @@ export default function StudentTest2View({
                                       onChange={nextVal => handleAnswerSelect(question.id, nextVal)}
                                       inputRef={shortAnswerInputRef}
                                       theme="dark"
+                                      grade={studentGrade}
                                     />
                                   )}
                                 </>
