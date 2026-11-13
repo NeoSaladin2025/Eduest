@@ -31,6 +31,7 @@ import ClassManagerMain from './classmanager/main';
 import StudentViewManagerMain from './studentviewmanager/main';
 import ExamManagerMain from './exammgr/main';
 import TestDataManagerMain from './testdatamgr/main';
+import TextbookDataManagerMain from './textbookmgr/main';
 import ReviewManagerMain from './reviewmgr/main';
 import MonitoringCenterMain from './monitoring/main';
 import LibraryDeepAnalysisMain from './deep-analysis/LibraryDeepAnalysisMain';
@@ -69,6 +70,7 @@ export default function TeacherAdminPage() {
   const [expandedMobileGroups, setExpandedMobileGroups] = useState<Record<string, boolean>>({
     group_students: true,
     group_classes: true,
+    group_textbooks: true,
     group_exams: true,
   });
   const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -196,6 +198,19 @@ export default function TeacherAdminPage() {
           label: '복습 & 과제 관리', 
           desc: '복습 현황 모니터링, 특별 복습지 배정', 
           icon: <BookOpen size={15} /> 
+        },
+      ],
+    },
+    {
+      id: 'group_textbooks',
+      label: '교재 관리',
+      icon: <BookOpen size={15} />,
+      children: [
+        {
+          id: 'textbookdatamgr',
+          label: '교재자료 DB 구축',
+          desc: '원천 문항 기반 대/소단원 교재 빌딩',
+          icon: <BookOpen size={15} className="text-indigo-600" />
         },
       ],
     },
@@ -560,6 +575,13 @@ export default function TeacherAdminPage() {
           {activeMenu === 'exammgr' && (
             <div className="w-full h-full bg-slate-50 overflow-y-auto">
               <ExamManagerMain onNavigate={(menu: string) => setActiveMenu(menu)} />
+            </div>
+          )}
+
+          {/* ✅ 교재자료 관리 (원천문항 기반 대/소단원 교재 빌딩) */}
+          {activeMenu === 'textbookdatamgr' && (
+            <div className="w-full h-full bg-slate-50 overflow-y-auto">
+              <TextbookDataManagerMain />
             </div>
           )}
 

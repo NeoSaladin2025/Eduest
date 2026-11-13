@@ -14,7 +14,9 @@ const EXCLUDED_IDS = [
   "test2_student_submissions_data",
   "test_bank_categories_data",
   "test_bank_items_data",
-  "test_twin_problems_data"
+  "test_twin_problems_data",
+  "textbook_builder_list_data",
+  "textbook_builder_items_data"
 ];
 
 // 헬퍼: 1000개 행 제한 없이 특정 학년의 전체 데이터 수집 (페이지네이션)

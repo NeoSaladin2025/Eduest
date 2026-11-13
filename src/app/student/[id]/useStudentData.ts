@@ -58,6 +58,8 @@ export function useStudentData(studentId: string) {
       'test_bank_categories_data',
       'test_bank_items_data',
       'test_twin_problems_data',
+      'textbook_builder_list_data',
+      'textbook_builder_items_data',
     ]);
 
     const twinIds = new Set<string>();
