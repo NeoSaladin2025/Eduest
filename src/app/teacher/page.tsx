@@ -70,7 +70,6 @@ export default function TeacherAdminPage() {
   const [expandedMobileGroups, setExpandedMobileGroups] = useState<Record<string, boolean>>({
     group_students: true,
     group_classes: true,
-    group_textbooks: true,
     group_exams: true,
   });
   const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -202,21 +201,8 @@ export default function TeacherAdminPage() {
       ],
     },
     {
-      id: 'group_textbooks',
-      label: '교재 관리',
-      icon: <BookOpen size={15} />,
-      children: [
-        {
-          id: 'textbookdatamgr',
-          label: '교재자료 DB 구축',
-          desc: '원천 문항 기반 대/소단원 교재 빌딩',
-          icon: <BookOpen size={15} className="text-indigo-600" />
-        },
-      ],
-    },
-    {
       id: 'group_exams',
-      label: '테스트 관리',
+      label: '테스트 및 교재관리',
       icon: <FileCheck size={15} />,
       children: [
         { 
@@ -230,6 +216,12 @@ export default function TeacherAdminPage() {
           label: '테스트자료 DB 구축', 
           desc: '원천 문항 데이터 선별 및 시험 DB', 
           icon: <Layers size={15} /> 
+        },
+        {
+          id: 'textbookdatamgr',
+          label: '교재자료 DB 구축',
+          desc: '원천 문항 기반 대/소단원 교재 빌딩',
+          icon: <BookOpen size={15} className="text-indigo-600" />
         },
       ],
     },

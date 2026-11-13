@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
+import { areMathAnswersEquivalent } from "@/lib/mathFormulaUtils";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -201,6 +202,17 @@ function checkAnswerMatch(
 
   if (strippedUser && (strippedUser === strippedCorrect || (strippedRaw && strippedUser === strippedRaw))) {
     return true;
+  }
+
+  // 2-1. 단답형 수식 동치 판정 (인수 순서 교환, 분수/루트/거듭제곱 표기 차이 등)
+  if (!isMultipleChoice) {
+    if (
+      areMathAnswersEquivalent(userAns, correctAns) ||
+      (rawAns && areMathAnswersEquivalent(userAns, rawAns)) ||
+      (strippedUser && strippedCorrect && areMathAnswersEquivalent(strippedUser, strippedCorrect))
+    ) {
+      return true;
+    }
   }
 
   // 3. 객관식(1~5) 전용 매칭

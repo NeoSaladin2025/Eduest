@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { detectSubQuestions, detectQuestionType, normalizeOverlines } from "@/lib/extractQuestionUtils";
+import { convertMathMLInHtml, extractElementInnerByClass, decodeMathEntities } from "@/lib/mathFormulaUtils";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -97,10 +98,11 @@ function decodeHtmlEntities(str: string): string {
 function cleanHtmlContent(rawHtml: string): string {
   if (!rawHtml) return "";
 
-  // 0. MathML <mover> 및 <menclose> 윗줄(선분/변) 기호 사전 변환
-  let processed = normalizeOverlines(rawHtml);
+  // 0. MathML <math> 블록을 구조 손실 없이 정규 수식 문자열(3/4, x^2, √2 등)로 변환
+  let processed = convertMathMLInHtml(rawHtml);
+  processed = normalizeOverlines(processed);
 
-  // 1. MathML 연산자 및 기호 앞뒤 공백 정돈 (예: ≡, =, +, -, ×, ÷ 등)
+  // 1. MathML 잔여 연산자 및 기호 앞뒤 공백 정돈
   processed = processed
     .replace(/<mo[^>]*>([≡=≠≤≥≈~+×÷])<\/mo>/gi, ' $1 ')
     .replace(/<mo[^>]*>([,])<\/mo>/gi, '$1 ');
@@ -115,7 +117,7 @@ function cleanHtmlContent(rawHtml: string): string {
   processed = processed.replace(/<[^>]+>/g, '');
 
   // 4. HTML 엔티티 디코딩
-  processed = decodeHtmlEntities(processed);
+  processed = decodeMathEntities(processed);
 
   // 4-1. 텍스트화된 상태의 대시/오버라인 기호 재정규화 (예: AB― -> A̅B̅)
   processed = normalizeOverlines(processed);
@@ -182,25 +184,20 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
   let extractedRaw = "";
   let cleanAnswer = "";
 
-  // 2-1. final-answer-text 태그 검색 (span 또는 div의 전체 닫는 태그 매칭)
-  const mAnsSpan = html.match(/<span[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
-  const mAnsDiv = html.match(/<div[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-  const mAnsBox = html.match(/<div[^>]*class=["'][^"']*final-answer-box[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+  // 2-1. final-answer-text 태그 검색 (중첩 태그 안전 추출)
+  const ansTextInner = extractElementInnerByClass(html, "final-answer-text");
+  const ansBoxInner = !ansTextInner ? extractElementInnerByClass(html, "final-answer-box") : null;
 
-  if (mAnsSpan) {
-    extractedRaw = mAnsSpan[1];
-    matchedRule = "class=\"final-answer-text\" (span) 전체 태그 매칭";
-    rawHtmlSnippet = mAnsSpan[0].slice(0, 350);
-  } else if (mAnsDiv) {
-    extractedRaw = mAnsDiv[1];
-    matchedRule = "class=\"final-answer-text\" (div) 전체 태그 매칭";
-    rawHtmlSnippet = mAnsDiv[0].slice(0, 350);
-  } else if (mAnsBox) {
+  if (ansTextInner) {
+    extractedRaw = ansTextInner;
+    matchedRule = "class=\"final-answer-text\" 전체 태그 매칭 (MathML 보존)";
+    rawHtmlSnippet = ansTextInner.slice(0, 350);
+  } else if (ansBoxInner) {
     // final-answer-box 내부에서 label(FINAL ANSWER)을 제거한 본문 추출
-    const inner = mAnsBox[1].replace(/<[^>]*class=["'][^"']*final-answer-label[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/i, '');
+    const inner = ansBoxInner.replace(/<[^>]*class=["'][^"']*final-answer-label[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/i, '');
     extractedRaw = inner;
     matchedRule = "class=\"final-answer-box\" 컨테이너 매칭";
-    rawHtmlSnippet = mAnsBox[0].slice(0, 350);
+    rawHtmlSnippet = ansBoxInner.slice(0, 350);
   } else {
     // 2-2. 정답 표기 패턴 검색
     const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
@@ -218,44 +215,15 @@ function extractQuestionData(html: string, fallbackFile: { drive_id: string; nam
   // HTML 태그 제거 및 수식/줄바꿈 정제
   const rawAnswer = cleanHtmlContent(extractedRaw);
 
-  // 서술형(채점 대기 필요) 답안인지 자동 판별
-  function isDescriptiveAnswer(cleanAnswer: string, rawAnswer: string): boolean {
-    if (!cleanAnswer && !rawAnswer) return false;
-    const target = (cleanAnswer || rawAnswer).trim();
-
-    // 1. 객관식 1~5는 단답형
-    if (/^[1-5]$/.test(target)) return false;
-
-    // 2. 순수 단일 숫자(정수, 음수, 소수)는 단답형 (예: 83, -12, 0.5)
-    if (/^-?\d+(\.\d+)?$/.test(target)) return false;
-
-    // 3. 소문항 패턴 ((1), (2), ①, ② 등) 포함 시 서술형
-    if (/\([1-9]\)|[①②③④⑤❶❷❸❹❺]|\[[1-9]\]|\b[1-9]\)/.test(rawAnswer)) return true;
-
-    // 4. 서술/풀이 라벨(문제:, 정답:, 이므로, 따라서 등) 포함 시 서술형
-    if (/문제\s*:|정답\s*:|이므로|따라서|풀이|구하시오/i.test(rawAnswer)) return true;
-
-    // 5. 줄바꿈이 포함된 경우 서술형
-    if (/\r|\n/.test(rawAnswer)) return true;
-
-    // 6. 띄어쓰기가 포함된 경우 (선생님 요청 핵심 기준)
-    if (/\s+/.test(target)) return true;
-
-    // 7. 텍스트 길이가 12자 이상인 경우
-    if (target.length >= 12) return true;
-
-    return false;
-  }
-
   if (rawAnswer) {
-    // 객관식 번호(①~⑤ 또는 1~5) 추출 시도
-    const normalized = normalizeCircledNumber(rawAnswer);
-    const numMatch = normalized.match(/^([1-5])\b/);
+    // 객관식 번호(①~⑤ 또는 단독 1~5) 추출 시도 (분수 3/4, 루트 2√3 오인 방지)
+    const normalized = normalizeCircledNumber(rawAnswer).trim();
+    const numMatch = normalized.match(/^([1-5])(?:\s*번)?$/);
     if (numMatch) {
       cleanAnswer = numMatch[1];
     } else {
-      // 주관식 답안
-      cleanAnswer = normalized.trim();
+      // 주관식/수식 답안
+      cleanAnswer = normalized;
     }
   }
 

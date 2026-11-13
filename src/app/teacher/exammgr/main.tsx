@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   FileCheck, 
   Plus, 
@@ -46,8 +46,10 @@ import {
   RefreshCw,
   FolderKanban,
   BookmarkPlus,
-  Edit3
+  Edit3,
+  Calculator
 } from 'lucide-react';
+import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
 import { ExamPaper, ExamQuestion, ExamSubQuestion, StudentOverrideConfig } from '@/app/api/test2/exam/route';
 import { supabase } from '@/lib/supabase';
 import { TestCategory, TestBankItem } from '@/app/api/test2/bank/route';
@@ -201,6 +203,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [extractedQuestions, setExtractedQuestions] = useState<ExamQuestion[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionDone, setExtractionDone] = useState(false);
+
+  // 🧮 정답 검수/수정용 수식 키패드 상태 & 입력창 ref
+  const [openMathKeypadKey, setOpenMathKeypadKey] = useState<string | null>(null);
+  const answerInputRefs = useRef<Record<string, HTMLInputElement | HTMLTextAreaElement | null>>({});
+  const activeAnswerInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
 
   // 🌟 문항 배점 모드 ('auto' | 'manual') 및 양방향 스마트 보정 상태
   const [pointsMode, setPointsMode] = useState<'auto' | 'manual'>('auto');
@@ -5068,32 +5075,77 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           </div>
 
                           <div className="space-y-1">
-                            {q.sub_questions.map((sq, subIdx) => (
-                              <div key={subIdx} className="flex items-center gap-1.5">
-                                <input
-                                  type="text"
-                                  value={sq.label}
-                                  onChange={e => handleUpdateSubQuestion(idx, subIdx, 'label', e.target.value)}
-                                  placeholder="(1)"
-                                  className="w-10 px-1.5 py-1 text-center font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
-                                />
-                                <input
-                                  type="text"
-                                  value={sq.answer}
-                                  onChange={e => handleUpdateSubQuestion(idx, subIdx, 'answer', e.target.value)}
-                                  placeholder="소문항 정답"
-                                  className="flex-1 px-2 py-1 font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveSubQuestion(idx, subIdx)}
-                                  className="p-1 text-slate-400 hover:text-rose-500 rounded"
-                                  title="소문항 삭제"
-                                >
-                                  <Trash2 size={11} />
-                                </button>
-                              </div>
-                            ))}
+                            {q.sub_questions.map((sq, subIdx) => {
+                              const subKey = `sub_${idx}_${subIdx}`;
+                              const isSubPadOpen = openMathKeypadKey === subKey;
+                              return (
+                                <div key={subIdx} className="space-y-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      type="text"
+                                      value={sq.label}
+                                      onChange={e => handleUpdateSubQuestion(idx, subIdx, 'label', e.target.value)}
+                                      placeholder="(1)"
+                                      className="w-10 px-1.5 py-1 text-center font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
+                                    />
+                                    <input
+                                      ref={el => {
+                                        answerInputRefs.current[subKey] = el;
+                                        if (isSubPadOpen) activeAnswerInputRef.current = el;
+                                      }}
+                                      type="text"
+                                      value={sq.answer}
+                                      onFocus={() => {
+                                        if (openMathKeypadKey?.startsWith(`sub_${idx}_`)) {
+                                          setOpenMathKeypadKey(subKey);
+                                        }
+                                        activeAnswerInputRef.current = answerInputRefs.current[subKey] || null;
+                                      }}
+                                      onChange={e => handleUpdateSubQuestion(idx, subIdx, 'answer', e.target.value)}
+                                      placeholder="소문항 정답"
+                                      className="flex-1 px-2 py-1 font-black text-[11px] bg-white border border-slate-200 rounded focus:border-violet-500 focus:outline-none"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        activeAnswerInputRef.current = answerInputRefs.current[subKey] || null;
+                                        setOpenMathKeypadKey(prev => (prev === subKey ? null : subKey));
+                                      }}
+                                      className={`p-1 rounded border transition-colors ${
+                                        isSubPadOpen
+                                          ? 'bg-indigo-600 text-white border-indigo-600'
+                                          : 'bg-white text-indigo-600 border-slate-200 hover:bg-indigo-50'
+                                      }`}
+                                      title="수식 입력 패드 토글"
+                                    >
+                                      <Calculator size={11} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveSubQuestion(idx, subIdx)}
+                                      className="p-1 text-slate-400 hover:text-rose-500 rounded"
+                                      title="소문항 삭제"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  </div>
+                                  {!isSubPadOpen && sq.answer && /[\^_√/πθ∠△×÷±∞()\\]/.test(sq.answer) && (
+                                    <MathFormulaPreview value={sq.answer} theme="light" />
+                                  )}
+                                  {isSubPadOpen && (
+                                    <div className="mt-1">
+                                      <MathKeypad
+                                        value={sq.answer}
+                                        onChange={nextVal => handleUpdateSubQuestion(idx, subIdx, 'answer', nextVal)}
+                                        inputRef={activeAnswerInputRef}
+                                        theme="light"
+                                        compact
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                           <div className="text-[9px] text-slate-500 font-bold">
                             * 전체 일치 시 정답 인정 (오답 시 소문항별 결과 피드백)
@@ -5102,43 +5154,99 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       ) : (
                         /* 소문항이 없는 단일 정답 입력란 */
                         <div>
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="text-[10px] font-bold text-slate-500">
-                              설정 정답 (채점 기준)
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() => handleAddSubQuestion(idx)}
-                              className="text-[10px] text-violet-600 hover:text-violet-800 font-bold flex items-center gap-0.5"
-                            >
-                              <Plus size={10} /> 소문항 분할
-                            </button>
-                          </div>
-                          {q.answer && q.answer.includes('\n') ? (
-                            <textarea
-                              value={q.answer}
-                              onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
-                              rows={Math.min(3, q.answer.split('\n').length)}
-                              placeholder="정답 (줄바꿈 가능)"
-                              className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs resize-y ${
-                                q.question_type === 'DESCRIPTIVE' || q.is_descriptive
-                                  ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
-                                  : 'border-slate-200 text-slate-800 focus:border-violet-500'
-                              }`}
-                            />
-                          ) : (
-                            <input
-                              type="text"
-                              value={q.answer}
-                              onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
-                              placeholder="정답 (예: 5 또는 83)"
-                              className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
-                                q.question_type === 'DESCRIPTIVE' || q.is_descriptive
-                                  ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
-                                  : 'border-slate-200 text-slate-800 focus:border-violet-500'
-                              }`}
-                            />
-                          )}
+                          {(() => {
+                            const singleKey = `q_${idx}`;
+                            const isSinglePadOpen = openMathKeypadKey === singleKey;
+                            const hasMathChars = Boolean(
+                              q.answer && q.question_type !== 'MULTIPLE' && /[\^_√/πθ∠△×÷±∞()\\]/.test(q.answer)
+                            );
+                            return (
+                              <>
+                                <div className="flex items-center justify-between mb-1 gap-1">
+                                  <label className="text-[10px] font-bold text-slate-500">
+                                    설정 정답 (채점 기준)
+                                  </label>
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        activeAnswerInputRef.current = answerInputRefs.current[singleKey] || null;
+                                        setOpenMathKeypadKey(prev => (prev === singleKey ? null : singleKey));
+                                      }}
+                                      className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 border transition-colors ${
+                                        isSinglePadOpen
+                                          ? 'bg-indigo-600 text-white border-indigo-600'
+                                          : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                                      }`}
+                                      title="추출된 정답 수식 확인 및 수식패드 수정"
+                                    >
+                                      <Calculator size={10} /> 수식패드
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddSubQuestion(idx)}
+                                      className="text-[10px] text-violet-600 hover:text-violet-800 font-bold flex items-center gap-0.5"
+                                    >
+                                      <Plus size={10} /> 소문항 분할
+                                    </button>
+                                  </div>
+                                </div>
+                                {q.answer && q.answer.includes('\n') ? (
+                                  <textarea
+                                    ref={el => {
+                                      answerInputRefs.current[singleKey] = el;
+                                      if (isSinglePadOpen) activeAnswerInputRef.current = el;
+                                    }}
+                                    value={q.answer}
+                                    onFocus={() => {
+                                      activeAnswerInputRef.current = answerInputRefs.current[singleKey] || null;
+                                    }}
+                                    onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                                    rows={Math.min(3, q.answer.split('\n').length)}
+                                    placeholder="정답 (줄바꿈 가능)"
+                                    className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs resize-y ${
+                                      q.question_type === 'DESCRIPTIVE' || q.is_descriptive
+                                        ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                        : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                                    }`}
+                                  />
+                                ) : (
+                                  <input
+                                    ref={el => {
+                                      answerInputRefs.current[singleKey] = el;
+                                      if (isSinglePadOpen) activeAnswerInputRef.current = el;
+                                    }}
+                                    type="text"
+                                    value={q.answer}
+                                    onFocus={() => {
+                                      activeAnswerInputRef.current = answerInputRefs.current[singleKey] || null;
+                                    }}
+                                    onChange={e => handleUpdateQuestionAnswer(idx, e.target.value)}
+                                    placeholder="정답 (예: 5, 3/4, (x+2)(x-3))"
+                                    className={`w-full px-2.5 py-1.5 rounded-lg border focus:outline-none font-black text-xs ${
+                                      q.question_type === 'DESCRIPTIVE' || q.is_descriptive
+                                        ? 'border-amber-300 bg-amber-50/40 text-amber-900 focus:border-amber-500'
+                                        : 'border-slate-200 text-slate-800 focus:border-violet-500'
+                                    }`}
+                                  />
+                                )}
+                                {!isSinglePadOpen && hasMathChars && (
+                                  <MathFormulaPreview value={q.answer} theme="light" className="mt-1.5" />
+                                )}
+                                {isSinglePadOpen && (
+                                  <div className="mt-2">
+                                    <MathKeypad
+                                      value={q.answer}
+                                      onChange={nextVal => handleUpdateQuestionAnswer(idx, nextVal)}
+                                      inputRef={activeAnswerInputRef}
+                                      theme="light"
+                                      compact
+                                    />
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                           <div className="mt-1 text-[9px] text-slate-400">
                             {q.question_type === 'DESCRIPTIVE' || q.is_descriptive ? (
                               <span className="text-amber-600 font-bold">

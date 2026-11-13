@@ -37,8 +37,10 @@ import {
   Bell,
   TrendingUp,
   BarChart2,
-  Target
+  Target,
+  Calculator
 } from 'lucide-react';
+import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
@@ -223,6 +225,13 @@ export default function StudentTest2View({
 
   // 🧩 문항별 동적 소문항 라벨 목록 (학생이 수동으로 + / - 조절 가능)
   const [customSubLabels, setCustomSubLabels] = useState<Record<string, string[]>>({});
+
+  // 🧮 단답형 수식 키패드 상태 & 입력창 ref
+  const [showMathKeypad, setShowMathKeypad] = useState<boolean>(true);
+  const [activeSubLabel, setActiveSubLabel] = useState<string>('');
+  const shortAnswerInputRef = useRef<HTMLInputElement | null>(null);
+  const subInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const activeSubInputRef = useRef<HTMLInputElement | null>(null);
 
   // 📝 서술형 문항 제출 방식 (PAPER: 종이 직접제출, PHOTO: 서술형 사진제출, TEXT: 텍스트 직접입력)
   const [descriptiveSubmitModes, setDescriptiveSubmitModes] = useState<Record<string, 'PAPER' | 'PHOTO' | 'TEXT'>>({});
@@ -3437,47 +3446,143 @@ export default function StudentTest2View({
                               {subLabels.map((lbl: string) => {
                                 const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
                                 const val = subAnsMap[lbl] || '';
+                                const targetLabel = activeSubLabel && subLabels.includes(activeSubLabel) ? activeSubLabel : subLabels[0];
+                                const isActiveSub = targetLabel === lbl;
                                 return (
-                                  <div key={lbl} className="flex items-center gap-2 bg-white/5 p-2 rounded-2xl border border-white/10 focus-within:border-violet-500">
+                                  <div
+                                    key={lbl}
+                                    className={`flex items-center gap-2 p-2 rounded-2xl border transition-colors ${
+                                      isActiveSub
+                                        ? 'bg-violet-500/10 border-violet-500/60'
+                                        : 'bg-white/5 border-white/10 focus-within:border-violet-500'
+                                    }`}
+                                  >
                                     <span className="w-10 text-center font-black text-sm text-violet-400 shrink-0">
                                       {lbl}
                                     </span>
                                     <input
+                                      ref={(el) => {
+                                        subInputRefs.current[lbl] = el;
+                                        if (isActiveSub) activeSubInputRef.current = el;
+                                      }}
                                       type="text"
                                       value={val}
+                                      onFocus={() => {
+                                        setActiveSubLabel(lbl);
+                                        activeSubInputRef.current = subInputRefs.current[lbl] || null;
+                                      }}
                                       onChange={e => handleSubAnswerChange(question.id, lbl, e.target.value)}
-                                      placeholder="정답 입력"
+                                      placeholder="정답 또는 수식 입력"
                                       className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-xl py-2 px-3 text-white font-black text-base focus:outline-none placeholder:text-slate-600 text-center"
                                     />
                                   </div>
                                 );
                               })}
                             </div>
+
+                            {/* 🧮 소문항용 공학/수식 입력 키패드 */}
+                            {(() => {
+                              const subAnsMap = typeof currentAnswer === 'object' && currentAnswer !== null ? currentAnswer : {};
+                              const targetLabel = activeSubLabel && subLabels.includes(activeSubLabel) ? activeSubLabel : subLabels[0];
+                              const targetVal = subAnsMap[targetLabel] || '';
+                              return (
+                                <div className="pt-1 space-y-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-bold text-slate-400">
+                                      수식 패드 대상: <strong className="text-violet-300">{targetLabel}</strong>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setShowMathKeypad(prev => !prev)}
+                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border transition-colors cursor-pointer ${
+                                        showMathKeypad
+                                          ? 'bg-violet-600/30 text-violet-200 border-violet-500/50'
+                                          : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                                      }`}
+                                    >
+                                      <Calculator size={12} />
+                                      {showMathKeypad ? '수식 패드 접기' : '공학/수식 패드 열기'}
+                                    </button>
+                                  </div>
+                                  {!showMathKeypad && targetVal && (
+                                    <MathFormulaPreview value={targetVal} theme="dark" />
+                                  )}
+                                  {showMathKeypad && (
+                                    <MathKeypad
+                                      value={targetVal}
+                                      onChange={nextVal => handleSubAnswerChange(question.id, targetLabel, nextVal)}
+                                      inputRef={activeSubInputRef}
+                                      theme="dark"
+                                      compact
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           /* 2-B: 일반 단일 단답형 입력칸 + 소문항 분할 버튼 */
                           <div className="space-y-3">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between gap-2">
                               <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest">
                                 단답형 답안 직접 입력
                               </label>
-                              <button
-                                type="button"
-                                onClick={() => handleAddSubQuestion(question.id)}
-                                className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                                title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
-                              >
-                                <Plus size={11} /> (1), (2) 소문항으로 분할
-                              </button>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowMathKeypad(prev => !prev)}
+                                  className={`text-[10px] px-2 py-0.5 rounded-lg font-black flex items-center gap-1 border transition-colors cursor-pointer ${
+                                    showMathKeypad
+                                      ? 'bg-indigo-600/30 text-indigo-200 border-indigo-400/50'
+                                      : 'bg-white/5 text-slate-300 border-white/15 hover:bg-white/10'
+                                  }`}
+                                  title="인수분해, 분수, 루트, 공학함수 입력 패드 토글"
+                                >
+                                  <Calculator size={11} />
+                                  {showMathKeypad ? '수식패드 접기' : '수식패드'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddSubQuestion(question.id)}
+                                  className="text-[10px] text-violet-300 hover:text-white bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 px-2 py-0.5 rounded-lg font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                                  title="문제가 (1), (2)로 나뉘어 있다면 클릭하여 칸을 나눌 수 있습니다"
+                                >
+                                  <Plus size={11} /> (1), (2) 소문항으로 분할
+                                </button>
+                              </div>
                             </div>
 
-                            <input
-                              type="text"
-                              value={currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__' ? '' : (typeof currentAnswer === 'string' ? currentAnswer : '')}
-                              onChange={e => handleAnswerSelect(question.id, e.target.value)}
-                              placeholder="정답 입력 (예: 83, -2 등)"
-                              className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
-                            />
+                            {(() => {
+                              const singleVal =
+                                currentAnswer === '모름' || currentAnswer === '__DIRECT_PAPER__' || currentAnswer === '__PHOTO_SUBMISSION__'
+                                  ? ''
+                                  : typeof currentAnswer === 'string'
+                                  ? currentAnswer
+                                  : '';
+                              return (
+                                <>
+                                  <input
+                                    ref={shortAnswerInputRef}
+                                    type="text"
+                                    value={singleVal}
+                                    onChange={e => handleAnswerSelect(question.id, e.target.value)}
+                                    placeholder="정답 입력 (예: 83, (x+2)(x-3), 3/4 등)"
+                                    className="w-full bg-white/5 border border-white/10 focus:border-violet-500 rounded-2xl py-3.5 px-4 text-center text-lg font-black text-white focus:outline-none transition-all placeholder:text-slate-600"
+                                  />
+                                  {!showMathKeypad && singleVal && (
+                                    <MathFormulaPreview value={singleVal} theme="dark" />
+                                  )}
+                                  {showMathKeypad && (
+                                    <MathKeypad
+                                      value={singleVal}
+                                      onChange={nextVal => handleAnswerSelect(question.id, nextVal)}
+                                      inputRef={shortAnswerInputRef}
+                                      theme="dark"
+                                    />
+                                  )}
+                                </>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
