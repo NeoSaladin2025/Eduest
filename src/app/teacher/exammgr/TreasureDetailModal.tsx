@@ -125,12 +125,15 @@ export default function TreasureDetailModal({
         (s) => s.student_id === student.id && s.exam_id === ex.id
       ) || (ex.id === initialExam.id ? initialSubmission : null);
 
-      // 🌟 만약 submission에 round_history가 2개 이상 들어있다면, 각 회차를 별도 탭 아이템으로 펼쳐서 비교 제공!
-      if (Array.isArray(sub?.round_history) && sub.round_history.length > 1) {
+      // 🌟 만약 submission에 round_history가 존재하면(특히 할부 세트·다회차), 각 회차를 별도 탭 아이템으로 펼쳐서 비교 제공!
+      if (Array.isArray(sub?.round_history) && (sub.round_history.length > 1 || (sub.round_history.length === 1 && typeof sub.round_history[0]?.set_index === 'number'))) {
         sub.round_history.forEach((h: any) => {
           const rNumber = Number(h.round) || 1;
+          const hasSetCoords = typeof h.set_index === 'number' && typeof h.set_round === 'number';
           const rLabel = isTreasure
-            ? `보물회수 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`
+            ? hasSetCoords
+              ? `보물회수 세트${h.set_index + 1}·${h.set_round}바퀴${isTwin ? ' (쌍둥이)' : ''}`
+              : `보물회수 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`
             : `오답 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`;
 
           const virtualSub = {
@@ -143,7 +146,7 @@ export default function TreasureDetailModal({
           };
 
           items.push({
-            keyId: `${ex.id}_r${rNumber}`,
+            keyId: hasSetCoords ? `${ex.id}_s${h.set_index}_r${h.set_round}` : `${ex.id}_r${rNumber}`,
             exam: ex,
             round: rNumber,
             roundLabel: rLabel,
@@ -155,7 +158,7 @@ export default function TreasureDetailModal({
             totalSpentSec: Number(h.total_spent_sec) || 0,
             score: h.score !== undefined ? Number(h.score) : null,
             correctCount: Number(h.correct_count) || 0,
-            totalQuestions: ex.questions?.length || 0,
+            totalQuestions: h.total_questions || ex.questions?.length || 0,
             submittedAt: h.submitted_at || null,
           });
         });

@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
+import type { TreasureConfig } from "@/app/teacher/exammgr/treasureTypes";
+
+export type { TreasureConfig };
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -39,17 +42,6 @@ export interface ExamQuestion {
 export interface StudentOverrideConfig {
   enable_lockdown?: boolean;
   require_proof_image?: boolean;
-}
-
-export interface TreasureConfig {
-  enabled: boolean;
-  total_rounds: number;
-  enable_shuffle: boolean;
-  time_attack_mode: 'percent' | 'manual' | 'variable_percent' | 'fixed';
-  base_duration_min: number;
-  percent_reduction: number;
-  manual_durations?: number[];
-  variable_reductions?: number[];
 }
 
 export interface ExamPaper {
@@ -230,6 +222,8 @@ export async function POST(req: NextRequest) {
       filter_chip_ids,
       wrong_round,
       base_exam_title,
+      is_twin_variant,
+      wrong_exam_mode,
       target_student_name,
       target_student_id
     } = body;
@@ -264,6 +258,10 @@ export async function POST(req: NextRequest) {
           is_descriptive: derivedType === 'DESCRIPTIVE' || !!q.is_descriptive,
           question_type: derivedType,
           sub_questions: Array.isArray(q.sub_questions) && q.sub_questions.length > 0 ? q.sub_questions : undefined,
+          is_twin: q.is_twin ? true : undefined,
+          twin_round: typeof q.twin_round === 'string' ? q.twin_round : undefined,
+          parent_question_id: typeof q.parent_question_id === 'string' ? q.parent_question_id : undefined,
+          question_html: typeof q.question_html === 'string' ? q.question_html : undefined,
         };
       }),
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
@@ -279,6 +277,8 @@ export async function POST(req: NextRequest) {
       filter_chip_ids: Array.isArray(filter_chip_ids) ? filter_chip_ids : [],
       wrong_round: typeof wrong_round === 'number' ? wrong_round : undefined,
       base_exam_title: typeof base_exam_title === 'string' ? base_exam_title : undefined,
+      is_twin_variant: typeof is_twin_variant === 'boolean' ? is_twin_variant : undefined,
+      wrong_exam_mode: wrong_exam_mode === 'twin' || wrong_exam_mode === 'original' ? wrong_exam_mode : undefined,
       target_student_name: typeof target_student_name === 'string' ? target_student_name : undefined,
       target_student_id: typeof target_student_id === 'string' ? target_student_id : undefined,
       created_at: new Date().toISOString(),

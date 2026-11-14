@@ -74,7 +74,13 @@ import {
   TreasureTemplate,
   DEFAULT_TREASURE_TEMPLATES,
   calculateRoundDuration,
+  calculateInstallmentRoundDuration,
+  buildInstallmentPlan,
+  getInstallmentTotalRounds,
   TimeAttackMode,
+  InstallmentRecallMode,
+  InstallmentRecallTwinMode,
+  InstallmentUnlockMode,
   parseExamRoundAndBaseTitle
 } from './treasureTypes';
 import StudentPerformanceModal from '../studentmanager/StudentPerformanceModal';
@@ -329,6 +335,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [newTemplateNameInput, setNewTemplateNameInput] = useState<string>('');
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState<boolean>(false);
 
+  // 🧩 [고등부·대량 오답용 할부·누적 보물회수 옵션 상태]
+  const [installmentEnabled, setInstallmentEnabled] = useState<boolean>(false);
+  const [installmentChunkSize, setInstallmentChunkSize] = useState<number>(5); // 디폴트 5문항 분할
+  const [installmentDefaultRounds, setInstallmentDefaultRounds] = useState<number>(5); // 디폴트 5바퀴
+  const [installmentSetRounds, setInstallmentSetRounds] = useState<Record<number, number>>({}); // 세트별 개별 바퀴수
+  const [installmentRecallMode, setInstallmentRecallMode] = useState<InstallmentRecallMode>('per_set'); // 디폴트 A안
+  const [installmentRecallPoolCount, setInstallmentRecallPoolCount] = useState<number>(1);
+  const [installmentRecallTwinMode, setInstallmentRecallTwinMode] = useState<InstallmentRecallTwinMode>('same'); // 디폴트 동일 문항
+  const [installmentUnlockMode, setInstallmentUnlockMode] = useState<InstallmentUnlockMode>('sequential'); // 디폴트 완료 시 순차 해금
+  const [installmentShowRecallBadge, setInstallmentShowRecallBadge] = useState<boolean>(true);
+
   // 템플릿 적용 함수
   const applyTreasureTemplate = (tpl: TreasureTemplate) => {
     setSelectedTemplateId(tpl.id);
@@ -338,6 +355,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setTreasurePercentReduction(tpl.percent_reduction);
     if (tpl.manual_durations) setTreasureManualDurations(tpl.manual_durations);
     if (tpl.variable_reductions) setTreasureVariableReductions(tpl.variable_reductions);
+    if (tpl.installment_preset) {
+      setInstallmentEnabled(tpl.installment_preset.enabled);
+      setInstallmentChunkSize(tpl.installment_preset.chunk_size);
+      setInstallmentDefaultRounds(tpl.installment_preset.default_rounds_per_set);
+      setInstallmentSetRounds({});
+      setInstallmentRecallMode(tpl.installment_preset.recall_mode);
+      setInstallmentRecallPoolCount(tpl.installment_preset.recall_pool_count || 1);
+      setInstallmentRecallTwinMode(tpl.installment_preset.recall_twin_mode);
+      setInstallmentUnlockMode(tpl.installment_preset.unlock_mode);
+      setInstallmentShowRecallBadge(tpl.installment_preset.show_recall_badge ?? true);
+    } else {
+      setInstallmentEnabled(false);
+    }
   };
 
   // 새 템플릿 저장 함수
@@ -352,6 +382,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       percent_reduction: treasurePercentReduction,
       manual_durations: treasureTimeMode === 'manual' ? treasureManualDurations : undefined,
       variable_reductions: treasureTimeMode === 'variable_percent' ? treasureVariableReductions : undefined,
+      installment_preset: installmentEnabled
+        ? {
+            enabled: true,
+            chunk_size: installmentChunkSize,
+            default_rounds_per_set: installmentDefaultRounds,
+            recall_mode: installmentRecallMode,
+            recall_pool_count: installmentRecallPoolCount,
+            recall_twin_mode: installmentRecallTwinMode,
+            unlock_mode: installmentUnlockMode,
+            show_recall_badge: installmentShowRecallBadge,
+          }
+        : undefined,
       is_custom: true,
     };
     const updated = [...treasureTemplates, newTpl];
@@ -2084,6 +2126,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setWrongExamCustomMinutes(recommendedMin);
     setWrongExamRemindPopup(false);
     setChangingTwinQuestionId(null);
+    setInstallmentSetRounds({});
   };
 
   // 🌟 맞춤 오답 시험지 실제 생성 및 배정
@@ -2149,15 +2192,72 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       // 시험 제한 시간 계산
       const finalDuration = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
 
+      // 🧩 할부·누적 보물회수 세트 플랜 및 (선택 시) 리콜용 다음 차수 쌍둥이 문항 준비
+      let installmentPayload: TreasureConfig['installment'] = undefined;
+      let effectiveTotalRounds = Math.max(1, treasureRounds);
+
+      if (treasureEnabled && installmentEnabled) {
+        const setsPlan = buildInstallmentPlan(
+          finalQuestions.map(q => q.id),
+          {
+            chunkSize: installmentChunkSize,
+            defaultRoundsPerSet: installmentDefaultRounds,
+            setRoundsOverrides: installmentSetRounds,
+            recallMode: installmentRecallMode,
+            recallPoolCount: installmentRecallPoolCount,
+          }
+        );
+        effectiveTotalRounds = Math.max(1, getInstallmentTotalRounds(setsPlan));
+
+        const recallVariantQuestions: Record<string, any> = {};
+        if (wrongExamMode === 'twin' && installmentRecallTwinMode === 'next_twin') {
+          wrongQuestions.forEach((origQ, idx) => {
+            const mainFinalQ = finalQuestions[idx];
+            if (!mainFinalQ) return;
+            const availableTwins = getAllAvailableTwinsForQuestion(origQ);
+            const nextVariant = availableTwins.find(at => at.roundName !== mainFinalQ.twin_round);
+            if (nextVariant) {
+              recallVariantQuestions[mainFinalQ.id] = {
+                ...origQ,
+                id: `recall_twin_${nextVariant.item.drive_id}_${mainFinalQ.id}`,
+                name: `[${nextVariant.roundName} 쌍둥이] ${origQ.name}`,
+                image_url: nextVariant.item.image_url || (nextVariant.item.question_html ? '' : origQ.image_url),
+                question_html: nextVariant.item.question_html || undefined,
+                answer: nextVariant.item.answer || origQ.answer,
+                raw_answer: nextVariant.item.raw_answer || origQ.raw_answer,
+                solution_drive_id: nextVariant.item.solution_drive_id || origQ.solution_drive_id,
+                is_twin: true,
+                twin_round: nextVariant.roundName,
+                parent_question_id: mainFinalQ.id,
+              };
+            }
+          });
+        }
+
+        installmentPayload = {
+          enabled: true,
+          chunk_size: Math.max(1, installmentChunkSize),
+          default_rounds_per_set: Math.max(1, installmentDefaultRounds),
+          recall_mode: installmentRecallMode,
+          recall_pool_count: Math.max(1, installmentRecallPoolCount),
+          recall_twin_mode: installmentRecallTwinMode,
+          unlock_mode: installmentUnlockMode,
+          show_recall_badge: installmentShowRecallBadge,
+          sets: setsPlan,
+          recall_variant_questions: Object.keys(recallVariantQuestions).length > 0 ? recallVariantQuestions : undefined,
+        };
+      }
+
       const treasureConfigPayload: TreasureConfig | undefined = treasureEnabled ? {
         enabled: true,
-        total_rounds: Math.max(1, treasureRounds),
+        total_rounds: effectiveTotalRounds,
         enable_shuffle: treasureShuffle,
         time_attack_mode: treasureTimeMode,
         base_duration_min: finalDuration,
         percent_reduction: treasurePercentReduction,
         manual_durations: treasureTimeMode === 'manual' ? treasureManualDurations : undefined,
         variable_reductions: treasureTimeMode === 'variable_percent' ? treasureVariableReductions : undefined,
+        installment: installmentPayload,
       } : undefined;
 
       const res = await fetch('/api/test2/exam', {
@@ -6314,63 +6414,455 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       </div>
                     )}
 
-                    {/* 2. 회차 설정 & 믹싱 옵션 */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* 회차 반복 설정 */}
-                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 space-y-1.5">
-                        <label className="text-xs font-black text-amber-950 flex items-center justify-between">
-                          <span>🔁 회차 반복 설정 (무제한)</span>
-                          <span className="text-[10px] text-amber-700 font-bold">상한선 없음</span>
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            min={1}
-                            value={treasureRounds}
-                            onChange={e => setTreasureRounds(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                            className="w-20 px-3 py-1.5 rounded-lg border border-amber-300 text-xs font-black text-center focus:outline-none focus:border-amber-500 bg-white"
-                          />
-                          <span className="text-xs font-bold text-slate-600">회차 반복</span>
-                          <div className="flex items-center gap-1 ml-auto">
-                            {[2, 3, 4, 5].map(n => (
-                              <button
-                                key={n}
-                                type="button"
-                                onClick={() => setTreasureRounds(n)}
-                                className={`px-2 py-1 rounded text-[10px] font-black transition-all cursor-pointer ${
-                                  treasureRounds === n
-                                    ? 'bg-amber-500 text-white shadow-xs'
-                                    : 'bg-amber-100/70 text-amber-800 hover:bg-amber-200'
-                                }`}
-                              >
-                                {n}회
-                              </button>
-                            ))}
+                    {/* 1-5. 🧩 회수 방식 선택 (기존 일괄 vs 할부·누적 세트 분할) */}
+                    {(() => {
+                      const totalWrongCnt = wrongExamModal.wrongQuestions.length;
+                      const isHighOrMany = totalWrongCnt >= 8 || wrongExamModal.student.grade.includes('고');
+                      return (
+                        <div className="space-y-2">
+                          <label className="text-xs font-black text-amber-950 flex items-center justify-between">
+                            <span>🧩 보물회수 분할 방식 선택</span>
+                            {isHighOrMany && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-black border border-rose-200">
+                                오답 {totalWrongCnt}문항 · 할부·누적 추천
+                              </span>
+                            )}
+                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <button
+                              type="button"
+                              onClick={() => setInstallmentEnabled(false)}
+                              className={`p-3 rounded-xl border-2 text-left transition-all cursor-pointer ${
+                                !installmentEnabled
+                                  ? 'border-amber-500 bg-white shadow-xs ring-1 ring-amber-400'
+                                  : 'border-amber-200/70 bg-white/60 hover:bg-white'
+                              }`}
+                            >
+                              <div className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                                <span>📦 기존 일괄 회수 (전체 한 번에)</span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                                틀린 {totalWrongCnt}문항 전체를 1회차~N회차까지 매번 통째로 반복합니다.
+                              </p>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setInstallmentEnabled(true)}
+                              className={`p-3 rounded-xl border-2 text-left transition-all cursor-pointer relative ${
+                                installmentEnabled
+                                  ? 'border-amber-500 bg-white shadow-xs ring-1 ring-amber-400'
+                                  : 'border-amber-200/70 bg-white/60 hover:bg-white'
+                              }`}
+                            >
+                              {isHighOrMany && (
+                                <span className="absolute -top-2 right-3 px-2 py-0.5 rounded-full bg-gradient-to-r from-rose-500 to-amber-500 text-white text-[9px] font-black shadow-xs">
+                                  고등·대량 최적
+                                </span>
+                              )}
+                              <div className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                                <span>🧩 할부·누적 회수 (세트 분할 + 기억소환)</span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                                {installmentChunkSize}문항씩 쪼개 집중 회전 + 다음 세트에 이전 문제를 중복 없이 순환 투입
+                              </p>
+                            </button>
                           </div>
                         </div>
-                      </div>
+                      );
+                    })()}
 
-                      {/* 문항 믹싱 토글 */}
-                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex items-center justify-between">
-                        <div className="space-y-0.5">
-                          <span className="text-xs font-black text-amber-950 flex items-center gap-1">
-                            <span className="text-sm">🔀</span> 문항 무작위 믹싱
-                          </span>
-                          <p className="text-[10px] text-slate-500 font-medium">
-                            회차마다 문제 순서를 섞어 외워서 풀기 방지
-                          </p>
+                    {/* 2. 회차/할부 설정 & 믹싱 옵션 */}
+                    {!installmentEnabled ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* 회차 반복 설정 */}
+                        <div className="bg-white/80 p-3 rounded-xl border border-amber-200 space-y-1.5">
+                          <label className="text-xs font-black text-amber-950 flex items-center justify-between">
+                            <span>🔁 회차 반복 설정 (무제한)</span>
+                            <span className="text-[10px] text-amber-700 font-bold">상한선 없음</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={1}
+                              value={treasureRounds}
+                              onChange={e => setTreasureRounds(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                              className="w-20 px-3 py-1.5 rounded-lg border border-amber-300 text-xs font-black text-center focus:outline-none focus:border-amber-500 bg-white"
+                            />
+                            <span className="text-xs font-bold text-slate-600">회차 반복</span>
+                            <div className="flex items-center gap-1 ml-auto">
+                              {[2, 3, 4, 5].map(n => (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  onClick={() => setTreasureRounds(n)}
+                                  className={`px-2 py-1 rounded text-[10px] font-black transition-all cursor-pointer ${
+                                    treasureRounds === n
+                                      ? 'bg-amber-500 text-white shadow-xs'
+                                      : 'bg-amber-100/70 text-amber-800 hover:bg-amber-200'
+                                  }`}
+                                >
+                                  {n}회
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={treasureShuffle}
-                            onChange={e => setTreasureShuffle(e.target.checked)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
-                        </label>
+
+                        {/* 문항 믹싱 토글 */}
+                        <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-black text-amber-950 flex items-center gap-1">
+                              <span className="text-sm">🔀</span> 문항 무작위 믹싱
+                            </span>
+                            <p className="text-[10px] text-slate-500 font-medium">
+                              회차마다 문제 순서를 섞어 외워서 풀기 방지
+                            </p>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={treasureShuffle}
+                              onChange={e => setTreasureShuffle(e.target.checked)}
+                              className="sr-only peer"
+                            />
+                            <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                          </label>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {/* 2-A. 세트 크기 / 기본 바퀴수 / 문항 믹싱 */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          {/* 세트당 문항 수 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-2">
+                            <label className="text-xs font-black text-amber-950 flex items-center justify-between">
+                              <span>✂️ 세트당 문항 수</span>
+                              <span className="text-[10px] text-amber-700 font-bold">
+                                {Math.ceil(wrongExamModal.wrongQuestions.length / Math.max(1, installmentChunkSize))}세트 분할
+                              </span>
+                            </label>
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {[3, 4, 5, 6].map(sz => (
+                                <button
+                                  key={sz}
+                                  type="button"
+                                  onClick={() => {
+                                    setInstallmentChunkSize(sz);
+                                    setInstallmentSetRounds({});
+                                  }}
+                                  className={`px-2 py-1 rounded text-[11px] font-black cursor-pointer ${
+                                    installmentChunkSize === sz
+                                      ? 'bg-amber-500 text-white shadow-xs'
+                                      : 'bg-amber-100/70 text-amber-800 hover:bg-amber-200'
+                                  }`}
+                                >
+                                  {sz}개
+                                </button>
+                              ))}
+                              <input
+                                type="number"
+                                min={1}
+                                max={Math.max(1, wrongExamModal.wrongQuestions.length)}
+                                value={installmentChunkSize}
+                                onChange={e => {
+                                  const v = Math.max(1, parseInt(e.target.value, 10) || 5);
+                                  setInstallmentChunkSize(v);
+                                  setInstallmentSetRounds({});
+                                }}
+                                className="w-12 px-1.5 py-1 rounded border border-amber-300 text-center text-xs font-black bg-white ml-auto"
+                              />
+                            </div>
+                          </div>
+
+                          {/* 세트당 기본 바퀴 수 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-2">
+                            <label className="text-xs font-black text-amber-950 flex items-center justify-between">
+                              <span>🔁 세트당 기본 바퀴</span>
+                              <span className="text-[10px] text-amber-700 font-bold">디폴트 5바퀴</span>
+                            </label>
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {[3, 5, 7].map(rd => (
+                                <button
+                                  key={rd}
+                                  type="button"
+                                  onClick={() => setInstallmentDefaultRounds(rd)}
+                                  className={`px-2 py-1 rounded text-[11px] font-black cursor-pointer ${
+                                    installmentDefaultRounds === rd
+                                      ? 'bg-amber-500 text-white shadow-xs'
+                                      : 'bg-amber-100/70 text-amber-800 hover:bg-amber-200'
+                                  }`}
+                                >
+                                  {rd}바퀴
+                                </button>
+                              ))}
+                              <input
+                                type="number"
+                                min={1}
+                                value={installmentDefaultRounds}
+                                onChange={e => setInstallmentDefaultRounds(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                className="w-12 px-1.5 py-1 rounded border border-amber-300 text-center text-xs font-black bg-white ml-auto"
+                              />
+                            </div>
+                          </div>
+
+                          {/* 문항 믹싱 & 뱃지 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 flex flex-col justify-between gap-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-black text-amber-950">🔀 바퀴별 셔플</span>
+                              <label className="relative inline-flex items-center cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={treasureShuffle}
+                                  onChange={e => setTreasureShuffle(e.target.checked)}
+                                  className="sr-only peer"
+                                />
+                                <div className="w-8 h-4.5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-amber-500"></div>
+                              </label>
+                            </div>
+                            <label className="flex items-center gap-1.5 cursor-pointer select-none text-[10px] font-bold text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={installmentShowRecallBadge}
+                                onChange={e => setInstallmentShowRecallBadge(e.target.checked)}
+                                className="rounded text-amber-600 w-3.5 h-3.5 cursor-pointer"
+                              />
+                              <span>💎 기억소환 뱃지 표시</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* 2-B. 확정 3대 세부 옵션 (리콜 추출 / 쌍둥이 처리 / 해금 규칙) */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                          {/* 옵션 1: 리콜 추출 방식 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-1.5">
+                            <span className="text-[11px] font-black text-amber-950 block">🧠 이전 세트 리콜 추출</span>
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setInstallmentRecallMode('per_set')}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold flex items-center justify-between cursor-pointer ${
+                                  installmentRecallMode === 'per_set'
+                                    ? 'bg-amber-50 border-amber-500 text-amber-950'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>각 묶음별 1문항씩</span>
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500 text-white font-black">기본 추천</span>
+                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setInstallmentRecallMode('cumulative_pool')}
+                                  className={`flex-1 px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold cursor-pointer ${
+                                    installmentRecallMode === 'cumulative_pool'
+                                      ? 'bg-amber-50 border-amber-500 text-amber-950'
+                                      : 'bg-slate-50 border-slate-200 text-slate-600'
+                                  }`}
+                                >
+                                  이전 풀에서 고정 추출
+                                </button>
+                                {installmentRecallMode === 'cumulative_pool' && (
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={5}
+                                    value={installmentRecallPoolCount}
+                                    onChange={e => setInstallmentRecallPoolCount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                    className="w-11 px-1.5 py-1 rounded-lg border border-amber-400 text-center text-xs font-black bg-white"
+                                    title="바퀴당 추출 문항 수"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 옵션 2: 쌍둥이 모드 리콜 문항 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-1.5">
+                            <span className="text-[11px] font-black text-amber-950 block">👯 쌍둥이 리콜 출제 기준</span>
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setInstallmentRecallTwinMode('same')}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold flex items-center justify-between cursor-pointer ${
+                                  installmentRecallTwinMode === 'same'
+                                    ? 'bg-amber-50 border-amber-500 text-amber-950'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>동일 문항 재출제</span>
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500 text-white font-black">기본</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInstallmentRecallTwinMode('next_twin')}
+                                disabled={wrongExamMode !== 'twin'}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold flex items-center justify-between cursor-pointer disabled:opacity-45 ${
+                                  installmentRecallTwinMode === 'next_twin'
+                                    ? 'bg-purple-50 border-purple-500 text-purple-950'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>다음 차수 쌍둥이 승급</span>
+                                <span className="text-[9px] text-purple-600 font-bold">변형</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 옵션 3: 세트 해금 방식 */}
+                          <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-1.5">
+                            <span className="text-[11px] font-black text-amber-950 block">🔓 학생 세트 해금 규칙</span>
+                            <div className="space-y-1">
+                              <button
+                                type="button"
+                                onClick={() => setInstallmentUnlockMode('sequential')}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold flex items-center justify-between cursor-pointer ${
+                                  installmentUnlockMode === 'sequential'
+                                    ? 'bg-amber-50 border-amber-500 text-amber-950'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>완료 시 순차 해금</span>
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500 text-white font-black">기본</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setInstallmentUnlockMode('free')}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-bold flex items-center justify-between cursor-pointer ${
+                                  installmentUnlockMode === 'free'
+                                    ? 'bg-emerald-50 border-emerald-500 text-emerald-950'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                <span>자유 선택 (전체 오픈)</span>
+                                <span className="text-[9px] text-emerald-700 font-bold">자율</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 2-C. 실시간 세트 분할 미리보기 & 세트별 개별 바퀴수 조정 */}
+                        {(() => {
+                          const totalQ = wrongExamModal.wrongQuestions.length;
+                          const safeChunk = Math.max(1, installmentChunkSize);
+                          const numSets = Math.ceil(totalQ / safeChunk);
+                          const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+                          let cumulativePrevQ = 0;
+
+                          return (
+                            <div className="bg-white/95 border border-amber-300 rounded-xl p-3 space-y-2.5">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                                  <span>🗓️</span> 할부·누적 코스 미리보기 (세트별 바퀴수 개별 수정 가능)
+                                </span>
+                                <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
+                                  🔀 바퀴마다 이전 문항 겹침 없이 순환 투입
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                                {Array.from({ length: numSets }, (_, sIdx) => {
+                                  const startNum = sIdx * safeChunk + 1;
+                                  const endNum = Math.min((sIdx + 1) * safeChunk, totalQ);
+                                  const coreCount = endNum - startNum + 1;
+                                  const recallCount =
+                                    sIdx === 0
+                                      ? 0
+                                      : installmentRecallMode === 'per_set'
+                                      ? sIdx
+                                      : Math.min(installmentRecallPoolCount, cumulativePrevQ);
+                                  const activeCount = coreCount + recallCount;
+                                  const setRounds = installmentSetRounds[sIdx] ?? installmentDefaultRounds;
+                                  const firstDur = calculateInstallmentRoundDuration(baseMin, totalQ, activeCount, 1, {
+                                    time_attack_mode: treasureTimeMode,
+                                    percent_reduction: treasurePercentReduction,
+                                    manual_durations: treasureManualDurations,
+                                    variable_reductions: treasureVariableReductions,
+                                  });
+                                  const lastDur = calculateInstallmentRoundDuration(baseMin, totalQ, activeCount, setRounds, {
+                                    time_attack_mode: treasureTimeMode,
+                                    percent_reduction: treasurePercentReduction,
+                                    manual_durations: treasureManualDurations,
+                                    variable_reductions: treasureVariableReductions,
+                                  });
+                                  cumulativePrevQ += coreCount;
+
+                                  return (
+                                    <div
+                                      key={sIdx}
+                                      className={`p-2.5 rounded-xl border space-y-2 flex flex-col justify-between ${
+                                        sIdx === 0
+                                          ? 'bg-slate-50 border-slate-200'
+                                          : 'bg-amber-50/50 border-amber-200'
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between text-[11px] font-black text-slate-800">
+                                        <span>{sIdx + 1}묶음</span>
+                                        <span className="px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-700 text-[9px]">
+                                          #{startNum}~#{endNum}
+                                        </span>
+                                      </div>
+
+                                      <div className="text-[11px] leading-snug bg-white rounded-lg p-2 border border-slate-200/80">
+                                        <div className="font-bold text-slate-700">신규 {coreCount}문항</div>
+                                        {recallCount > 0 ? (
+                                          <div className="font-black text-amber-700">
+                                            + 리콜 {recallCount}문항
+                                          </div>
+                                        ) : (
+                                          <div className="text-[10px] text-slate-400">(리콜 없음)</div>
+                                        )}
+                                        <div className="font-black text-indigo-700 mt-0.5 pt-0.5 border-t border-slate-100">
+                                          = 바퀴당 {activeCount}문항
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center justify-between bg-white border border-amber-300 rounded-lg px-1.5 py-1">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setInstallmentSetRounds(prev => ({
+                                              ...prev,
+                                              [sIdx]: Math.max(1, (prev[sIdx] ?? installmentDefaultRounds) - 1),
+                                            }))
+                                          }
+                                          className="w-5 h-5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-xs flex items-center justify-center cursor-pointer"
+                                        >
+                                          -
+                                        </button>
+                                        <span className="text-[11px] font-black text-slate-900">
+                                          {setRounds}바퀴
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setInstallmentSetRounds(prev => ({
+                                              ...prev,
+                                              [sIdx]: (prev[sIdx] ?? installmentDefaultRounds) + 1,
+                                            }))
+                                          }
+                                          className="w-5 h-5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-xs flex items-center justify-center cursor-pointer"
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+
+                                      <div className="text-[9.5px] font-bold text-slate-500 text-center">
+                                        {baseMin === 0
+                                          ? '무제한 (자율)'
+                                          : firstDur === lastDur
+                                          ? `⏱️ 바퀴당 ${firstDur}분`
+                                          : `⏱️ ${firstDur}분 ➔ ${lastDur}분`}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
 
                     {/* 3. 타임어택 방식 라디오 카드 */}
                     <div className="space-y-2">
@@ -6432,39 +6924,41 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       </div>
                     )}
 
-                    {/* 5. ⏱️ 실시간 회차별 타임라인 미리보기 */}
-                    <div className="bg-amber-900/5 border border-amber-200/80 rounded-xl p-3 space-y-1.5">
-                      <span className="text-[11px] font-black text-amber-900 flex items-center gap-1">
-                        <span>🎯</span> 회차별 예상 타임어택 코스 미리보기:
-                      </span>
-                      <div className="flex items-center gap-1.5 flex-wrap text-xs">
-                        {Array.from({ length: Math.min(10, treasureRounds) }, (_, i) => {
-                          const r = i + 1;
-                          const baseMin = wrongExamDurationMode === 'unlimited' ? 30 : Math.max(1, wrongExamCustomMinutes);
-                          const dur = calculateRoundDuration(
-                            baseMin,
-                            r,
-                            treasureTimeMode,
-                            treasurePercentReduction,
-                            treasureManualDurations,
-                            treasureVariableReductions
-                          );
-                          return (
-                            <div key={r} className="flex items-center gap-1">
-                              <span className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 font-black text-amber-950 text-[11px] shadow-2xs">
-                                {r}회차: <strong className="text-amber-700 font-extrabold">{dur}분</strong>
-                              </span>
-                              {r < Math.min(10, treasureRounds) && (
-                                <span className="text-amber-400 font-bold">➔</span>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {treasureRounds > 10 && (
-                          <span className="text-[10px] text-amber-600 font-bold">... (총 {treasureRounds}회차까지 진행)</span>
-                        )}
+                    {/* 5. ⏱️ 실시간 회차별 타임라인 미리보기 (일반 일괄 모드용) */}
+                    {!installmentEnabled && (
+                      <div className="bg-amber-900/5 border border-amber-200/80 rounded-xl p-3 space-y-1.5">
+                        <span className="text-[11px] font-black text-amber-900 flex items-center gap-1">
+                          <span>🎯</span> 회차별 예상 타임어택 코스 미리보기:
+                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                          {Array.from({ length: Math.min(10, treasureRounds) }, (_, i) => {
+                            const r = i + 1;
+                            const baseMin = wrongExamDurationMode === 'unlimited' ? 30 : Math.max(1, wrongExamCustomMinutes);
+                            const dur = calculateRoundDuration(
+                              baseMin,
+                              r,
+                              treasureTimeMode,
+                              treasurePercentReduction,
+                              treasureManualDurations,
+                              treasureVariableReductions
+                            );
+                            return (
+                              <div key={r} className="flex items-center gap-1">
+                                <span className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 font-black text-amber-950 text-[11px] shadow-2xs">
+                                  {r}회차: <strong className="text-amber-700 font-extrabold">{dur}분</strong>
+                                </span>
+                                {r < Math.min(10, treasureRounds) && (
+                                  <span className="text-amber-400 font-bold">➔</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {treasureRounds > 10 && (
+                            <span className="text-[10px] text-amber-600 font-bold">... (총 {treasureRounds}회차까지 진행)</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>

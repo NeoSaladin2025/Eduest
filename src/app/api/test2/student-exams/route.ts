@@ -2,6 +2,10 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
 import { areMathAnswersEquivalent } from "@/lib/mathFormulaUtils";
+import {
+  getInstallmentActiveQuestions,
+  getInstallmentGlobalRound,
+} from "@/app/teacher/exammgr/treasureTypes";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -13,6 +17,9 @@ const SUBMISSIONS_RECORD_DRIVE_ID = "test2_student_submissions_data";
 
 export interface RoundHistoryItem {
   round: number;
+  set_index?: number;
+  set_round?: number;
+  recalled_question_ids?: string[];
   score: number;
   correct_count: number;
   total_questions: number;
@@ -266,7 +273,7 @@ export async function GET(req: NextRequest) {
       const isSubmitted = !!submission;
 
       // 제출 전에는 보안을 위해 정답(answer)을 클라이언트에 노출하지 않음
-      const sanitizedQuestions = exam.questions.map((q) => {
+      const sanitizeQuestionItem = (q: any) => {
         const studentAns = submission?.answers?.[q.id];
         // 서술형이고 채점 대기 중인데 show_solution이 허용되지 않은 경우 정답/해설 숨김
         const isDescriptivePending = q.is_descriptive && studentAns?.grading_status === 'pending';
@@ -278,10 +285,14 @@ export async function GET(req: NextRequest) {
           drive_id: q.drive_id,
           name: q.name,
           image_url: q.image_url,
+          question_html: q.question_html,
+          is_twin: q.is_twin,
+          twin_round: q.twin_round,
+          parent_question_id: q.parent_question_id,
           points: q.points,
           is_descriptive: qType === 'DESCRIPTIVE' || !!q.is_descriptive,
           question_type: qType,
-          sub_questions: q.sub_questions ? q.sub_questions.map((sq) => ({
+          sub_questions: q.sub_questions ? q.sub_questions.map((sq: any) => ({
             label: sq.label,
             answer: canShowSolution ? sq.answer : undefined,
           })) : undefined,
@@ -289,14 +300,35 @@ export async function GET(req: NextRequest) {
           raw_answer: canShowSolution ? q.raw_answer : undefined,
           solution_drive_id: canShowSolution ? q.solution_drive_id : undefined,
         };
-      });
+      };
+
+      const sanitizedQuestions = exam.questions.map(sanitizeQuestionItem);
+
+      let sanitizedExam: any = {
+        ...exam,
+        questions: sanitizedQuestions,
+      };
+
+      if (exam.treasure_config?.installment?.recall_variant_questions) {
+        const sanitizedVariants: Record<string, any> = {};
+        Object.entries(exam.treasure_config.installment.recall_variant_questions).forEach(([k, vq]) => {
+          if (vq) sanitizedVariants[k] = sanitizeQuestionItem(vq);
+        });
+        sanitizedExam = {
+          ...sanitizedExam,
+          treasure_config: {
+            ...exam.treasure_config,
+            installment: {
+              ...exam.treasure_config.installment,
+              recall_variant_questions: sanitizedVariants,
+            },
+          },
+        };
+      }
 
       return NextResponse.json({
         success: true,
-        exam: {
-          ...exam,
-          questions: sanitizedQuestions,
-        },
+        exam: sanitizedExam,
         submission,
         is_submitted: isSubmitted,
       });
@@ -352,8 +384,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, answers, questionTimes, proofImages, teacherGrading, submittedBy, currentRound, round } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
-    const targetRound = typeof currentRound === 'number' && currentRound > 0
+    const { studentId, examId, answers, questionTimes, proofImages, teacherGrading, submittedBy, currentRound, round, setIndex, setRound } = body; // answers: { [qId]: user_answer }, questionTimes: { [qId]: seconds }, proofImages: { [qId]: { drive_id, url } }
+    const rawRound = typeof currentRound === 'number' && currentRound > 0
       ? currentRound
       : (typeof round === 'number' && round > 0 ? round : 1);
 
@@ -371,13 +403,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "시험지를 찾을 수 없습니다." }, { status: 404 });
     }
 
+    // 🧩 할부·누적 보물회수 활성 시 현재 (setIndex, setRound)에 출제된 문항들만 채점 대상으로 추출
+    const installmentCfg = exam.treasure_config?.installment;
+    const isInstallmentSubmission = Boolean(
+      installmentCfg?.enabled &&
+      Array.isArray(installmentCfg.sets) &&
+      installmentCfg.sets.length > 0 &&
+      typeof setIndex === 'number' &&
+      typeof setRound === 'number'
+    );
+
+    const activeResolution = isInstallmentSubmission && installmentCfg
+      ? getInstallmentActiveQuestions(exam.questions, installmentCfg, setIndex, setRound)
+      : { questions: exam.questions, recallQuestionIds: new Set<string>(), recallOriginSetMap: {} };
+
+    const questionsToGrade = activeResolution.questions;
+    const targetRound = isInstallmentSubmission && installmentCfg
+      ? getInstallmentGlobalRound(installmentCfg.sets, setIndex, setRound)
+      : rawRound;
+
     // 채점 진행
     let correctCount = 0;
     let pendingCount = 0;
     const gradedAnswers: StudentSubmission["answers"] = {};
     const collectedProofImages: StudentSubmission["proof_images"] = [];
 
-    exam.questions.forEach((q, idx) => {
+    questionsToGrade.forEach((q, idx) => {
       const rawUserAns = answers?.[q.id];
       let userAns = typeof rawUserAns === 'string' ? rawUserAns.trim() : (rawUserAns ? JSON.stringify(rawUserAns) : "");
       const isDirectPaper = userAns === '__DIRECT_PAPER__' || (typeof rawUserAns === 'object' && rawUserAns?.is_direct_paper);
@@ -492,11 +543,11 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    const totalQuestions = exam.questions.length;
+    const totalQuestions = questionsToGrade.length;
     // 🌟 문항별 배점(points) 기반 실시간 총점 및 획득 점수 계산
     let earnedPoints10 = 0;
     let totalExamPoints10 = 0;
-    exam.questions.forEach((q) => {
+    questionsToGrade.forEach((q) => {
       const qPoint = typeof q.points === 'number' && q.points > 0
         ? q.points
         : (totalQuestions > 0 ? 100 / totalQuestions : 0);
@@ -546,6 +597,13 @@ export async function POST(req: NextRequest) {
     // 이번 회차 기록 생성
     const thisRoundHistoryItem: RoundHistoryItem = {
       round: targetRound,
+      ...(isInstallmentSubmission
+        ? {
+            set_index: setIndex,
+            set_round: setRound,
+            recalled_question_ids: Array.from(activeResolution.recallQuestionIds),
+          }
+        : {}),
       score,
       correct_count: correctCount,
       total_questions: totalQuestions,
@@ -554,8 +612,10 @@ export async function POST(req: NextRequest) {
       answers: gradedAnswers,
     };
 
-    // 동일 회차 재응시 시 해당 회차 업데이트, 아니면 추가
-    const existingHistIdx = history.findIndex((h) => h.round === targetRound);
+    // 동일 회차(할부 모드 시 동일 세트+바퀴) 재응시 시 해당 회차 업데이트, 아니면 추가
+    const existingHistIdx = isInstallmentSubmission
+      ? history.findIndex((h) => h.set_index === setIndex && h.set_round === setRound)
+      : history.findIndex((h) => h.round === targetRound);
     if (existingHistIdx !== -1) {
       history[existingHistIdx] = thisRoundHistoryItem;
     } else {
@@ -564,7 +624,9 @@ export async function POST(req: NextRequest) {
     history.sort((a, b) => a.round - b.round);
 
     const prevCompleted = prevSub?.completed_rounds || (prevSub ? 1 : 0);
-    const completedRounds = Math.max(prevCompleted, targetRound);
+    const completedRounds = isInstallmentSubmission
+      ? history.length
+      : Math.max(prevCompleted, targetRound);
 
     const newSubmission: StudentSubmission = {
       id: `${studentId}_${examId}`,

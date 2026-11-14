@@ -48,7 +48,16 @@ import { supabase } from '@/lib/supabase';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
 import ZoomableImageViewer from './ZoomableImageViewer';
-import { calculateRoundDuration, shuffleArray, parseExamRoundAndBaseTitle } from '@/app/teacher/exammgr/treasureTypes';
+import {
+  calculateRoundDuration,
+  calculateInstallmentRoundDuration,
+  getInstallmentActiveQuestions,
+  getInstallmentGlobalRound,
+  computeInstallmentProgress,
+  resolveInstallmentCoordsFromGlobalRound,
+  shuffleArray,
+  parseExamRoundAndBaseTitle,
+} from '@/app/teacher/exammgr/treasureTypes';
 
 interface StudentTest2ViewProps {
   studentId: string;
@@ -213,6 +222,10 @@ export default function StudentTest2View({
   const [currentExam, setCurrentExam] = useState<ExamPaper | null>(null);
   const [currentBundle, setCurrentBundle] = useState<ExamBundle | null>(null);
   const [currentRound, setCurrentRound] = useState<number>(1);
+  const [currentSetIndex, setCurrentSetIndex] = useState<number | null>(null);
+  const [currentSetRound, setCurrentSetRound] = useState<number | null>(null);
+  const [currentRecallOriginMap, setCurrentRecallOriginMap] = useState<Record<string, number>>({});
+  const fullExamQuestionsRef = useRef<ExamQuestion[]>([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
   // 답안 및 소요시간 관리
@@ -813,7 +826,14 @@ export default function StudentTest2View({
   };
 
   // 2. 시험 시작하기
-  const handleStartExam = async (examId: string, bundle?: ExamBundle | null, roundNum = 1, forceNewRound = false) => {
+  const handleStartExam = async (
+    examId: string,
+    bundle?: ExamBundle | null,
+    roundNum = 1,
+    forceNewRound = false,
+    targetSetIndex?: number,
+    targetSetRound?: number
+  ) => {
     try {
       setLoading(true);
       // 🌟 [기기 간 이어풀기] 시험지 정보와 서버 임시저장 진행 상태를 병렬로 즉시 로드!
@@ -827,7 +847,77 @@ export default function StudentTest2View({
 
       if (data.success && data.exam) {
         const isTreasureExam = Boolean(data.exam.is_treasure_hunt || data.exam.treasure_config?.enabled || data.exam.title?.includes('보물'));
-        
+        const originalQuestions: ExamQuestion[] = Array.isArray(data.exam.questions) ? [...data.exam.questions] : [];
+        fullExamQuestionsRef.current = originalQuestions;
+
+        const installmentCfg = data.exam.treasure_config?.installment;
+        const isInstallmentExam = Boolean(installmentCfg?.enabled && Array.isArray(installmentCfg.sets) && installmentCfg.sets.length > 0);
+
+        let effectiveRoundNum = roundNum;
+        let resolvedSetIdx: number | null = null;
+        let resolvedSetRound: number | null = null;
+        let recallOriginMap: Record<string, number> = {};
+
+        if (isInstallmentExam && installmentCfg) {
+          const roundHist = Array.isArray(data.submission?.round_history) ? data.submission.round_history : [];
+          const instProg = computeInstallmentProgress(installmentCfg, roundHist);
+
+          if (typeof targetSetIndex === 'number' && typeof targetSetRound === 'number') {
+            resolvedSetIdx = targetSetIndex;
+            resolvedSetRound = targetSetRound;
+          } else if (!forceNewRound && data.is_submitted && data.submission) {
+            // 리포트 열기 시: 마지막 완료된 세트/바퀴 또는 roundNum 기반 역조회
+            const lastItem = roundHist.length > 0 ? roundHist[roundHist.length - 1] : null;
+            if (lastItem && typeof lastItem.set_index === 'number' && typeof lastItem.set_round === 'number') {
+              resolvedSetIdx = lastItem.set_index;
+              resolvedSetRound = lastItem.set_round;
+            } else {
+              const coords = resolveInstallmentCoordsFromGlobalRound(installmentCfg.sets, roundNum);
+              resolvedSetIdx = coords.setIndex;
+              resolvedSetRound = coords.setRound;
+            }
+          } else {
+            // 이어풀기 시 로컬 저장된 세트/바퀴 우선 복원
+            let savedCoords: { setIndex?: number; setRound?: number } | null = null;
+            if (!forceNewRound) {
+              try {
+                const rawCoords = localStorage.getItem(`test2_installment_${studentId}_${examId}`);
+                if (rawCoords) savedCoords = JSON.parse(rawCoords);
+              } catch {}
+            }
+            if (savedCoords && typeof savedCoords.setIndex === 'number' && typeof savedCoords.setRound === 'number') {
+              resolvedSetIdx = savedCoords.setIndex;
+              resolvedSetRound = savedCoords.setRound;
+            } else {
+              resolvedSetIdx = instProg.activeSetIndex;
+              resolvedSetRound = instProg.activeSetRound;
+            }
+          }
+
+          const finalSetIdx = resolvedSetIdx ?? instProg.activeSetIndex;
+          const finalSetRound = resolvedSetRound ?? instProg.activeSetRound;
+          resolvedSetIdx = finalSetIdx;
+          resolvedSetRound = finalSetRound;
+
+          const activeSetRes = getInstallmentActiveQuestions(originalQuestions, installmentCfg, finalSetIdx, finalSetRound);
+          data.exam.questions = activeSetRes.questions;
+          recallOriginMap = activeSetRes.recallOriginSetMap;
+          effectiveRoundNum = getInstallmentGlobalRound(installmentCfg.sets, finalSetIdx, finalSetRound);
+
+          if (forceNewRound || (!data.is_submitted && resolvedSetIdx !== null && resolvedSetRound !== null)) {
+            try {
+              localStorage.setItem(
+                `test2_installment_${studentId}_${examId}`,
+                JSON.stringify({ setIndex: resolvedSetIdx, setRound: resolvedSetRound })
+              );
+            } catch {}
+          }
+        }
+
+        setCurrentSetIndex(resolvedSetIdx);
+        setCurrentSetRound(resolvedSetRound);
+        setCurrentRecallOriginMap(recallOriginMap);
+
         // 🔀 문항 무작위 믹싱 (셔플)
         if (data.exam.treasure_config?.enable_shuffle || (isTreasureExam && forceNewRound)) {
           if (Array.isArray(data.exam.questions)) {
@@ -838,29 +928,58 @@ export default function StudentTest2View({
         // ⏱️ 타임어택 회차별 제한시간 계산
         if (data.exam.treasure_config?.enabled) {
           const cfg = data.exam.treasure_config;
-          const calculatedMin = calculateRoundDuration(
-            cfg.base_duration_min || data.exam.duration_min || 30,
-            roundNum,
-            cfg.time_attack_mode,
-            cfg.percent_reduction,
-            cfg.manual_durations,
-            cfg.variable_reductions
-          );
-          data.exam.duration_min = calculatedMin;
+          if (isInstallmentExam && resolvedSetRound !== null) {
+            data.exam.duration_min = calculateInstallmentRoundDuration(
+              cfg.base_duration_min || data.exam.duration_min || 30,
+              originalQuestions.length,
+              data.exam.questions.length,
+              resolvedSetRound,
+              cfg
+            );
+          } else {
+            const calculatedMin = calculateRoundDuration(
+              cfg.base_duration_min || data.exam.duration_min || 30,
+              effectiveRoundNum,
+              cfg.time_attack_mode,
+              cfg.percent_reduction,
+              cfg.manual_durations,
+              cfg.variable_reductions
+            );
+            data.exam.duration_min = calculatedMin;
+          }
         }
 
         setCurrentExam(data.exam);
         setCurrentBundle(bundle || null);
-        setCurrentRound(roundNum);
+        setCurrentRound(effectiveRoundNum);
         setCurrentQuestionIndex(0);
         questionEnteredAtRef.current = Date.now();
 
         // 이미 제출된 시험지라도 새로운 회차 도전(forceNewRound)이면 시험 화면으로 바로 시작
         if (!forceNewRound && data.is_submitted && data.submission) {
           // 🌟 [보물회수 회차 복원] 서버에 기록된 누적 완주 회차(completed_rounds)로 정확히 복원!
-          const restoredRound = data.submission.completed_rounds || data.submission.current_round || roundNum;
-          setCurrentRound(restoredRound);
-          setSubmissionResult(data.submission);
+          if (isInstallmentExam && resolvedSetIdx !== null && resolvedSetRound !== null) {
+            const histMatch = (data.submission.round_history || []).find(
+              (h: any) => h.set_index === resolvedSetIdx && h.set_round === resolvedSetRound
+            );
+            setCurrentRound(effectiveRoundNum);
+            setSubmissionResult(
+              histMatch
+                ? {
+                    ...data.submission,
+                    score: histMatch.score,
+                    correct_count: histMatch.correct_count,
+                    total_questions: histMatch.total_questions,
+                    answers: histMatch.answers,
+                    submitted_at: histMatch.submitted_at,
+                  }
+                : data.submission
+            );
+          } else {
+            const restoredRound = data.submission.completed_rounds || data.submission.current_round || effectiveRoundNum;
+            setCurrentRound(restoredRound);
+            setSubmissionResult(data.submission);
+          }
           setViewMode('result');
         } else {
           if (forceNewRound) {
@@ -1599,6 +1718,9 @@ export default function StudentTest2View({
           questionTimes: questionSpentTimes,
           proofImages: finalProofImages,
           currentRound,
+          ...(currentSetIndex !== null && currentSetRound !== null
+            ? { setIndex: currentSetIndex, setRound: currentSetRound }
+            : {}),
         }),
       });
 
@@ -1606,7 +1728,24 @@ export default function StudentTest2View({
       if (data.success && data.submission) {
         // 🌟 채점 완료 시점: 마스킹 풀린 exam 객체로 즉시 동기화 (나갔다 들어올 필요 없이 해설 버튼 활성화!)
         if (data.exam) {
-          setCurrentExam(data.exam);
+          const rawFullQuestions = Array.isArray(data.exam.questions) ? [...data.exam.questions] : [];
+          fullExamQuestionsRef.current = rawFullQuestions;
+          const instCfg = data.exam.treasure_config?.installment;
+          if (instCfg?.enabled && currentSetIndex !== null && currentSetRound !== null) {
+            const activeRes = getInstallmentActiveQuestions(rawFullQuestions, instCfg, currentSetIndex, currentSetRound);
+            // 학생이 풀었던 문제 순서 유지하면서 정답/해설만 채워진 객체로 매핑
+            const unlockedMap = new Map(activeRes.questions.map((q: any) => [q.id, q]));
+            const orderedActive = currentExam.questions
+              .map((oldQ: any) => unlockedMap.get(oldQ.id) || oldQ)
+              .filter(Boolean);
+            setCurrentExam({
+              ...data.exam,
+              duration_min: currentExam.duration_min,
+              questions: orderedActive.length > 0 ? orderedActive : activeRes.questions,
+            });
+          } else {
+            setCurrentExam(data.exam);
+          }
         }
         setSubmissionResult(data.submission);
         if (typeof data.submission.current_round === 'number') {
@@ -1617,6 +1756,7 @@ export default function StudentTest2View({
         // 로컬 임시 데이터 정리
         localStorage.removeItem(`test2_answers_${studentId}_${currentExam.id}`);
         localStorage.removeItem(`test2_qtimes_${studentId}_${currentExam.id}`);
+        localStorage.removeItem(`test2_installment_${studentId}_${currentExam.id}`);
         fetch(`/api/test2/temp-progress?examId=${currentExam.id}&studentId=${studentId}`, { method: 'DELETE' }).catch(() => {});
         localStorage.removeItem(`test2_time_${studentId}_${currentExam.id}`);
 
@@ -2587,13 +2727,21 @@ export default function StudentTest2View({
                               </span>
                             )}
                           </div>
-                          {/* 🌟 [오라버니 기획 v2.0] 총 회차 기준 엄격 표기 (5회차 중 N회차 완료 / N회차 M번 풀이 중) */}
+                          {/* 🌟 [오라버니 기획 v2.0] 총 회차 / 할부 세트 기준 엄격 표기 */}
                           {(() => {
                             const parsed = parseExamRoundAndBaseTitle(exam.title);
                             const roundNum = exam.wrong_round || parsed.currentRound || 1;
                             const tConfig = exam.treasure_config;
+                            const instCfg = tConfig?.installment;
+                            const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+                            const instProgress = isInstallment && instCfg
+                              ? computeInstallmentProgress(instCfg, (exam.submission as any)?.round_history || [])
+                              : null;
+
                             // 보물회수 코스는 기본 5회차 코스
-                            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
+                            const repeatRounds = instProgress
+                              ? instProgress.totalCourseRounds
+                              : (tConfig?.total_rounds || tConfig?.repeat_rounds || 5);
                             const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
                             const subCurrent = Number((exam.submission as any)?.current_round) || 0;
                             const historyLen = Array.isArray((exam.submission as any)?.round_history)
@@ -2602,22 +2750,28 @@ export default function StudentTest2View({
                             const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
 
                             // DB 완주 수, 이력 수, 현재 라운드 중 최대값을 신뢰
-                            let completedRounds = Math.max(subCompleted, historyLen);
-                            if (completedRounds === 0 && isSubmitted) {
+                            let completedRounds = instProgress
+                              ? instProgress.completedCourseRounds
+                              : Math.max(subCompleted, historyLen);
+                            if (!instProgress && completedRounds === 0 && isSubmitted) {
                               completedRounds = Math.max(subCurrent, examRound, 1);
                             }
-                            const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                            const isAllCompleted = instProgress
+                              ? instProgress.isAllCompleted
+                              : (isSubmitted && completedRounds >= repeatRounds);
                             const currentActiveRound = hasTempProgress
                               ? (tempProg?.round || roundNum)
                               : (completedRounds < repeatRounds ? completedRounds + 1 : completedRounds);
                             const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
 
-                            // 1) 전 코스 완주 (실제로 설정된 총 회차를 모두 마친 경우)
+                            // 1) 전 코스 완주
                             if (isAllCompleted) {
                               return (
                                 <span className="flex items-center gap-1.5 text-xs font-black text-amber-300 bg-amber-500/25 px-3 py-1 rounded-full border border-amber-400/50 shadow-md">
                                   <Sparkles size={12} className="fill-amber-300 text-amber-300" />
-                                  🏆 {repeatRounds}회차 전 코스 완주 (ALL CLEAR)
+                                  {instProgress
+                                    ? `🏆 ${instCfg!.sets.length}세트 (${repeatRounds}바퀴) 전 코스 완주`
+                                    : `🏆 ${repeatRounds}회차 전 코스 완주 (ALL CLEAR)`}
                                 </span>
                               );
                             }
@@ -2627,12 +2781,22 @@ export default function StudentTest2View({
                               return (
                                 <span className="flex items-center gap-1.5 text-xs font-black text-cyan-300 bg-cyan-500/20 px-3 py-1 rounded-full border border-cyan-400/40 shadow-sm animate-pulse">
                                   <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                                  ⏳ {currentActiveRound}회차 {currentQNum}번 풀이 중
+                                  {instProgress
+                                    ? `⏳ 세트 ${instProgress.activeSetIndex + 1} · ${instProgress.activeSetRound}바퀴 ${currentQNum}번 풀이 중`
+                                    : `⏳ ${currentActiveRound}회차 ${currentQNum}번 풀이 중`}
                                 </span>
                               );
                             }
 
-                            // 3) 특정 회차 완료 (예: 5회차 중 1회차 완료)
+                            // 3) 할부 모드 진행 중 또는 일반 특정 회차 완료
+                            if (instProgress) {
+                              return (
+                                <span className="flex items-center gap-1 text-xs font-bold text-amber-200 bg-amber-500/20 px-3 py-1 rounded-full border border-amber-400/40">
+                                  💎 세트 {instProgress.activeSetIndex + 1} · {instProgress.activeSetRound}/{instCfg!.sets[instProgress.activeSetIndex]?.rounds}바퀴 도전 대기
+                                </span>
+                              );
+                            }
+
                             if (completedRounds > 0) {
                               return (
                                 <span className="flex items-center gap-1 text-xs font-bold text-emerald-300 bg-emerald-500/20 px-3 py-1 rounded-full border border-emerald-400/40">
@@ -2655,7 +2819,15 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
-                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
+                          const instCfg = tConfig?.installment;
+                          const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+                          const instProgress = isInstallment && instCfg
+                            ? computeInstallmentProgress(instCfg, (exam.submission as any)?.round_history || [])
+                            : null;
+
+                          const repeatRounds = instProgress
+                            ? instProgress.totalCourseRounds
+                            : (tConfig?.total_rounds || tConfig?.repeat_rounds || 5);
                           const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
                           const subCurrent = Number((exam.submission as any)?.current_round) || 0;
                           const historyLen = Array.isArray((exam.submission as any)?.round_history)
@@ -2663,11 +2835,15 @@ export default function StudentTest2View({
                             : 0;
                           const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
 
-                          let completedRounds = Math.max(subCompleted, historyLen);
-                          if (completedRounds === 0 && isSubmitted) {
+                          let completedRounds = instProgress
+                            ? instProgress.completedCourseRounds
+                            : Math.max(subCompleted, historyLen);
+                          if (!instProgress && completedRounds === 0 && isSubmitted) {
                             completedRounds = Math.max(subCurrent, examRound, 1);
                           }
-                          const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                          const isAllCompleted = instProgress
+                            ? instProgress.isAllCompleted
+                            : (isSubmitted && completedRounds >= repeatRounds);
                           const currentActiveRound = hasTempProgress
                             ? (tempProg?.round || roundNum)
                             : (completedRounds < repeatRounds ? completedRounds + 1 : completedRounds);
@@ -2685,12 +2861,16 @@ export default function StudentTest2View({
                                 <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black inline-flex items-center gap-1 shadow-xs">
                                   <Sparkles size={10} className="fill-amber-300 text-amber-300" />
                                   <span>
-                                    💎 보물회수 {isAllCompleted ? `${repeatRounds}회차 완주` : `${repeatRounds}회차 중 ${completedRounds > 0 ? `${completedRounds}회차 완료` : '1회차 대기'}`}
+                                    {instProgress
+                                      ? `🧩 할부·누적 ${instCfg!.sets.length}세트 (${completedRounds}/${repeatRounds}바퀴)`
+                                      : `💎 보물회수 ${isAllCompleted ? `${repeatRounds}회차 완주` : `${repeatRounds}회차 중 ${completedRounds > 0 ? `${completedRounds}회차 완료` : '1회차 대기'}`}`}
                                   </span>
                                   <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
                                 </span>
                                 <span className="text-[10px] text-amber-300/80 font-bold">
-                                  (총 {repeatRounds}회 코스)
+                                  {instProgress
+                                    ? `(${instCfg!.chunk_size}문항 분할 · ${instCfg!.unlock_mode === 'sequential' ? '완료 시 순차 해금' : '자유 선택'})`
+                                    : `(총 ${repeatRounds}회 코스)`}
                                 </span>
                               </div>
                               <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2" title={cleanDisplayTitle}>
@@ -2703,7 +2883,9 @@ export default function StudentTest2View({
                                 {repeatRounds > 1 && (
                                   <>
                                     <span>•</span>
-                                    <span className="text-amber-200">🔁 총 {repeatRounds}회차 코스</span>
+                                    <span className="text-amber-200">
+                                      {instProgress ? `🧩 ${instCfg!.sets.length}세트 총 ${repeatRounds}바퀴` : `🔁 총 ${repeatRounds}회차 코스`}
+                                    </span>
                                   </>
                                 )}
                                 {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) && (
@@ -2714,8 +2896,63 @@ export default function StudentTest2View({
                                 )}
                               </p>
 
-                              {/* 🌟 [오라버니 기획] 회차별 스텝 인디케이터 바 */}
-                              {repeatRounds > 1 && (
+                              {/* 🌟 [오라버니 기획] 할부 세트 로드맵 OR 일반 회차별 스텝 인디케이터 바 */}
+                              {instProgress ? (
+                                <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                                  <div className="flex items-center justify-between text-[11px] font-black text-slate-300">
+                                    <span>🗺️ 나의 보물회수 할부 로드맵</span>
+                                    <span className="text-amber-300">{completedRounds} / {repeatRounds} 바퀴 완료</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                                    {instProgress.sets.map((sp) => {
+                                      const isCurr = !isAllCompleted && sp.setIndex === instProgress.activeSetIndex;
+                                      const recallCnt = instCfg!.sets[sp.setIndex]?.recall_schedule?.[0]?.length || 0;
+                                      const canClickStart = sp.isUnlocked && !sp.isCompleted;
+                                      return (
+                                        <button
+                                          key={sp.setIndex}
+                                          type="button"
+                                          disabled={!canClickStart}
+                                          onClick={() => {
+                                            if (!canClickStart) return;
+                                            const gRound = getInstallmentGlobalRound(instCfg!.sets, sp.setIndex, sp.nextRound);
+                                            handleStartExam(exam.id, undefined, gRound, true, sp.setIndex, sp.nextRound);
+                                          }}
+                                          className={`p-2 rounded-xl border text-left transition-all flex flex-col gap-0.5 ${
+                                            sp.isCompleted
+                                              ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+                                              : isCurr
+                                              ? 'bg-amber-500/20 border-amber-400 text-amber-200 ring-1 ring-amber-400/40 cursor-pointer hover:bg-amber-500/30'
+                                              : sp.isUnlocked
+                                              ? 'bg-white/5 border-white/15 text-slate-200 cursor-pointer hover:bg-white/10'
+                                              : 'bg-white/5 border-white/5 text-slate-500 opacity-60 cursor-not-allowed'
+                                          }`}
+                                          title={
+                                            sp.isCompleted
+                                              ? `세트 ${sp.setIndex + 1} 완주`
+                                              : sp.isUnlocked
+                                              ? `클릭하여 세트 ${sp.setIndex + 1} · ${sp.nextRound}바퀴 시작`
+                                              : `이전 세트(${sp.setIndex}세트) 완료 후 해금됩니다`
+                                          }
+                                        >
+                                          <div className="flex items-center justify-between text-[10.5px] font-black">
+                                            <span>
+                                              {sp.isCompleted ? '✓ ' : isCurr ? '🔥 ' : sp.isUnlocked ? '▶ ' : '🔒 '}
+                                              세트 {sp.setIndex + 1}
+                                            </span>
+                                            <span className="text-[9.5px] opacity-80">
+                                              {sp.completedCount}/{sp.totalRounds}
+                                            </span>
+                                          </div>
+                                          <div className="text-[9.5px] font-bold opacity-80">
+                                            {sp.coreCount}문항{recallCnt > 0 ? ` + 리콜${recallCnt}` : ''}
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ) : repeatRounds > 1 && (
                                 <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-white/5 overflow-x-auto pb-1">
                                   {Array.from({ length: repeatRounds }).map((_, rIdx) => {
                                     const r = rIdx + 1;
@@ -2823,7 +3060,15 @@ export default function StudentTest2View({
                           const parsed = parseExamRoundAndBaseTitle(exam.title);
                           const roundNum = exam.wrong_round || parsed.currentRound || 1;
                           const tConfig = exam.treasure_config;
-                          const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 5;
+                          const instCfg = tConfig?.installment;
+                          const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+                          const instProgress = isInstallment && instCfg
+                            ? computeInstallmentProgress(instCfg, (exam.submission as any)?.round_history || [])
+                            : null;
+
+                          const repeatRounds = instProgress
+                            ? instProgress.totalCourseRounds
+                            : (tConfig?.total_rounds || tConfig?.repeat_rounds || 5);
                           const subCompleted = Number((exam.submission as any)?.completed_rounds) || 0;
                           const subCurrent = Number((exam.submission as any)?.current_round) || 0;
                           const historyLen = Array.isArray((exam.submission as any)?.round_history)
@@ -2831,11 +3076,15 @@ export default function StudentTest2View({
                             : 0;
                           const examRound = Number(exam.wrong_round) || Number(parsed.currentRound) || 0;
 
-                          let completedRounds = Math.max(subCompleted, historyLen);
-                          if (completedRounds === 0 && isSubmitted) {
+                          let completedRounds = instProgress
+                            ? instProgress.completedCourseRounds
+                            : Math.max(subCompleted, historyLen);
+                          if (!instProgress && completedRounds === 0 && isSubmitted) {
                             completedRounds = Math.max(subCurrent, examRound, 1);
                           }
-                          const isAllCompleted = isSubmitted && completedRounds >= repeatRounds;
+                          const isAllCompleted = instProgress
+                            ? instProgress.isAllCompleted
+                            : (isSubmitted && completedRounds >= repeatRounds);
                           const hasNextRound = !isAllCompleted && completedRounds < repeatRounds;
                           const nextRound = completedRounds + 1;
                           const currentActiveRound = hasTempProgress
@@ -2843,7 +3092,7 @@ export default function StudentTest2View({
                             : nextRound;
                           const currentQNum = (tempProg?.current_question_idx ?? 0) + 1;
 
-                          // 1) 전 코스 완주 완료 상태 (가장 우선 순위로 완주 정복 리포트 버튼 노출)
+                          // 1) 전 코스 완주 완료 상태
                           if (isAllCompleted) {
                             return (
                               <button
@@ -2852,13 +3101,23 @@ export default function StudentTest2View({
                                 className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400/20 via-yellow-500/20 to-amber-500/20 hover:from-amber-400/30 hover:to-amber-500/30 text-amber-200 border border-amber-400/40 shadow-lg shadow-amber-500/10 active:scale-[0.99]"
                               >
                                 <Sparkles size={16} className="fill-amber-300 text-amber-300" />
-                                <span>🏆 {repeatRounds}회차 전 코스 정복 리포트 보기</span>
+                                <span>
+                                  {instProgress
+                                    ? `🏆 ${instCfg!.sets.length}세트 (${repeatRounds}바퀴) 정복 리포트 보기`
+                                    : `🏆 ${repeatRounds}회차 전 코스 정복 리포트 보기`}
+                                </span>
                               </button>
                             );
                           }
 
-                          // 2) 1개 이상 회차 완료 + (임시저장 진행 중이거나 다음 회차 대기 중인 경우) ➔ 듀얼 버튼 제공!
+                          // 2) 1개 이상 완료 + 이어풀기 또는 다음 바퀴 대기
                           if (completedRounds > 0 && (hasTempProgress || hasNextRound)) {
+                            const nextSetIdx = instProgress ? instProgress.activeSetIndex : undefined;
+                            const nextSetRound = instProgress ? instProgress.activeSetRound : undefined;
+                            const nextGlobalRound = instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+                              ? getInstallmentGlobalRound(instCfg!.sets, nextSetIdx, nextSetRound)
+                              : nextRound;
+
                             return (
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                                 <button
@@ -2867,7 +3126,7 @@ export default function StudentTest2View({
                                   className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer bg-white/10 hover:bg-white/20 text-violet-200 border border-violet-500/30 shadow-xs"
                                 >
                                   <BarChart2 size={15} className="text-violet-400" />
-                                  <span>{completedRounds}회차 속도추이 리포트</span>
+                                  <span>{instProgress ? '최근 바퀴 리포트' : `${completedRounds}회차 속도추이 리포트`}</span>
                                 </button>
 
                                 {hasTempProgress ? (
@@ -2877,16 +3136,24 @@ export default function StudentTest2View({
                                     className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 bg-gradient-to-r from-cyan-500 via-indigo-600 to-violet-600 hover:from-cyan-400 hover:to-violet-500 text-white shadow-lg shadow-cyan-500/25 active:scale-[0.99] cursor-pointer"
                                   >
                                     <Play size={15} />
-                                    <span>{currentActiveRound}회차 {currentQNum}번 이어풀기</span>
+                                    <span>
+                                      {instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+                                        ? `세트${nextSetIdx + 1}·${nextSetRound}바퀴 ${currentQNum}번 이어풀기`
+                                        : `${currentActiveRound}회차 ${currentQNum}번 이어풀기`}
+                                    </span>
                                   </button>
                                 ) : (
                                   <button
                                     type="button"
-                                    onClick={() => handleStartExam(exam.id, undefined, nextRound, true)}
+                                    onClick={() => handleStartExam(exam.id, undefined, nextGlobalRound, true, nextSetIdx, nextSetRound)}
                                     className="w-full py-3.5 px-4 rounded-2xl font-black text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black shadow-lg shadow-amber-500/30 scale-[1.01] active:scale-[0.99] cursor-pointer"
                                   >
                                     <Sparkles size={15} className="fill-slate-950" />
-                                    <span>제 {nextRound}회차 시작</span>
+                                    <span>
+                                      {instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+                                        ? `세트 ${nextSetIdx + 1} · ${nextSetRound}바퀴 시작`
+                                        : `제 ${nextRound}회차 시작`}
+                                    </span>
                                     <ArrowRight size={15} />
                                   </button>
                                 )}
@@ -2908,15 +3175,28 @@ export default function StudentTest2View({
                             );
                           }
 
-                          // 4) 최초 1회차 도전 대기 상태
+                          // 4) 최초 1회차 / 세트 1 도전 대기 상태
                           return (
                             <button
                               type="button"
-                              onClick={() => handleStartExam(exam.id)}
+                              onClick={() =>
+                                handleStartExam(
+                                  exam.id,
+                                  undefined,
+                                  1,
+                                  false,
+                                  instProgress ? 0 : undefined,
+                                  instProgress ? 1 : undefined
+                                )
+                              }
                               className="w-full py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-extrabold shadow-lg shadow-amber-500/30 scale-[1.01]"
                             >
                               <Sparkles size={16} className="fill-slate-950" />
-                              <span>💎 제 1회차 보물 회수 도전하기</span>
+                              <span>
+                                {instProgress
+                                  ? `💎 세트 1 · 제 1바퀴 도전하기 (${instCfg!.sets[0]?.question_ids.length}문항)`
+                                  : `💎 제 1회차 보물 회수 도전하기`}
+                              </span>
                             </button>
                           );
                         })()}
@@ -2957,7 +3237,9 @@ export default function StudentTest2View({
                   {Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled) && (
                     <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-amber-500/30 to-yellow-500/30 text-amber-200 font-black text-[10px] border border-amber-400/50 flex items-center gap-1 shadow-sm">
                       <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
-                      💎 보물회수 {currentRound}회차
+                      {currentSetIndex !== null && currentSetRound !== null
+                        ? `💎 세트 ${currentSetIndex + 1} · ${currentSetRound}바퀴`
+                        : `💎 보물회수 ${currentRound}회차`}
                     </span>
                   )}
                   <h3 className="text-sm md:text-base font-black text-white truncate max-w-[280px] md:max-w-[400px]">
@@ -3276,8 +3558,14 @@ export default function StudentTest2View({
                 {/* 좌측/중앙: 문제 이미지 뷰어 */}
                 <div className="lg:col-span-8 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl min-h-[500px] flex flex-col justify-between relative overflow-hidden">
                   <div className="flex items-center justify-between text-xs font-black text-slate-500 uppercase tracking-widest pb-4">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span>QUESTION {currentQuestionIndex + 1}</span>
+                      {currentRecallOriginMap[question.id] !== undefined &&
+                        (currentExam as any).treasure_config?.installment?.show_recall_badge !== false && (
+                          <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 font-black text-[10.5px] normal-case flex items-center gap-1 shadow-xs">
+                            💎 {currentRecallOriginMap[question.id] + 1}묶음 기억소환
+                          </span>
+                        )}
                       {question.folder_name && (
                         <span className="px-2 py-0.5 rounded-lg bg-violet-500/20 text-violet-300 font-bold text-[11px] normal-case">
                           [{question.folder_name}] {question.question_number ? `${question.question_number}번` : ''}
@@ -4105,16 +4393,49 @@ export default function StudentTest2View({
             if (!isTreasure) return null;
 
             const tConfig = (currentExam as any).treasure_config;
-            const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
-            const hasNextRound = currentRound < repeatRounds;
-            const nextRound = currentRound + 1;
-            const nextDuration = calculateRoundDuration(
-              tConfig?.base_duration_min || currentExam.duration_min || 30,
-              nextRound,
-              tConfig?.time_attack_mode || 'fixed',
-              tConfig?.percent_reduction || 0,
-              tConfig?.manual_durations,
-              tConfig?.variable_reductions
+            const instCfg = tConfig?.installment;
+            const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+            const instProgress = isInstallment && instCfg
+              ? computeInstallmentProgress(instCfg, (submissionResult as any)?.round_history || [])
+              : null;
+
+            const repeatRounds = instProgress
+              ? instProgress.totalCourseRounds
+              : (tConfig?.total_rounds || tConfig?.repeat_rounds || 1);
+            const hasNextRound = instProgress ? !instProgress.isAllCompleted : currentRound < repeatRounds;
+            const nextSetIdx = instProgress ? instProgress.activeSetIndex : undefined;
+            const nextSetRound = instProgress ? instProgress.activeSetRound : undefined;
+            const nextRound = instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+              ? getInstallmentGlobalRound(instCfg!.sets, nextSetIdx, nextSetRound)
+              : currentRound + 1;
+
+            const fullQs = fullExamQuestionsRef.current.length > 0 ? fullExamQuestionsRef.current : (currentExam.questions || []);
+            const nextActiveCount = instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+              ? getInstallmentActiveQuestions(fullQs, instCfg!, nextSetIdx, nextSetRound).questions.length
+              : (currentExam.questions?.length || 1);
+
+            const nextDuration = instProgress && nextSetRound !== undefined
+              ? calculateInstallmentRoundDuration(
+                  tConfig?.base_duration_min || currentExam.duration_min || 30,
+                  fullQs.length,
+                  nextActiveCount,
+                  nextSetRound,
+                  tConfig
+                )
+              : calculateRoundDuration(
+                  tConfig?.base_duration_min || currentExam.duration_min || 30,
+                  nextRound,
+                  tConfig?.time_attack_mode || 'fixed',
+                  tConfig?.percent_reduction || 0,
+                  tConfig?.manual_durations,
+                  tConfig?.variable_reductions
+                );
+
+            const activeDisplaySetIdx = currentSetIndex ?? (instProgress ? instProgress.activeSetIndex : 0);
+            const activeDisplaySetRound = currentSetRound ?? 1;
+            const currentSetRoundsTotal = instCfg?.sets?.[activeDisplaySetIdx]?.rounds || repeatRounds;
+            const justCompletedCurrentSet = Boolean(
+              instProgress && currentSetIndex !== null && instProgress.sets[currentSetIndex]?.isCompleted && hasNextRound
             );
 
             // 시간 및 문항별 통계 계산
@@ -4193,22 +4514,40 @@ export default function StudentTest2View({
                         💎
                       </div>
                       <div className="text-left space-y-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="px-2.5 py-0.5 rounded-full bg-amber-400/25 text-amber-200 font-black text-[11px] border border-amber-400/40 flex items-center gap-1 shadow-sm">
                             <Sparkles size={11} className="fill-amber-300 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
-                            보물회수 코스 진행 중
+                            {isInstallment ? `할부·누적 보물회수 (${instCfg!.sets.length}세트)` : '보물회수 코스 진행 중'}
                           </span>
                           <span className="text-xs font-bold text-slate-300">
-                            현재 <strong className="text-amber-300">{currentRound}회차</strong> 완료 / 총 <strong>{repeatRounds}회차</strong>
+                            {instProgress ? (
+                              <>
+                                전체 <strong className="text-amber-300">{instProgress.completedCourseRounds}</strong> / <strong>{repeatRounds}바퀴</strong> 완료
+                              </>
+                            ) : (
+                              <>
+                                현재 <strong className="text-amber-300">{currentRound}회차</strong> 완료 / 총 <strong>{repeatRounds}회차</strong>
+                              </>
+                            )}
                           </span>
+                          {justCompletedCurrentSet && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300 border border-emerald-400/40 text-[11px] font-black">
+                              🔓 세트 {activeDisplaySetIdx + 1} 완주 · 세트 {(nextSetIdx ?? 0) + 1} 해금!
+                            </span>
+                          )}
                         </div>
                         <h4 className="text-xl md:text-2xl font-black text-amber-200">
-                          제 {nextRound}회차 타임어택 도전 준비 완료!
+                          {isInstallment && nextSetIdx !== undefined && nextSetRound !== undefined
+                            ? `세트 ${nextSetIdx + 1} · 제 ${nextSetRound}바퀴 타임어택 도전 준비 완료!`
+                            : `제 ${nextRound}회차 타임어택 도전 준비 완료!`}
                         </h4>
                         <p className="text-xs text-amber-200/80 font-medium leading-relaxed">
                           {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) ? '🔀 문항 순서가 새롭게 믹싱(셔플)되며, ' : ''}
+                          {isInstallment && nextSetIdx !== undefined && nextSetIdx > 0
+                            ? `💎 이전 세트 기억소환 문항이 포함되어 총 ${nextActiveCount}문항이 출제됩니다. `
+                            : ''}
                           {tConfig?.time_attack_mode && tConfig.time_attack_mode !== 'fixed'
-                            ? `⏱️ 다음 회차 제한시간은 ${nextDuration > 0 ? `${nextDuration}분` : '무제한'}으로 타임어택이 적용됩니다.`
+                            ? `⏱️ 다음 제한시간은 ${nextDuration > 0 ? `${nextDuration}분` : '무제한'}으로 타임어택이 적용됩니다.`
                             : '오답을 완벽히 내 것으로 만들 때까지 반복 회수해 보세요!'}
                         </p>
                       </div>
@@ -4216,12 +4555,16 @@ export default function StudentTest2View({
 
                     <button
                       onClick={() => {
-                        handleStartExam(currentExam.id, currentBundle, nextRound, true);
+                        handleStartExam(currentExam.id, currentBundle, nextRound, true, nextSetIdx, nextSetRound);
                       }}
                       className="w-full md:w-auto px-8 py-4 rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-base shadow-xl shadow-amber-500/30 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer relative z-10"
                     >
                       <Sparkles size={18} className="fill-slate-950" />
-                      <span>제 {nextRound}회차 보물회수 시작 ({nextDuration > 0 ? `${nextDuration}분` : '자율'})</span>
+                      <span>
+                        {isInstallment && nextSetIdx !== undefined && nextSetRound !== undefined
+                          ? `세트 ${nextSetIdx + 1} · ${nextSetRound}바퀴 시작 (${nextDuration > 0 ? `${nextDuration}분` : '자율'})`
+                          : `제 ${nextRound}회차 보물회수 시작 (${nextDuration > 0 ? `${nextDuration}분` : '자율'})`}
+                      </span>
                       <ArrowRight size={18} />
                     </button>
                   </div>
@@ -4385,18 +4728,30 @@ export default function StudentTest2View({
                   {/* 전 회차 히스토리 수집 및 HTML 그리드 + 정밀 SVG 큐빅 곡선 하이브리드 트래커 */}
                   {(() => {
                     const rawRoundHistory = (submissionResult as any)?.round_history;
+                    const chartRounds = isInstallment ? currentSetRoundsTotal : repeatRounds;
                     let roundsList: Array<{ round: number; answers: any }> = [];
 
                     if (Array.isArray(rawRoundHistory) && rawRoundHistory.length > 0) {
-                      roundsList = rawRoundHistory.map((h: any, i: number) => ({
-                        round: Number(h.round) || i + 1,
-                        answers: h.answers || {},
-                      }));
-                      if (!roundsList.some((r) => r.round === currentRound)) {
-                        roundsList.push({ round: currentRound, answers: submissionResult.answers || {} });
+                      if (isInstallment) {
+                        const filteredSetHist = rawRoundHistory.filter((h: any) => h.set_index === activeDisplaySetIdx);
+                        roundsList = filteredSetHist.map((h: any, i: number) => ({
+                          round: Number(h.set_round) || i + 1,
+                          answers: h.answers || {},
+                        }));
+                        if (!roundsList.some((r) => r.round === activeDisplaySetRound)) {
+                          roundsList.push({ round: activeDisplaySetRound, answers: submissionResult.answers || {} });
+                        }
+                      } else {
+                        roundsList = rawRoundHistory.map((h: any, i: number) => ({
+                          round: Number(h.round) || i + 1,
+                          answers: h.answers || {},
+                        }));
+                        if (!roundsList.some((r) => r.round === currentRound)) {
+                          roundsList.push({ round: currentRound, answers: submissionResult.answers || {} });
+                        }
                       }
                     } else {
-                      roundsList = [{ round: currentRound, answers: submissionResult.answers || {} }];
+                      roundsList = [{ round: isInstallment ? activeDisplaySetRound : currentRound, answers: submissionResult.answers || {} }];
                     }
                     roundsList.sort((a, b) => a.round - b.round);
 
@@ -4405,14 +4760,14 @@ export default function StudentTest2View({
                         {/* 차트 상단 회차 가이드 축 (칼같은 그리드 동기화) */}
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 bg-white/5 border-b border-white/10 text-xs font-black text-slate-300 items-center">
                           <div className="col-span-2 sm:col-span-1 text-center text-slate-400">문항</div>
-                          <div className="col-span-7 sm:col-span-8 grid" style={{ gridTemplateColumns: `repeat(${repeatRounds}, minmax(0, 1fr))` }}>
-                            {Array.from({ length: repeatRounds }).map((_, rIdx) => {
+                          <div className="col-span-7 sm:col-span-8 grid" style={{ gridTemplateColumns: `repeat(${chartRounds}, minmax(0, 1fr))` }}>
+                            {Array.from({ length: chartRounds }).map((_, rIdx) => {
                               const r = rIdx + 1;
                               const hasData = roundsList.some((item) => item.round === r);
                               return (
                                 <div key={r} className="text-center">
                                   <span className={`text-[11px] font-black tracking-tight ${hasData ? 'text-amber-300' : 'text-slate-600'}`}>
-                                    제 {r}회차
+                                    {isInstallment ? `세트${activeDisplaySetIdx + 1}·${r}바퀴` : `제 ${r}회차`}
                                   </span>
                                 </div>
                               );
@@ -4438,7 +4793,7 @@ export default function StudentTest2View({
                             const statusList: RoundNodeInfo[] = [];
                             const validSecList: number[] = [];
 
-                            Array.from({ length: repeatRounds }).forEach((_, rIdx) => {
+                            Array.from({ length: chartRounds }).forEach((_, rIdx) => {
                               const rNum = rIdx + 1;
                               const roundObj = roundsList.find((item) => item.round === rNum);
                               if (!roundObj) {
@@ -5142,17 +5497,43 @@ export default function StudentTest2View({
               if (!currentExam) return null;
               const isTreasure = Boolean((currentExam as any).is_treasure_hunt || (currentExam as any).treasure_config?.enabled);
               const tConfig = (currentExam as any).treasure_config;
-              const repeatRounds = tConfig?.total_rounds || tConfig?.repeat_rounds || 1;
-              const hasNextRound = isTreasure && currentRound < repeatRounds;
-              const nextRound = currentRound + 1;
-              const nextDuration = calculateRoundDuration(
-                tConfig?.base_duration_min || currentExam.duration_min || 30,
-                nextRound,
-                tConfig?.time_attack_mode || 'fixed',
-                tConfig?.percent_reduction || 0,
-                tConfig?.manual_durations,
-                tConfig?.variable_reductions
-              );
+              const instCfg = tConfig?.installment;
+              const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+              const instProgress = isInstallment && instCfg
+                ? computeInstallmentProgress(instCfg, (submissionResult as any)?.round_history || [])
+                : null;
+
+              const repeatRounds = instProgress
+                ? instProgress.totalCourseRounds
+                : (tConfig?.total_rounds || tConfig?.repeat_rounds || 1);
+              const hasNextRound = isTreasure && (instProgress ? !instProgress.isAllCompleted : currentRound < repeatRounds);
+              const nextSetIdx = instProgress ? instProgress.activeSetIndex : undefined;
+              const nextSetRound = instProgress ? instProgress.activeSetRound : undefined;
+              const nextRound = instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+                ? getInstallmentGlobalRound(instCfg!.sets, nextSetIdx, nextSetRound)
+                : currentRound + 1;
+
+              const fullQs = fullExamQuestionsRef.current.length > 0 ? fullExamQuestionsRef.current : (currentExam.questions || []);
+              const nextActiveCount = instProgress && nextSetIdx !== undefined && nextSetRound !== undefined
+                ? getInstallmentActiveQuestions(fullQs, instCfg!, nextSetIdx, nextSetRound).questions.length
+                : (currentExam.questions?.length || 1);
+
+              const nextDuration = instProgress && nextSetRound !== undefined
+                ? calculateInstallmentRoundDuration(
+                    tConfig?.base_duration_min || currentExam.duration_min || 30,
+                    fullQs.length,
+                    nextActiveCount,
+                    nextSetRound,
+                    tConfig
+                  )
+                : calculateRoundDuration(
+                    tConfig?.base_duration_min || currentExam.duration_min || 30,
+                    nextRound,
+                    tConfig?.time_attack_mode || 'fixed',
+                    tConfig?.percent_reduction || 0,
+                    tConfig?.manual_durations,
+                    tConfig?.variable_reductions
+                  );
 
               return (
                 <div className="p-4 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-900 shrink-0">
@@ -5167,12 +5548,16 @@ export default function StudentTest2View({
                         type="button"
                         onClick={() => {
                           setSolutionModalFileId(null);
-                          handleStartExam(currentExam.id, currentBundle, nextRound, true);
+                          handleStartExam(currentExam.id, currentBundle, nextRound, true, nextSetIdx, nextSetRound);
                         }}
                         className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-slate-950 font-black text-xs shadow-lg shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                       >
                         <Sparkles size={14} className="fill-slate-950" />
-                        <span>💡 해설 이해 완료! 제 {nextRound}회차 바로 시작하기 ({nextDuration > 0 ? `${nextDuration}분` : '자율'}) ➔</span>
+                        <span>
+                          {isInstallment && nextSetIdx !== undefined && nextSetRound !== undefined
+                            ? `💡 해설 이해 완료! 세트${nextSetIdx + 1}·${nextSetRound}바퀴 시작 (${nextDuration > 0 ? `${nextDuration}분` : '자율'}) ➔`
+                            : `💡 해설 이해 완료! 제 ${nextRound}회차 바로 시작하기 (${nextDuration > 0 ? `${nextDuration}분` : '자율'}) ➔`}
+                        </span>
                       </button>
                     )}
 
