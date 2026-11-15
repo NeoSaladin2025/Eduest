@@ -31,11 +31,14 @@ import {
   Lock,
   Unlock,
   Calendar,
-  Sparkles
+  Sparkles,
+  Send
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { StudentAwayLog } from '@/app/api/monitoring/away-logs/route';
 import LiveExamMonitoringModal from '@/app/teacher/exammgr/LiveExamMonitoringModal';
+import DirectAlertModal from './DirectAlertModal';
+import { DirectAlertPayload } from '@/lib/directAlertTypes';
 
 export interface StudentActivity {
   student_id: string;
@@ -150,6 +153,13 @@ export default function DailyActivityMonitoringTab({
   const [awayLogs, setAwayLogs] = useState<StudentAwayLog[]>([]);
   const [selectedStudentForLogs, setSelectedStudentForLogs] = useState<Student | null>(null);
   const [logsDateTab, setLogsDateTab] = useState<'today' | 'all'>('today');
+  const [shortCleanSec, setShortCleanSec] = useState<number>(5);
+  const [isCleaningShortLogs, setIsCleaningShortLogs] = useState<boolean>(false);
+
+  // 🚨 [무음 다이렉트 경고 시스템] 상태 관리
+  const [directAlertsMap, setDirectAlertsMap] = useState<Record<string, DirectAlertPayload>>({});
+  const [checkedAlertStudentIds, setCheckedAlertStudentIds] = useState<Set<string>>(new Set());
+  const [alertTargetStudentIds, setAlertTargetStudentIds] = useState<string[] | null>(null);
 
   // 🌟 [사용자 요청] 학생별 9분 자동로그아웃 해제(OFF) 학생 ID 세트
   const [disabledAutoLogoutIds, setDisabledAutoLogoutIds] = useState<Set<string>>(new Set());
@@ -190,10 +200,18 @@ export default function DailyActivityMonitoringTab({
 
   useEffect(() => {
     fetchAwayLogs();
+    fetch('/api/monitoring/direct-alerts', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.success && data.alerts) {
+          setDirectAlertsMap(data.alerts);
+        }
+      })
+      .catch(() => {});
   }, [fetchAwayLogs]);
 
-  const handleDeleteAwayLog = async (logId: string) => {
-    if (!confirm('이 딴짓 기록을 삭제하시겠습니까?')) return;
+  const handleDeleteAwayLog = async (logId: string, skipConfirm = false) => {
+    if (!skipConfirm && !confirm('이 딴짓 기록을 삭제하시겠습니까?')) return;
     try {
       const res = await fetch('/api/monitoring/away-logs', {
         method: 'POST',
@@ -206,6 +224,45 @@ export default function DailyActivityMonitoringTab({
       }
     } catch (e) {
       alert('삭제 중 오류가 발생했습니다.');
+    }
+  };
+
+  const handleClearShortAwayLogs = async (
+    studentId: string,
+    maxSeconds: number,
+    scope: 'today' | 'all' = 'today'
+  ) => {
+    try {
+      setIsCleaningShortLogs(true);
+      const res = await fetch('/api/monitoring/away-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'clear_under_seconds',
+          studentId,
+          maxSeconds,
+          scope,
+          preserveArchived: true,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const today = new Date().toISOString().slice(0, 10);
+        setAwayLogs((prev) =>
+          prev.filter((l) => {
+            if (l.student_id !== studentId) return true;
+            if (l.is_archived) return true;
+            if (scope === 'today' && !l.started_at.startsWith(today)) return true;
+            return l.duration_sec > maxSeconds;
+          })
+        );
+        setSyncToastMessage(`🧹 ${maxSeconds}초 이하 실수/렉 기록 ${data.removedCount || 0}건이 제거되었습니다.`);
+        setTimeout(() => setSyncToastMessage(null), 3000);
+      }
+    } catch (e) {
+      alert('짧은 이탈 기록 정리 중 오류가 발생했습니다.');
+    } finally {
+      setIsCleaningShortLogs(false);
     }
   };
 
@@ -575,6 +632,17 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       }
     });
 
+    // 5. 🚨 무음 다이렉트 경고 학생 확인/챌린지 전환 실시간 수신
+    channel.on('broadcast', { event: 'direct_alert_ack' }, (payload: any) => {
+      const p = payload?.payload;
+      if (p?.student_id && p?.alert) {
+        setDirectAlertsMap((prev) => ({
+          ...prev,
+          [p.student_id]: p.alert,
+        }));
+      }
+    });
+
     channel.subscribe((status: string) => {
       if (status === 'SUBSCRIBED') {
         // 접속 시 학생들에게 현재 위치 및 시험 상태 핑 요청 (모니터링 대상자 화면 꺼짐 방지 동기화)
@@ -741,6 +809,77 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     if (confirm('현재 일상 모니터링 중인 모든 학생을 목록에서 제외하시겠습니까?')) {
       setSelectedStudentIds([]);
     }
+  };
+
+  // 🚨 무음 다이렉트 경고 발송 (단일/단체 공용)
+  const handleSendDirectAlerts = async (alerts: DirectAlertPayload[]) => {
+    try {
+      const res = await fetch('/api/monitoring/direct-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send', alerts }),
+      });
+      const data = await res.json();
+      const savedAlerts: DirectAlertPayload[] = data?.alerts || alerts;
+
+      setDirectAlertsMap((prev) => {
+        const next = { ...prev };
+        savedAlerts.forEach((al) => {
+          next[al.student_id] = al;
+        });
+        return next;
+      });
+
+      if (channelRef.current) {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'direct_alert_send',
+          payload: { alerts: savedAlerts },
+        });
+      }
+
+      setCheckedAlertStudentIds(new Set());
+      setSyncToastMessage(
+        alerts.length > 1
+          ? `🚨 ${alerts.length}명에게 단체 무음 경고를 발송했습니다!`
+          : `🚨 ${alerts[0]?.student_name || '학생'} 학생에게 무음 경고를 발송했습니다!`
+      );
+      setTimeout(() => setSyncToastMessage(null), 3000);
+    } catch (e) {
+      alert('경고 발송 중 오류가 발생했습니다.');
+    }
+  };
+
+  // 🚨 활성 경고/주시/챌린지 해제
+  const handleClearDirectAlert = async (studentId: string) => {
+    setDirectAlertsMap((prev) => {
+      const next = { ...prev };
+      delete next[studentId];
+      return next;
+    });
+
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'direct_alert_clear',
+        payload: { student_id: studentId },
+      });
+    }
+
+    await fetch('/api/monitoring/direct-alerts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'clear', studentId }),
+    }).catch(() => {});
+  };
+
+  const toggleAlertCheckStudent = (studentId: string) => {
+    setCheckedAlertStudentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentId)) next.delete(studentId);
+      else next.add(studentId);
+      return next;
+    });
   };
 
   // 초를 MM:SS 또는 HH:MM:SS 로 포맷
@@ -1041,8 +1180,27 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           ))}
         </div>
 
-        {/* ⚡ 9분 자동로그아웃 일괄 제어 & 이름 검색창 */}
-        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+        {/* ⚡ 9분 자동로그아웃 일괄 제어 & 단체 무음 경고 & 이름 검색창 */}
+        <div className="flex items-center gap-2 w-full md:w-auto justify-end flex-wrap">
+          {checkedAlertStudentIds.size > 0 && (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setAlertTargetStudentIds(Array.from(checkedAlertStudentIds))}
+                className="px-3.5 py-2 rounded-xl text-xs font-black bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white shadow-md shadow-rose-200 flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all animate-in fade-in duration-150"
+              >
+                <Send size={13} />
+                <span>📢 단체 무음 경고 ({checkedAlertStudentIds.size}명)</span>
+              </button>
+              <button
+                onClick={() => setCheckedAlertStudentIds(new Set())}
+                className="px-2.5 py-2 rounded-xl text-xs font-bold bg-slate-100 text-slate-600 hover:bg-slate-200 transition-all"
+                title="선택 해제"
+              >
+                선택 취소
+              </button>
+            </div>
+          )}
+
           <button
             onClick={() => handleBatchToggleAutoLogout(disabledAutoLogoutIds.size < targetStudents.length)}
             className={`px-3 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 border cursor-pointer shrink-0 ${
@@ -1121,12 +1279,16 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const stayDurationMs = act?.entered_at ? Math.max(0, currentTime - act.entered_at) : 0;
             // 이탈 지속 시간
             const awayDurationMs = act?.away_started_at ? Math.max(0, currentTime - act.away_started_at) : 0;
+            const activeDirectAlert = directAlertsMap[st.id];
+            const isAlertChecked = checkedAlertStudentIds.has(st.id);
 
             return (
               <div
                 key={st.id}
                 className={`rounded-3xl border transition-all duration-300 p-5 flex flex-col justify-between relative overflow-hidden bg-white shadow-xs group ${
-                  isAway
+                  isAlertChecked
+                    ? 'border-rose-500 ring-2 ring-rose-400/70 bg-rose-50/15 shadow-md'
+                    : isAway
                     ? 'border-rose-400 ring-2 ring-rose-300/60 bg-rose-50/20 shadow-rose-100 shadow-md'
                     : isTesting
                     ? 'border-violet-300 ring-1 ring-violet-200 bg-violet-50/15'
@@ -1139,6 +1301,13 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-3">
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      <input
+                        type="checkbox"
+                        checked={isAlertChecked}
+                        onChange={() => toggleAlertCheckStudent(st.id)}
+                        className="w-4 h-4 accent-rose-600 rounded cursor-pointer shrink-0"
+                        title="단체 무음 경고 대상에 선택"
+                      />
                       <span className="text-base font-black text-slate-900">{st.name}</span>
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-600">
                         {st.grade}
@@ -1407,41 +1576,94 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                   })()}
                 </div>
 
-                {/* 하단 푸터: 체류 시간 타이머 or 시험 감독 이동 버튼 */}
-                <div className="pt-3 border-t border-slate-100 flex items-center justify-between mt-2">
+                {/* 🚨 다이렉트 경고 실시간 수신/진행 배지 */}
+                {activeDirectAlert && (() => {
+                  const isPending = activeDirectAlert.status === 'pending';
+                  const isWatching = activeDirectAlert.status === 'watching';
+                  const isChallenge = activeDirectAlert.status === 'challenge';
+                  const isAcked = activeDirectAlert.status === 'acked';
+                  const remainChallengeSec =
+                    isChallenge && activeDirectAlert.challenge_end_at
+                      ? Math.max(0, Math.ceil((new Date(activeDirectAlert.challenge_end_at).getTime() - currentTime) / 1000))
+                      : 0;
+
+                  if (isChallenge && remainChallengeSec === 0) return null;
+
+                  return (
+                    <div
+                      className={`mt-2 px-2.5 py-1.5 rounded-xl border text-[11px] font-black flex items-center justify-between gap-2 ${
+                        isPending
+                          ? 'bg-rose-50 border-rose-200 text-rose-700'
+                          : isWatching
+                          ? 'bg-red-950 border-rose-500 text-rose-100'
+                          : isChallenge
+                          ? 'bg-amber-50 border-amber-300 text-amber-900'
+                          : 'bg-slate-100 border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <span className="truncate">
+                        {isPending
+                          ? activeDirectAlert.ambush_on_return
+                            ? '⚡ 복귀 매복 경고 장전됨'
+                            : '🚨 학생 화면 경고 점령 중...'
+                          : isWatching
+                          ? '👁️ 스나이퍼 주시 중'
+                          : isChallenge
+                          ? `⏳ 집중 검증 중 (${String(Math.floor(remainChallengeSec / 60)).padStart(2, '0')}:${String(remainChallengeSec % 60).padStart(2, '0')})`
+                          : `✓ 확인완료 (${activeDirectAlert.ack_elapsed_sec || 1}초)`}
+                      </span>
+                      {(isWatching || isPending || isChallenge || isAcked) && (
+                        <button
+                          type="button"
+                          onClick={() => handleClearDirectAlert(st.id)}
+                          className="px-2 py-0.5 rounded-lg bg-white/80 hover:bg-white text-slate-700 text-[10px] font-black shrink-0 border border-slate-200 cursor-pointer"
+                        >
+                          {isAcked ? '닫기' : '해제'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* 하단 푸터: 체류 시간 타이머 or 시험 감독 이동 버튼 + 다이렉트 경고 버튼 */}
+                <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 mt-2 flex-wrap">
                   {isTesting ? (
                     <button
                       onClick={() => onSwitchToExamProctor?.(st.id)}
-                      className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-black transition-all shadow-xs"
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-black transition-all shadow-xs"
                     >
-                      <span>📝 시험 감독으로 이동</span>
-                      <ExternalLink size={13} />
+                      <span>📝 시험 감독</span>
+                      <ExternalLink size={12} />
                     </button>
                   ) : isOnline ? (
-                    <div className="w-full flex items-center justify-between text-xs">
-                      <span className="text-slate-400 font-bold flex items-center gap-1">
-                        <Clock size={12} />
-                        체류 시간
-                      </span>
-                      <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
-                        {formatDuration(stayDurationMs)}째 학습 중
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="font-mono font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-100 flex items-center gap-1">
+                        <Clock size={11} />
+                        {formatDuration(stayDurationMs)}
                       </span>
                     </div>
                   ) : isAway ? (
-                    <div className="w-full flex items-center justify-between text-xs text-rose-600 font-bold">
-                      <span className="flex items-center gap-1">
-                        <Clock size={12} />
-                        이탈 경과
-                      </span>
-                      <span className="font-mono font-black bg-rose-100 px-2 py-0.5 rounded-md">
-                        {formatDuration(awayDurationMs)}
+                    <div className="flex items-center gap-1 text-xs text-rose-600 font-bold">
+                      <span className="font-mono font-black bg-rose-100 px-2 py-1 rounded-lg flex items-center gap-1">
+                        <Clock size={11} />
+                        이탈 {formatDuration(awayDurationMs)}
                       </span>
                     </div>
                   ) : (
-                    <div className="w-full text-right text-[11px] text-slate-400 font-medium">
+                    <div className="text-[11px] text-slate-400 font-medium">
                       접속 대기
                     </div>
                   )}
+
+                  <button
+                    type="button"
+                    onClick={() => setAlertTargetStudentIds([st.id])}
+                    className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-700 hover:to-red-700 text-white text-[11px] font-black flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-all shrink-0 ml-auto"
+                    title="소리 없이 학생 화면에만 무시무시한 다이렉트 경고 발송"
+                  >
+                    <ShieldAlert size={13} />
+                    <span>다이렉트 경고</span>
+                  </button>
                 </div>
               </div>
             );
@@ -1684,17 +1906,63 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                     </button>
                   </div>
 
-                  {/* 오늘 기록 일괄 정리 버튼 (오늘 탭이고 기록 있을 때) */}
-                  {logsDateTab === 'today' && studentTodayLogs.length > 0 && (
-                    <button
-                      onClick={() => handleClearTodayAwayLogs(student.id, student.name)}
-                      className="text-xs font-bold text-slate-400 hover:text-rose-600 flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition-all"
-                      title="보관된 기록을 제외한 오늘의 딴짓 기록을 일괄 정리합니다"
-                    >
-                      <Trash2 size={13} />
-                      <span>오늘 기록 정리</span>
-                    </button>
-                  )}
+                  {/* 🧹 N초 이하(실수·렉) 일괄 제거 & 오늘 기록 정리 버튼 */}
+                  {displayedLogs.length > 0 && (() => {
+                    const shortCount = displayedLogs.filter(
+                      (l) => !l.is_archived && l.duration_sec <= shortCleanSec
+                    ).length;
+
+                    return (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 border border-slate-200 text-xs font-black text-slate-700">
+                          <input
+                            type="number"
+                            min={1}
+                            max={600}
+                            value={shortCleanSec}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              setShortCleanSec(isNaN(val) ? 1 : Math.max(1, Math.min(600, val)));
+                            }}
+                            className="w-11 text-center bg-white rounded border border-slate-200 py-0.5 text-xs font-black text-slate-900 outline-none focus:border-emerald-500"
+                            title="제거할 짧은 이탈(실수/렉) 기준 시간(초) 직접 설정"
+                          />
+                          <span>초 이하</span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={shortCount === 0 || isCleaningShortLogs}
+                          onClick={() =>
+                            handleClearShortAwayLogs(
+                              student.id,
+                              shortCleanSec,
+                              logsDateTab === 'today' ? 'today' : 'all'
+                            )
+                          }
+                          className="text-xs font-black px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 transition-all cursor-pointer"
+                          title="설정된 시간 이하의 실수/렉 기록을 한 번에 제거합니다 (상담용 보관 제외)"
+                        >
+                          <Sparkles size={12} />
+                          <span>
+                            {isCleaningShortLogs
+                              ? '제거 중...'
+                              : `🧹 ${shortCleanSec}초 이하 제거 (${shortCount}건)`}
+                          </span>
+                        </button>
+
+                        {logsDateTab === 'today' && studentTodayLogs.length > 0 && (
+                          <button
+                            onClick={() => handleClearTodayAwayLogs(student.id, student.name)}
+                            className="text-xs font-bold text-slate-400 hover:text-rose-600 flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition-all"
+                            title="보관된 기록을 제외한 오늘의 딴짓 기록을 일괄 정리합니다"
+                          >
+                            <Trash2 size={13} />
+                            <span>오늘 기록 정리</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* 통계 3단 지표 */}
@@ -1854,6 +2122,48 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
         exam={liveModalExam}
         student={liveModalStudent}
       />
+
+      {/* 🚨 [오라버니 기획] 무음 다이렉트 경고 발송 모달 */}
+      {alertTargetStudentIds && alertTargetStudentIds.length > 0 && (() => {
+        const todayPrefix = new Date().toISOString().slice(0, 10);
+        const modalTargets = alertTargetStudentIds
+          .map((id) => allStudents.find((s) => s.id === id))
+          .filter((s): s is Student => Boolean(s))
+          .map((st) => {
+            const act = liveMap[st.id];
+            const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
+            const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
+            const isAway = Boolean(act?.is_away && !isStale);
+            const stayDurationMs = act?.entered_at ? Math.max(0, currentTime - act.entered_at) : 0;
+            const studentTodayLogs = awayLogs.filter(
+              (l) => l.student_id === st.id && l.started_at.startsWith(todayPrefix)
+            );
+            const todayAwaySec = studentTodayLogs.reduce((acc, l) => acc + l.duration_sec, 0);
+
+            return {
+              id: st.id,
+              name: st.name,
+              grade: st.grade,
+              locationTitle: act?.location_title,
+              stayDurationStr: formatDuration(stayDurationMs),
+              isAway,
+              todayAwayCount: studentTodayLogs.length,
+              todayAwaySec,
+            };
+          });
+
+        return (
+          <DirectAlertModal
+            isOpen={true}
+            targets={modalTargets}
+            awayLogs={awayLogs}
+            onClose={() => setAlertTargetStudentIds(null)}
+            onSendAlerts={handleSendDirectAlerts}
+            onDeleteAwayLog={(logId) => handleDeleteAwayLog(logId, true)}
+            onClearShortLogs={(studentId, maxSec) => handleClearShortAwayLogs(studentId, maxSec, 'today')}
+          />
+        );
+      })()}
 
     </div>
   );

@@ -12,6 +12,8 @@ import StudentVideoView from './StudentVideoView';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
 import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
+import StudentDirectAlertOverlay, { DirectAlertSignal } from '@/components/StudentDirectAlertOverlay';
+import { DirectAlertPayload } from '@/lib/directAlertTypes';
 import { 
   HomeStudyRulesConfig, 
   isTimeExcluded, 
@@ -344,6 +346,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const enteredAtRef = useRef<number>(Date.now());
   const isAwayRef = useRef<boolean>(false);
   const awayStartedAtRef = useRef<number | undefined>(undefined);
+  const [directAlertSignal, setDirectAlertSignal] = useState<DirectAlertSignal>(null);
+  const [awayReturnEvent, setAwayReturnEvent] = useState<{ seq: number; awaySec: number } | null>(null);
 
   // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상자 또는 시험 모드 시 화면 꺼짐 강제 차단
   const wakeLockRef = useRef<any>(null);
@@ -576,6 +580,37 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       }
     });
 
+    // 🚨 [무음 다이렉트 경고] 선생님 실시간 경고 발송/해제 수신
+    channel.on('broadcast', { event: 'direct_alert_send' }, (payload: any) => {
+      const p = payload?.payload;
+      if (!p || !student?.id) return;
+      const list: DirectAlertPayload[] = Array.isArray(p.alerts) ? p.alerts : p.alert ? [p.alert] : [];
+      const mine = list.find((item) => item.student_id === student.id);
+      if (mine) {
+        setDirectAlertSignal((prev) => ({
+          type: 'send',
+          alert: mine,
+          seq: (prev?.seq || 0) + 1,
+        }));
+      }
+    });
+
+    channel.on('broadcast', { event: 'direct_alert_clear' }, (payload: any) => {
+      const p = payload?.payload;
+      if (!p || !student?.id) return;
+      const ids: string[] = Array.isArray(p.student_ids)
+        ? p.student_ids
+        : p.student_id
+        ? [p.student_id]
+        : [];
+      if (ids.includes(student.id)) {
+        setDirectAlertSignal((prev) => ({
+          type: 'clear',
+          seq: (prev?.seq || 0) + 1,
+        }));
+      }
+    });
+
     channel.subscribe((status: string) => {
       if (status === 'SUBSCRIBED') {
         sendActivityBroadcast(true);
@@ -588,6 +623,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         const startedIso = new Date(awayStartedAtRef.current).toISOString();
         const endedIso = new Date().toISOString();
         awayStartedAtRef.current = undefined;
+
+        // 복귀 매복 경고 및 집중 검증 위반 체크 트리거
+        setAwayReturnEvent((prev) => ({
+          seq: (prev?.seq || 0) + 1,
+          awaySec: durationSec,
+        }));
 
         if (durationSec >= 3) {
           const loc = computeCurrentLocation();
@@ -1558,6 +1599,14 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   return (
     <div className={`min-h-screen bg-[#020617] font-sans text-slate-200 overflow-x-hidden ${isTakingExam ? 'p-2 md:p-3' : 'p-4 md:p-12'}`}>
       {renderSessionGuardModals()}
+      <StudentDirectAlertOverlay
+        studentId={student?.id}
+        studentName={student?.name}
+        studentGrade={student?.grade}
+        proctorChannel={proctorChannelRef.current}
+        incomingSignal={directAlertSignal}
+        awayReturnEvent={awayReturnEvent}
+      />
 
       {/* 🌟 [오라버니 기획] 1번 스샷 상단 슬라이드 다운 글로벌 메뉴 오버레이 */}
       {isTakingExam && (

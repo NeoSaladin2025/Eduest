@@ -142,6 +142,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true });
     }
 
+    if (action === "clear_under_seconds" && studentId) {
+      const maxSeconds = Math.max(1, Number(body.maxSeconds) || 5);
+      const scope: "today" | "all" = body.scope === "all" ? "all" : "today";
+      const preserveArchived = body.preserveArchived !== false;
+      const today = new Date().toISOString().slice(0, 10);
+
+      let removedCount = 0;
+      logs = logs.filter((l) => {
+        if (l.student_id !== studentId) return true;
+        if (preserveArchived && l.is_archived) return true;
+        if (scope === "today" && !l.started_at.startsWith(today)) return true;
+        if (typeof l.duration_sec === "number" && l.duration_sec <= maxSeconds) {
+          removedCount++;
+          return false;
+        }
+        return true;
+      });
+
+      await saveAwayLogs(logs);
+      return NextResponse.json({
+        success: true,
+        removedCount,
+        maxSeconds,
+        logs: logs.filter((l) => l.student_id === studentId),
+      });
+    }
+
     return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
