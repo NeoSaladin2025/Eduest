@@ -25,6 +25,11 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import FilterChipBadge, { FilterChip } from '@/app/teacher/exammgr/FilterChipBadge';
+import {
+  TreasureConfig,
+  getInstallmentDeliveredQuestions,
+  resolveInstallmentSubmissionCoords,
+} from '@/app/teacher/exammgr/treasureTypes';
 
 export interface PerformanceStudent {
   id: string;
@@ -43,6 +48,7 @@ interface ExamPaperLite {
   created_at: string;
   questions?: any[];
   is_wrong_review?: boolean;
+  treasure_config?: TreasureConfig;
 }
 
 interface StudentSubmissionLite {
@@ -55,6 +61,8 @@ interface StudentSubmissionLite {
   wrong_count: number;
   submitted_at: string;
   duration_seconds?: number;
+  current_round?: number;
+  round_history?: any[];
   answers?: Record<string, any> | any[];
 }
 
@@ -77,9 +85,20 @@ function extractQuestionResults(item: EnrichedSubmission): QuestionResultItem[] 
   const exam = item.exam;
   const rawAnswers = sub?.answers;
 
-  // 1. exam.questions가 있을 경우 시험 문항 순서대로 매핑
-  if (exam && Array.isArray(exam.questions) && exam.questions.length > 0) {
-    return exam.questions.map((q: any, idx: number) => {
+  // 1. exam.questions가 있을 경우 시험 문항 순서대로 매핑 (할부·누적 모드 시 실제 출제 문항만 필터링)
+  const instCfg = exam?.treasure_config?.installment;
+  const isInstallment = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+  const targetQuestions = (() => {
+    if (!exam || !Array.isArray(exam.questions) || exam.questions.length === 0) return [];
+    if (isInstallment && instCfg && rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)) {
+      const coords = resolveInstallmentSubmissionCoords(instCfg, sub);
+      return getInstallmentDeliveredQuestions(exam.questions, instCfg, coords.setIndex, coords.setRound, rawAnswers).questions;
+    }
+    return exam.questions;
+  })();
+
+  if (targetQuestions.length > 0) {
+    return targetQuestions.map((q: any, idx: number) => {
       let ansInfo: any = null;
       if (rawAnswers) {
         if (typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)) {

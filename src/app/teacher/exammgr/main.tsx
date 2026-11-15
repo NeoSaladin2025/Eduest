@@ -77,6 +77,8 @@ import {
   calculateInstallmentRoundDuration,
   buildInstallmentPlan,
   getInstallmentTotalRounds,
+  getInstallmentSubmissionSummary,
+  getEffectiveWrongQuestionsForExam,
   TimeAttackMode,
   InstallmentRecallMode,
   InstallmentRecallTwinMode,
@@ -1800,12 +1802,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     });
   }, [students, assignModalGradeFilter, assignModalSearch]);
 
-  // 🌟 채점 결과 수동 수정 (맞음/틀림 토글 및 실시간 재계산)
+  // 🌟 채점 결과 수동 수정 (맞음/틀림 토글 및 실시간 재계산, 할부 세트·바퀴 지원)
   const handleOverrideQuestionGrade = async (
     questionId: string,
     currentIsCorrect: boolean,
     targetStudentId?: string,
-    targetExamId?: string
+    targetExamId?: string,
+    coords?: { setIndex?: number; setRound?: number; round?: number }
   ) => {
     const sId = targetStudentId || detailStudent?.student.id;
     const activeExam = detailStudent?.exam || resultsModalExam;
@@ -1823,6 +1826,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           examId: eId,
           questionId,
           isCorrect: nextIsCorrect,
+          ...(coords?.setIndex !== undefined ? { setIndex: coords.setIndex } : {}),
+          ...(coords?.setRound !== undefined ? { setRound: coords.setRound } : {}),
+          ...(coords?.round !== undefined ? { round: coords.round } : {}),
         }),
       });
 
@@ -2095,18 +2101,18 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     const examToUse = targetExam || detailStudent?.exam || resultsModalExam;
     if (!st || !sub || !examToUse) return;
 
-    // 틀린 문항 필터링 (정답이 아니거나 '모름'인 문항)
-    const wrongQuestions = (examToUse.questions || []).filter(q => {
-      const ans = sub.answers?.[q.id];
-      if (!ans) return true;
-      if (!ans.is_correct) return true;
-      const u = String(ans.user_answer || '').trim();
-      if (u === '모름' || u === 'unknown') return true;
-      return false;
-    });
+    // 틀린 문항 필터링 (할부·누적 모드 시 미응시 세트 문항이 오답으로 오인되지 않도록 안전 필터)
+    const { wrongQuestions, isInstallment, hasUnattemptedSets, totalAttemptedCount } =
+      getEffectiveWrongQuestionsForExam(examToUse, sub);
 
     if (wrongQuestions.length === 0) {
-      alert(`🎉 '${st.name}' 학생은 모든 문제를 맞혔거나 틀린 문항이 없습니다!`);
+      if (isInstallment && hasUnattemptedSets) {
+        alert(
+          `🧩 '${st.name}' 학생은 현재까지 응시한 ${totalAttemptedCount}문항을 모두 정답 처리했습니다!\n(아직 풀지 않은 남은 할부 세트가 있어 추가 보물회수 대상 오답이 없습니다.)`
+        );
+      } else {
+        alert(`🎉 '${st.name}' 학생은 모든 문제를 맞혔거나 틀린 문항이 없습니다!`);
+      }
       return;
     }
 
@@ -3427,13 +3433,35 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             ? Boolean(exam.is_twin_variant)
                             : (Array.isArray(exam.questions) && exam.questions.some((q: any) => q.is_twin)) ||
                               (/^\[[^\]]*쌍둥이/i.test(exam.title) && parsed.isTwin);
+                        const cardInstSummary = getInstallmentSubmissionSummary(
+                          exam,
+                          isSingleStudentMode ? studentSub : undefined
+                        );
 
                         return (
                           <div>
                             {/* 소형 회차 아이브로우 뱃지 */}
-                            {(isWrong || isTreasure || roundNum > 0) && (
+                            {(isWrong || isTreasure || roundNum > 0 || cardInstSummary) && (
                               <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-                                {isTreasure ? (
+                                {cardInstSummary ? (
+                                  <>
+                                    <span className="px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-700 border border-violet-300/60 text-[10px] font-black flex items-center gap-1 shadow-2xs">
+                                      <span>
+                                        🧩 할부·누적 {cardInstSummary.totalSets}세트 (
+                                        {isSingleStudentMode && studentSub
+                                          ? `${cardInstSummary.progress.completedCourseRounds}/${cardInstSummary.progress.totalCourseRounds}바퀴`
+                                          : `총 ${cardInstSummary.progress.totalCourseRounds}바퀴`}
+                                        )
+                                      </span>
+                                      <span className="opacity-80 font-bold">• {isTwinVariant ? '변형' : '원본'}</span>
+                                    </span>
+                                    {isSingleStudentMode && studentSub && cardInstSummary.latestCoords && (
+                                      <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black shadow-2xs">
+                                        최근: 세트{cardInstSummary.latestCoords.setIndex + 1}·{cardInstSummary.latestCoords.setRound}바퀴
+                                      </span>
+                                    )}
+                                  </>
+                                ) : isTreasure ? (
                                   <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-700 border border-amber-400/40 text-[10px] font-black flex items-center gap-1 shadow-2xs">
                                     <Sparkles size={11} className="fill-amber-500 text-amber-500" />
                                     <span>💎 보물회수 {roundNum > 0 ? `${roundNum}회차` : ''}</span>
@@ -3463,8 +3491,29 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               {cleanDisplayTitle}
                             </h3>
                             <p className="text-xs text-slate-400 font-medium mt-1">
-                              총 {exam.questions.length}문항 • 생성일: {new Date(exam.created_at).toLocaleDateString()}
+                              {cardInstSummary ? (
+                                <>
+                                  전체 보물 풀 {exam.questions.length}문항 • {cardInstSummary.installment.chunk_size}문항 분할 (
+                                  {cardInstSummary.installment.unlock_mode === 'free' ? '자유 선택' : '순차 해금'})
+                                </>
+                              ) : (
+                                <>총 {exam.questions.length}문항 • 생성일: {new Date(exam.created_at).toLocaleDateString()}</>
+                              )}
                             </p>
+
+                            {cardInstSummary && isSingleStudentMode && studentSub && (
+                              <div className="mt-2 flex items-center gap-2">
+                                <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/70">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-violet-500 to-emerald-500 rounded-full transition-all"
+                                    style={{ width: `${Math.min(100, cardInstSummary.percent)}%` }}
+                                  />
+                                </div>
+                                <span className="text-[10px] font-black text-violet-700 shrink-0">
+                                  {cardInstSummary.progress.completedCourseRounds}/{cardInstSummary.progress.totalCourseRounds}바퀴 ({cardInstSummary.percent}%)
+                                </span>
+                              </div>
+                            )}
                           </div>
                         );
                       })()}
@@ -3474,13 +3523,23 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         studentSub ? (
                           <div className="bg-emerald-50 border border-emerald-200/80 rounded-2xl p-3 flex items-center justify-between text-xs">
                             <div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-base">🎯</span>
-                                <span className="font-black text-emerald-950 text-sm">{studentSub.score}점</span>
-                                <span className="text-[11px] font-bold text-emerald-700">
-                                  ({studentSub.correct_count} / {studentSub.total_questions}문항 정답)
-                                </span>
-                              </div>
+                              {(() => {
+                                const subInstSummary = getInstallmentSubmissionSummary(exam, studentSub);
+                                return (
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-base">🎯</span>
+                                    {subInstSummary?.latestCoords && (
+                                      <span className="text-[10px] font-black text-emerald-800 bg-white/90 px-1.5 py-0.5 rounded border border-emerald-200">
+                                        세트{subInstSummary.latestCoords.setIndex + 1}·{subInstSummary.latestCoords.setRound}바퀴
+                                      </span>
+                                    )}
+                                    <span className="font-black text-emerald-950 text-sm">{studentSub.score}점</span>
+                                    <span className="text-[11px] font-bold text-emerald-700">
+                                      ({studentSub.correct_count} / {studentSub.total_questions}문항 정답)
+                                    </span>
+                                  </div>
+                                );
+                              })()}
                               {studentSub.submitted_at && (
                                 <span className="text-[10px] text-slate-400 font-medium block mt-0.5">
                                   응시: {new Date(studentSub.submitted_at).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -5875,7 +5934,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             {sub ? `${sub.score}점` : '-'}
                           </td>
                           <td className="p-3 text-slate-600">
-                            {sub ? `${sub.correct_count} / ${sub.total_questions}개` : '-'}
+                            {sub ? (
+                              (() => {
+                                const rowInstSummary = resultsModalExam
+                                  ? getInstallmentSubmissionSummary(resultsModalExam, sub)
+                                  : null;
+                                return (
+                                  <div className="flex flex-col">
+                                    <span>{sub.correct_count} / {sub.total_questions}개</span>
+                                    {rowInstSummary && (
+                                      <span className="text-[10px] font-bold text-violet-600">
+                                        할부 {rowInstSummary.progress.completedCourseRounds}/{rowInstSummary.progress.totalCourseRounds}바퀴
+                                        {rowInstSummary.latestCoords ? ` (세트${rowInstSummary.latestCoords.setIndex + 1}·${rowInstSummary.latestCoords.setRound}바퀴)` : ''}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()
+                            ) : (
+                              '-'
+                            )}
                           </td>
                           <td className="p-3 text-[11px] text-slate-400">
                             {sub ? new Date(sub.submitted_at).toLocaleString() : '-'}
@@ -5953,8 +6031,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             handleCreateWrongExam(st, sub, ex || detailStudent.exam || resultsModalExam || undefined)
           }
           isCreatingWrongExam={creatingWrongExamModal}
-          onOverrideGrade={async (sId, eId, qId, nextIsCorrect) => {
-            return await handleOverrideQuestionGrade(qId, !nextIsCorrect, sId, eId);
+          onOverrideGrade={async (sId, eId, qId, nextIsCorrect, coords) => {
+            return await handleOverrideQuestionGrade(qId, !nextIsCorrect, sId, eId, coords);
           }}
           onOpenSolutionModal={(driveId) => setTeacherSolutionModalDriveId(driveId)}
           onPreviewQuestion={(q) => setPreviewQuestion(q)}

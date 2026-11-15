@@ -562,3 +562,228 @@ export function computeInstallmentProgress(
     activeSetRound: firstActive ? firstActive.nextRound : 1,
   };
 }
+
+/**
+ * 할부 시험지 제출/히스토리 항목에서 (setIndex, setRound) 좌표를 안전하게 역추적
+ */
+export function resolveInstallmentSubmissionCoords(
+  installment: InstallmentConfig,
+  submission?: { current_round?: number; round_history?: Array<{ round?: number; set_index?: number; set_round?: number }> } | null,
+  historyItem?: { round?: number; set_index?: number; set_round?: number } | null
+): { setIndex: number; setRound: number } {
+  const sets = installment.sets || [];
+  if (historyItem && typeof historyItem.set_index === 'number' && typeof historyItem.set_round === 'number') {
+    return { setIndex: historyItem.set_index, setRound: historyItem.set_round };
+  }
+  if (historyItem && typeof historyItem.round === 'number' && historyItem.round >= 1) {
+    return resolveInstallmentCoordsFromGlobalRound(sets, historyItem.round);
+  }
+  const hist = Array.isArray(submission?.round_history) ? submission!.round_history! : [];
+  const lastHist = hist.length > 0 ? hist[hist.length - 1] : null;
+  if (lastHist && typeof lastHist.set_index === 'number' && typeof lastHist.set_round === 'number') {
+    return { setIndex: lastHist.set_index, setRound: lastHist.set_round };
+  }
+  if (lastHist && typeof lastHist.round === 'number' && lastHist.round >= 1) {
+    return resolveInstallmentCoordsFromGlobalRound(sets, lastHist.round);
+  }
+  return resolveInstallmentCoordsFromGlobalRound(sets, Number(submission?.current_round) || 1);
+}
+
+/**
+ * 특정 할부 (setIndex, setRound)에 실제 출제된 문항 배열 반환 (answers 키 폴백 포함, 미출제 문항 제외)
+ */
+export function getInstallmentDeliveredQuestions<T extends { id: string }>(
+  examQuestions: T[],
+  installment: InstallmentConfig,
+  setIndex: number,
+  setRound: number,
+  answers?: Record<string, any> | null
+): {
+  questions: T[];
+  recallQuestionIds: Set<string>;
+  recallOriginSetMap: Record<string, number>;
+} {
+  const activeRes = getInstallmentActiveQuestions(examQuestions, installment, setIndex, setRound);
+  if (!answers || typeof answers !== 'object' || Array.isArray(answers)) {
+    return activeRes;
+  }
+
+  const seenIds = new Set(activeRes.questions.map((q) => q.id));
+  const merged = [...activeRes.questions];
+  const recallIds = new Set(activeRes.recallQuestionIds);
+  const originMap = { ...activeRes.recallOriginSetMap };
+
+  const ownerSetMap = new Map<string, number>();
+  (installment.sets || []).forEach((s) => {
+    (s.question_ids || []).forEach((qid) => ownerSetMap.set(qid, s.set_index));
+  });
+
+  const qMap = new Map<string, T>();
+  examQuestions.forEach((q) => qMap.set(q.id, q));
+  const variantById = new Map<string, T>();
+  if (installment.recall_variant_questions) {
+    Object.values(installment.recall_variant_questions).forEach((vq: any) => {
+      if (vq?.id) variantById.set(vq.id, vq as T);
+    });
+  }
+
+  Object.keys(answers).forEach((ansQId) => {
+    if (seenIds.has(ansQId)) return;
+    const found = qMap.get(ansQId) || variantById.get(ansQId);
+    if (found) {
+      merged.push(found);
+      seenIds.add(ansQId);
+      const origSet = ownerSetMap.get((found as any).parent_question_id || found.id);
+      if (typeof origSet === 'number' && origSet !== setIndex) {
+        recallIds.add(found.id);
+        originMap[found.id] = origSet;
+      }
+    }
+  });
+
+  return {
+    questions: merged,
+    recallQuestionIds: recallIds,
+    recallOriginSetMap: originMap,
+  };
+}
+
+/**
+ * 할부·누적 보물회수 시험지의 학생 진행 요약 및 문항별 누적 회수 현황 계산
+ */
+export function getInstallmentSubmissionSummary(
+  exam: {
+    questions?: Array<{ id: string }>;
+    duration_min?: number;
+    treasure_config?: TreasureConfig;
+  },
+  submission?: {
+    current_round?: number;
+    round_history?: Array<{
+      round?: number;
+      set_index?: number;
+      set_round?: number;
+      score?: number;
+      correct_count?: number;
+      total_questions?: number;
+      answers?: Record<string, any>;
+    }>;
+    answers?: Record<string, any>;
+  } | null
+) {
+  const inst = exam?.treasure_config?.installment;
+  if (!inst?.enabled || !Array.isArray(inst.sets) || inst.sets.length === 0) {
+    return null;
+  }
+
+  const history = Array.isArray(submission?.round_history) ? [...submission!.round_history!] : [];
+  const progress = computeInstallmentProgress(inst, history);
+  const latestCoords = submission ? resolveInstallmentSubmissionCoords(inst, submission) : null;
+  const percent =
+    progress.totalCourseRounds > 0
+      ? Math.round((progress.completedCourseRounds / progress.totalCourseRounds) * 100)
+      : 0;
+
+  // 각 원본 오답 문항별 최신 응시/회수 상태 집계 (누적 학습 문항 수 & 1회 이상 정답 문항 수)
+  const sortedHist = [...history].sort((a, b) => (Number(a.round) || 0) - (Number(b.round) || 0));
+  const latestStatusByQId = new Map<string, { isCorrect: boolean; isUnknown: boolean }>();
+
+  const recordAnswers = (ansObj?: Record<string, any>) => {
+    if (!ansObj || typeof ansObj !== 'object') return;
+    Object.entries(ansObj).forEach(([ansQId, ansVal]) => {
+      if (!ansVal) return;
+      const u = String(ansVal.user_answer || '').trim();
+      const isUnknown = u === '모름' || u === 'unknown';
+      const isCorrect = Boolean(ansVal.is_correct) && !isUnknown;
+      // 리콜 승급 변형 문항이면 원본 핵심 문항 ID로도 매핑
+      let canonicalId = ansQId;
+      if (inst.recall_variant_questions) {
+        const matchedEntry = Object.entries(inst.recall_variant_questions).find(
+          ([, vq]: [string, any]) => vq?.id === ansQId
+        );
+        if (matchedEntry) canonicalId = matchedEntry[0];
+      }
+      latestStatusByQId.set(canonicalId, { isCorrect, isUnknown });
+    });
+  };
+
+  if (sortedHist.length > 0) {
+    sortedHist.forEach((h) => recordAnswers(h.answers));
+  } else if (submission?.answers) {
+    recordAnswers(submission.answers);
+  }
+
+  const totalPoolCount = exam.questions?.length || 0;
+  let attemptedUniqueCount = 0;
+  let recoveredUniqueCount = 0;
+  latestStatusByQId.forEach((st) => {
+    attemptedUniqueCount++;
+    if (st.isCorrect) recoveredUniqueCount++;
+  });
+
+  return {
+    installment: inst,
+    progress,
+    latestCoords,
+    percent,
+    totalSets: inst.sets.length,
+    totalPoolCount,
+    attemptedUniqueCount,
+    recoveredUniqueCount,
+    latestStatusByQId,
+  };
+}
+
+/**
+ * 보물회수/오답 시험지에서 다음 차수 생성을 위한 실제 오답 문항만 안전하게 추출
+ * (할부·누적 모드에서 아직 응시하지 않은 세트 문항이 오답으로 오인되는 것 원천 차단)
+ */
+export function getEffectiveWrongQuestionsForExam<T extends { id: string }>(
+  exam: {
+    questions?: T[];
+    treasure_config?: TreasureConfig;
+  },
+  submission?: {
+    answers?: Record<string, any>;
+    round_history?: Array<{ round?: number; answers?: Record<string, any> }>;
+  } | null
+): {
+  wrongQuestions: T[];
+  isInstallment: boolean;
+  hasUnattemptedSets: boolean;
+  totalAttemptedCount: number;
+} {
+  const allQuestions = exam.questions || [];
+  const summary = getInstallmentSubmissionSummary(exam, submission);
+
+  if (!summary) {
+    const wrongQuestions = allQuestions.filter((q) => {
+      const ans = submission?.answers?.[q.id];
+      if (!ans) return true;
+      if (!ans.is_correct) return true;
+      const u = String(ans.user_answer || '').trim();
+      if (u === '모름' || u === 'unknown') return true;
+      return false;
+    });
+    return {
+      wrongQuestions,
+      isInstallment: false,
+      hasUnattemptedSets: false,
+      totalAttemptedCount: allQuestions.length,
+    };
+  }
+
+  const wrongQuestions = allQuestions.filter((q) => {
+    const st = summary.latestStatusByQId.get(q.id);
+    // 할부 모드에서는 실제 응시한 기록이 있고 최신 결과가 오답/모름인 문항만 추출
+    if (!st) return false;
+    return !st.isCorrect || st.isUnknown;
+  });
+
+  return {
+    wrongQuestions,
+    isInstallment: true,
+    hasUnattemptedSets: !summary.progress.isAllCompleted,
+    totalAttemptedCount: summary.attemptedUniqueCount,
+  };
+}

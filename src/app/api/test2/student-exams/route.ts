@@ -682,11 +682,11 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// PATCH: 선생님의 문항별 채점 결과 수동 수정 (맞음/틀림 토글 및 점수 실시간 재계산)
+// PATCH: 선생님의 문항별 채점 결과 수동 수정 (맞음/틀림 토글 및 점수 실시간 재계산, 할부/다회차 round_history 완벽 지원)
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { studentId, examId, questionId, isCorrect } = body;
+    const { studentId, examId, questionId, isCorrect, setIndex, setRound, round } = body;
 
     if (!studentId || !examId || !questionId || typeof isCorrect !== "boolean") {
       return NextResponse.json(
@@ -708,42 +708,100 @@ export async function PATCH(req: NextRequest) {
     }
 
     const submission = allSubmissions[subIdx];
-    if (!submission.answers || !submission.answers[questionId]) {
+    const hasSetCoords = typeof setIndex === "number" && typeof setRound === "number";
+    const hasRoundParam = typeof round === "number" && round > 0;
+    const history = Array.isArray(submission.round_history) ? [...submission.round_history] : [];
+
+    // 1. 수정 대상 round_history 인덱스 탐색
+    let targetHistIdx = -1;
+    if (history.length > 0) {
+      if (hasSetCoords) {
+        targetHistIdx = history.findIndex(
+          (h) => h.set_index === setIndex && h.set_round === setRound
+        );
+      } else if (hasRoundParam) {
+        targetHistIdx = history.findIndex((h) => h.round === round);
+      } else {
+        targetHistIdx = history.findIndex(
+          (h) => h.round === submission.current_round && h.answers?.[questionId]
+        );
+        if (targetHistIdx === -1) {
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].answers?.[questionId]) {
+              targetHistIdx = i;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const canUpdateRoot =
+      !hasSetCoords && !hasRoundParam
+        ? Boolean(submission.answers?.[questionId])
+        : targetHistIdx === -1
+        ? Boolean(submission.answers?.[questionId])
+        : history[targetHistIdx]?.round === submission.current_round &&
+          Boolean(submission.answers?.[questionId]);
+
+    const canUpdateHist =
+      targetHistIdx !== -1 && Boolean(history[targetHistIdx]?.answers?.[questionId]);
+
+    if (!canUpdateRoot && !canUpdateHist) {
       return NextResponse.json(
         { success: false, error: "해당 문항의 답안 기록을 찾을 수 없습니다." },
         { status: 404 }
       );
     }
 
-    // 1. 해당 문항 채점 상태 수동 변경
-    submission.answers[questionId] = {
-      ...submission.answers[questionId],
-      is_correct: isCorrect,
-      grading_status: "reviewed",
-      reviewed_at: new Date().toISOString(),
+    const computeUpdatedStats = (ansMap: StudentSubmission["answers"], fallbackTotal: number) => {
+      let newCorrectCount = 0;
+      let remainingPending = 0;
+      const entries = Object.values(ansMap || {});
+      entries.forEach((ans) => {
+        if (ans?.is_correct === true) newCorrectCount++;
+        if (ans?.grading_status === "pending") remainingPending++;
+      });
+      const totalQuestions = fallbackTotal || entries.length;
+      const rawScore = totalQuestions > 0 ? Math.round((newCorrectCount / totalQuestions) * 1000) / 10 : 0;
+      const score = Number.isInteger(rawScore) ? rawScore : Number(rawScore.toFixed(1));
+      return { newCorrectCount, remainingPending, score };
     };
 
-    // 2. 전체 맞은 개수(correct_count) 및 점수(score) 재계산
-    let newCorrectCount = 0;
-    let remainingPending = 0;
-    const answerEntries = Object.values(submission.answers);
+    const nowIso = new Date().toISOString();
 
-    answerEntries.forEach((ans) => {
-      if (ans.is_correct === true) {
-        newCorrectCount++;
-      }
-      if (ans.grading_status === "pending") {
-        remainingPending++;
-      }
-    });
+    if (canUpdateHist) {
+      const targetHist = { ...history[targetHistIdx] };
+      const updatedHistAnswers = {
+        ...targetHist.answers,
+        [questionId]: {
+          ...targetHist.answers[questionId],
+          is_correct: isCorrect,
+          grading_status: "reviewed" as const,
+          reviewed_at: nowIso,
+        },
+      };
+      const histStats = computeUpdatedStats(updatedHistAnswers, targetHist.total_questions);
+      targetHist.answers = updatedHistAnswers;
+      targetHist.correct_count = histStats.newCorrectCount;
+      targetHist.score = histStats.score;
+      history[targetHistIdx] = targetHist;
+      submission.round_history = history;
+    }
 
-    const totalQuestions = submission.total_questions || answerEntries.length;
-    const newScore = totalQuestions > 0 ? Math.round((newCorrectCount / totalQuestions) * 100) : 0;
-
-    submission.correct_count = newCorrectCount;
-    submission.score = newScore;
-    submission.has_pending_review = remainingPending > 0;
-    submission.pending_count = remainingPending;
+    if (canUpdateRoot && submission.answers) {
+      submission.answers[questionId] = {
+        ...submission.answers[questionId],
+        is_correct: isCorrect,
+        grading_status: "reviewed",
+        reviewed_at: nowIso,
+      };
+      const rootStats = computeUpdatedStats(submission.answers, submission.total_questions);
+      submission.correct_count = rootStats.newCorrectCount;
+      submission.score = rootStats.score;
+      submission.has_pending_review = rootStats.remainingPending > 0;
+      submission.pending_count = rootStats.remainingPending;
+    }
 
     allSubmissions[subIdx] = submission;
     await saveSubmissions(allSubmissions);

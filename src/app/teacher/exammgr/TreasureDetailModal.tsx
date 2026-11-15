@@ -23,7 +23,13 @@ import {
   Target
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
-import { parseExamRoundAndBaseTitle } from './treasureTypes';
+import {
+  calculateInstallmentRoundDuration,
+  getInstallmentDeliveredQuestions,
+  getInstallmentSubmissionSummary,
+  parseExamRoundAndBaseTitle,
+  resolveInstallmentSubmissionCoords,
+} from './treasureTypes';
 
 interface Student {
   id: string;
@@ -46,6 +52,12 @@ export interface ChainRoundItem {
   correctCount: number;
   totalQuestions: number;
   submittedAt: string | null;
+  setIndex?: number;
+  setRound?: number;
+  isInstallmentRound?: boolean;
+  activeQuestions?: ExamQuestion[];
+  recallQuestionIds?: Set<string>;
+  recallOriginSetMap?: Record<string, number>;
 }
 
 interface TreasureDetailModalProps {
@@ -57,7 +69,13 @@ interface TreasureDetailModalProps {
   onClose: () => void;
   onCreateWrongExam: (student: Student, sub: any, exam?: ExamPaper) => void;
   isCreatingWrongExam?: boolean;
-  onOverrideGrade?: (studentId: string, examId: string, questionId: string, nextIsCorrect: boolean) => Promise<any>;
+  onOverrideGrade?: (
+    studentId: string,
+    examId: string,
+    questionId: string,
+    nextIsCorrect: boolean,
+    coords?: { setIndex?: number; setRound?: number; round?: number }
+  ) => Promise<any>;
   onOpenSolutionModal?: (solutionDriveId: string) => void;
   onPreviewQuestion?: (question: ExamQuestion) => void;
 }
@@ -85,8 +103,11 @@ export default function TreasureDetailModal({
   onOpenSolutionModal,
   onPreviewQuestion,
 }: TreasureDetailModalProps) {
+  // 로컬 상태 동기화용 submission 맵 (수정 시 roundChain, KPI, 차트, 카드 실시간 반영)
+  const [localSubmissions, setLocalSubmissions] = useState<Record<string, any>>({});
+
   // 1. 체인 탐색: 동일 base_exam_title을 공유하거나 부모-자식으로 연결된 이 학생의 모든 회차 시험지 정렬
-  const roundChain: ChainRoundItem[] = useMemo(() => {
+  const { roundChain, installmentInfo } = useMemo(() => {
     const currentBase = parseExamRoundAndBaseTitle(
       initialExam.base_exam_title || initialExam.title
     ).cleanBaseTitle.trim();
@@ -105,8 +126,12 @@ export default function TreasureDetailModal({
       return false;
     });
 
-    // 각 시험지의 회차 번호 및 메타데이터 계산 (다회차 round_history 완벽 지원)
+    // 각 시험지의 회차 번호 및 메타데이터 계산 (할부·누적 세트 및 다회차 round_history 완벽 지원)
     const items: ChainRoundItem[] = [];
+    let detectedInstallment: {
+      exam: ExamPaper;
+      summary: NonNullable<ReturnType<typeof getInstallmentSubmissionSummary>>;
+    } | null = null;
 
     matchedExams.forEach((ex) => {
       const parsed = parseExamRoundAndBaseTitle(ex.title);
@@ -118,54 +143,139 @@ export default function TreasureDetailModal({
           (Array.isArray(ex.questions) && ex.questions.some((q: any) => q.is_twin))
       );
 
-      let roundNum = ex.wrong_round ?? parsed.currentRound;
+      const roundNum = ex.wrong_round ?? parsed.currentRound;
       const isOriginal = !isWrong && !isTreasure && roundNum === 0;
 
-      const sub = allSubmissions.find(
-        (s) => s.student_id === student.id && s.exam_id === ex.id
-      ) || (ex.id === initialExam.id ? initialSubmission : null);
+      const baseSub =
+        allSubmissions.find((s) => s.student_id === student.id && s.exam_id === ex.id) ||
+        (ex.id === initialExam.id ? initialSubmission : null);
+      const sub = localSubmissions[ex.id] || baseSub;
 
-      // 🌟 만약 submission에 round_history가 존재하면(특히 할부 세트·다회차), 각 회차를 별도 탭 아이템으로 펼쳐서 비교 제공!
-      if (Array.isArray(sub?.round_history) && (sub.round_history.length > 1 || (sub.round_history.length === 1 && typeof sub.round_history[0]?.set_index === 'number'))) {
+      const instCfg = ex.treasure_config?.installment;
+      const isInstallmentExam = Boolean(
+        instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0
+      );
+
+      if (isInstallmentExam && instCfg) {
+        const summary = getInstallmentSubmissionSummary(ex, sub);
+        if (summary) {
+          detectedInstallment = { exam: ex, summary };
+        }
+      }
+
+      const baseDur = ex.treasure_config?.base_duration_min || Number(ex.duration_min) || 0;
+
+      // 🌟 round_history가 있거나 할부 시험인 경우 각 회차/바퀴를 정확히 펼쳐서 표시!
+      if (
+        Array.isArray(sub?.round_history) &&
+        (sub.round_history.length > 1 ||
+          isInstallmentExam ||
+          (sub.round_history.length === 1 && typeof sub.round_history[0]?.set_index === 'number'))
+      ) {
         sub.round_history.forEach((h: any) => {
           const rNumber = Number(h.round) || 1;
-          const hasSetCoords = typeof h.set_index === 'number' && typeof h.set_round === 'number';
+          const coords = isInstallmentExam && instCfg
+            ? resolveInstallmentSubmissionCoords(instCfg, sub, h)
+            : null;
+          const hasSetCoords = Boolean(coords);
+          const sIdx = coords ? coords.setIndex : undefined;
+          const sRound = coords ? coords.setRound : undefined;
+
+          const delivered =
+            isInstallmentExam && instCfg && sIdx !== undefined && sRound !== undefined
+              ? getInstallmentDeliveredQuestions(ex.questions || [], instCfg, sIdx, sRound, h.answers)
+              : null;
+
+          const roundDurationMin =
+            isInstallmentExam && instCfg && sRound !== undefined && delivered
+              ? calculateInstallmentRoundDuration(
+                  baseDur,
+                  ex.questions?.length || 0,
+                  delivered.questions.length,
+                  sRound,
+                  ex.treasure_config!
+                )
+              : Number(ex.duration_min) || 0;
+
           const rLabel = isTreasure
-            ? hasSetCoords
-              ? `보물회수 세트${h.set_index + 1}·${h.set_round}바퀴${isTwin ? ' (쌍둥이)' : ''}`
+            ? hasSetCoords && sIdx !== undefined && sRound !== undefined
+              ? `보물회수 세트${sIdx + 1}·${sRound}바퀴${isTwin ? ' (쌍둥이)' : ''}`
               : `보물회수 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`
             : `오답 ${rNumber}회차${isTwin ? ' (쌍둥이)' : ''}`;
+
+          const totalQ =
+            h.total_questions ||
+            delivered?.questions.length ||
+            ex.questions?.length ||
+            0;
 
           const virtualSub = {
             ...sub,
             score: h.score,
             correct_count: h.correct_count,
-            total_questions: h.total_questions || ex.questions?.length || 0,
+            total_questions: totalQ,
             submitted_at: h.submitted_at,
             answers: h.answers,
           };
 
           items.push({
-            keyId: hasSetCoords ? `${ex.id}_s${h.set_index}_r${h.set_round}` : `${ex.id}_r${rNumber}`,
+            keyId:
+              hasSetCoords && sIdx !== undefined && sRound !== undefined
+                ? `${ex.id}_s${sIdx}_r${sRound}`
+                : `${ex.id}_r${rNumber}`,
             exam: ex,
             round: rNumber,
             roundLabel: rLabel,
             isOriginal: false,
-            isTreasure: isTreasure,
-            isTwin: isTwin,
-            durationMin: Number(ex.duration_min) || 0,
+            isTreasure,
+            isTwin,
+            durationMin: roundDurationMin,
             submission: virtualSub,
             totalSpentSec: Number(h.total_spent_sec) || 0,
             score: h.score !== undefined ? Number(h.score) : null,
             correctCount: Number(h.correct_count) || 0,
-            totalQuestions: h.total_questions || ex.questions?.length || 0,
+            totalQuestions: totalQ,
             submittedAt: h.submitted_at || null,
+            setIndex: sIdx,
+            setRound: sRound,
+            isInstallmentRound: Boolean(isInstallmentExam && hasSetCoords),
+            activeQuestions: delivered?.questions,
+            recallQuestionIds: delivered?.recallQuestionIds,
+            recallOriginSetMap: delivered?.recallOriginSetMap,
           });
         });
       } else {
+        const coords =
+          isInstallmentExam && instCfg && sub
+            ? resolveInstallmentSubmissionCoords(instCfg, sub)
+            : null;
+        const delivered =
+          isInstallmentExam && instCfg && coords
+            ? getInstallmentDeliveredQuestions(
+                ex.questions || [],
+                instCfg,
+                coords.setIndex,
+                coords.setRound,
+                sub?.answers
+              )
+            : null;
+
+        const roundDurationMin =
+          isInstallmentExam && instCfg && coords && delivered
+            ? calculateInstallmentRoundDuration(
+                baseDur,
+                ex.questions?.length || 0,
+                delivered.questions.length,
+                coords.setRound,
+                ex.treasure_config!
+              )
+            : Number(ex.duration_min) || 0;
+
         let roundLabel = '';
         if (isOriginal) {
           roundLabel = '원본 시험';
+        } else if (isTreasure && isInstallmentExam && coords) {
+          roundLabel = `보물회수 세트${coords.setIndex + 1}·${coords.setRound}바퀴${isTwin ? ' (쌍둥이)' : ''}`;
         } else if (isTreasure) {
           roundLabel = `보물회수 ${roundNum > 0 ? `${roundNum}회차` : '1회차'}${isTwin ? ' (쌍둥이)' : ''}`;
         } else {
@@ -187,13 +297,22 @@ export default function TreasureDetailModal({
           isOriginal,
           isTreasure,
           isTwin,
-          durationMin: Number(ex.duration_min) || 0,
+          durationMin: roundDurationMin,
           submission: sub,
           totalSpentSec: spentSec,
           score: sub ? Number(sub.score) : null,
           correctCount: sub ? Number(sub.correct_count) || 0 : 0,
-          totalQuestions: ex.questions?.length || 0,
+          totalQuestions:
+            (delivered ? delivered.questions.length : sub?.total_questions) ||
+            ex.questions?.length ||
+            0,
           submittedAt: sub?.submitted_at || null,
+          setIndex: coords?.setIndex,
+          setRound: coords?.setRound,
+          isInstallmentRound: Boolean(isInstallmentExam && coords),
+          activeQuestions: delivered?.questions,
+          recallQuestionIds: delivered?.recallQuestionIds,
+          recallOriginSetMap: delivered?.recallOriginSetMap,
         });
       }
     });
@@ -212,35 +331,57 @@ export default function TreasureDetailModal({
     // 만약 리스트에 initialExam이 누락되었을 경우 수동 추가 (안전장치)
     if (!list.some((it) => it.exam.id === initialExam.id)) {
       const parsed = parseExamRoundAndBaseTitle(initialExam.title);
+      const effInitialSub = localSubmissions[initialExam.id] || initialSubmission;
       let spentSec = 0;
-      if (initialSubmission?.answers) {
-        Object.values(initialSubmission.answers).forEach((ans: any) => {
+      if (effInitialSub?.answers) {
+        Object.values(effInitialSub.answers).forEach((ans: any) => {
           spentSec += Number(ans?.time_spent_sec) || 0;
         });
       }
+      const instCfg = initialExam.treasure_config?.installment;
+      const isInst = Boolean(instCfg?.enabled && Array.isArray(instCfg.sets) && instCfg.sets.length > 0);
+      if (isInst && instCfg && !detectedInstallment) {
+        const s = getInstallmentSubmissionSummary(initialExam, effInitialSub);
+        if (s) detectedInstallment = { exam: initialExam, summary: s };
+      }
+      const coords = isInst && instCfg && effInitialSub ? resolveInstallmentSubmissionCoords(instCfg, effInitialSub) : null;
+      const delivered =
+        isInst && instCfg && coords
+          ? getInstallmentDeliveredQuestions(initialExam.questions || [], instCfg, coords.setIndex, coords.setRound, effInitialSub?.answers)
+          : null;
+
       list.push({
         keyId: initialExam.id,
         exam: initialExam,
         round: initialExam.wrong_round ?? parsed.currentRound ?? 1,
-        roundLabel: parsed.isTreasure
-          ? `보물회수 ${parsed.currentRound || 1}회차`
-          : '보물회수 1회차',
+        roundLabel:
+          isInst && coords
+            ? `보물회수 세트${coords.setIndex + 1}·${coords.setRound}바퀴`
+            : parsed.isTreasure
+            ? `보물회수 ${parsed.currentRound || 1}회차`
+            : '보물회수 1회차',
         isOriginal: false,
         isTreasure: true,
         isTwin: Boolean(initialExam.is_twin_variant || parsed.isTwin),
         durationMin: Number(initialExam.duration_min) || 0,
-        submission: initialSubmission,
+        submission: effInitialSub,
         totalSpentSec: spentSec,
-        score: initialSubmission ? Number(initialSubmission.score) : null,
-        correctCount: initialSubmission ? Number(initialSubmission.correct_count) || 0 : 0,
-        totalQuestions: initialExam.questions?.length || 0,
-        submittedAt: initialSubmission?.submitted_at || null,
+        score: effInitialSub ? Number(effInitialSub.score) : null,
+        correctCount: effInitialSub ? Number(effInitialSub.correct_count) || 0 : 0,
+        totalQuestions: delivered?.questions.length || effInitialSub?.total_questions || initialExam.questions?.length || 0,
+        submittedAt: effInitialSub?.submitted_at || null,
+        setIndex: coords?.setIndex,
+        setRound: coords?.setRound,
+        isInstallmentRound: Boolean(isInst && coords),
+        activeQuestions: delivered?.questions,
+        recallQuestionIds: delivered?.recallQuestionIds,
+        recallOriginSetMap: delivered?.recallOriginSetMap,
       });
       list.sort((a, b) => a.round - b.round);
     }
 
-    return list;
-  }, [allExams, allSubmissions, initialExam, initialSubmission, student.id]);
+    return { roundChain: list, installmentInfo: detectedInstallment };
+  }, [allExams, allSubmissions, initialExam, initialSubmission, student.id, localSubmissions]);
 
   // 현재 활성화된 탭 (특정 회차 keyId 또는 'matrix' 전체 비교 뷰)
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -258,27 +399,22 @@ export default function TreasureDetailModal({
   // 로컬 채점 수정 중인 문항 ID
   const [overridingQuestionId, setOverridingQuestionId] = useState<string | null>(null);
 
-  // 로컬 상태 동기화용 submission 맵 (수정 시 실시간 UI 반영)
-  const [localSubmissions, setLocalSubmissions] = useState<Record<string, any>>({});
-
   const currentSubmission = useMemo(() => {
-    if (selectedChainItem?.exam.id && localSubmissions[selectedChainItem.exam.id]) {
-      return localSubmissions[selectedChainItem.exam.id];
-    }
     return selectedChainItem?.submission || null;
-  }, [selectedChainItem, localSubmissions]);
+  }, [selectedChainItem]);
 
   // 풀이 사진 모달 상태
   const [viewProofModal, setViewProofModal] = useState<{ url: string; title: string } | null>(null);
 
-  // KPI 요약 지표 계산 (선생님 채점 / 시간 미기록 스마트 폴백 완벽 지원)
+  // KPI 요약 지표 계산 (할부 전체 코스 진도 / 원본 분리 / 부동소수점 보정 / 타임어택 스마트 폴백)
   const kpiStats = useMemo(() => {
     const originalItem = roundChain.find((c) => c.isOriginal) || roundChain[0];
     const latestItem = roundChain[roundChain.length - 1];
+    const activeViewItem = selectedChainItem || latestItem;
 
     const firstScore = originalItem?.score ?? 0;
     const latestScore = latestItem?.score ?? 0;
-    const scoreDiff = latestScore - firstScore;
+    const scoreDiff = Math.round((latestScore - firstScore) * 10) / 10;
 
     const firstSpent = originalItem?.totalSpentSec ?? 0;
     const latestSpent = latestItem?.totalSpentSec ?? 0;
@@ -286,12 +422,35 @@ export default function TreasureDetailModal({
     const isLatestTimeMeasured = latestSpent > 0;
     const timeDiff = firstSpent - latestSpent; // 원본 시간이 있을 때 양수면 단축됨
 
-    const completedRounds = roundChain.filter((c) => c.submission !== null).length;
+    const treasureRoundItems = roundChain.filter((c) => !c.isOriginal);
 
-    // 최종 회수율: 최신 회차의 정답률
+    let completedRounds: number;
+    let totalRounds: number;
+    let isAllCourseCompleted = false;
+
+    if (installmentInfo) {
+      completedRounds = installmentInfo.summary.progress.completedCourseRounds;
+      totalRounds = installmentInfo.summary.progress.totalCourseRounds;
+      isAllCourseCompleted = installmentInfo.summary.progress.isAllCompleted;
+    } else if (treasureRoundItems.length > 0) {
+      const plannedMax = treasureRoundItems.reduce(
+        (maxVal, item) => Math.max(maxVal, Number(item.exam.treasure_config?.total_rounds) || 0),
+        0
+      );
+      completedRounds = treasureRoundItems.filter((c) => c.submission !== null).length;
+      totalRounds = Math.max(plannedMax, treasureRoundItems.length);
+      isAllCourseCompleted = totalRounds > 0 && completedRounds >= totalRounds;
+    } else {
+      completedRounds = roundChain.filter((c) => c.submission !== null).length;
+      totalRounds = roundChain.length;
+      isAllCourseCompleted = totalRounds > 0 && completedRounds >= totalRounds;
+    }
+
+    // 회수율: 현재 보고 있는(또는 최신) 회차의 실제 출제 문항 기준 정답률
+    const rateTargetItem = activeViewItem && activeViewItem.submission ? activeViewItem : latestItem;
     const recoveryRate =
-      latestItem?.totalQuestions > 0
-        ? Math.round((latestItem.correctCount / latestItem.totalQuestions) * 100)
+      rateTargetItem && rateTargetItem.totalQuestions > 0
+        ? Math.round((rateTargetItem.correctCount / rateTargetItem.totalQuestions) * 100)
         : 0;
 
     // 여유 시간 계산 (제한시간 대비)
@@ -304,20 +463,30 @@ export default function TreasureDetailModal({
       scoreDiff,
       firstSpent,
       latestSpent,
+      latestLimitMin: latestItem?.durationMin || 0,
       isOriginalTimeMeasured,
       isLatestTimeMeasured,
       timeDiff,
       spareSec,
       completedRounds,
-      totalRounds: roundChain.length,
+      totalRounds,
+      isAllCourseCompleted,
       recoveryRate,
+      rateTargetCorrect: rateTargetItem?.correctCount ?? 0,
+      rateTargetTotal: rateTargetItem?.totalQuestions ?? 0,
+      rateTargetLabel: rateTargetItem?.roundLabel || '',
       isPerfect: recoveryRate === 100,
     };
-  }, [roundChain]);
+  }, [roundChain, installmentInfo, selectedChainItem]);
 
-  // 현재 선택된 회차의 문항별 시간 통계 및 평균
+  // 현재 선택된 회차의 문항별 시간 통계 및 평균 (할부 모드 시 해당 바퀴 실제 출제 문항만!)
   const currentQuestionsWithStats = useMemo(() => {
-    if (!selectedChainItem?.exam?.questions) {
+    const questions =
+      selectedChainItem?.activeQuestions && selectedChainItem.activeQuestions.length > 0
+        ? selectedChainItem.activeQuestions
+        : selectedChainItem?.exam?.questions || [];
+
+    if (!questions || questions.length === 0) {
       return {
         items: [],
         totalSec: 0,
@@ -325,8 +494,10 @@ export default function TreasureDetailModal({
         maxSec: 1,
       };
     }
-    const questions = selectedChainItem.exam.questions;
+
     const answers = currentSubmission?.answers || {};
+    const recallSet = selectedChainItem?.recallQuestionIds;
+    const recallOriginMap = selectedChainItem?.recallOriginSetMap;
 
     const items = questions.map((q, idx) => {
       const ansInfo = answers[q.id];
@@ -334,6 +505,8 @@ export default function TreasureDetailModal({
       const isCorrect = ansInfo?.is_correct ?? false;
       const userAns = ansInfo?.user_answer || '(미입력)';
       const isUnknown = userAns === '모름' || userAns === 'unknown';
+      const isRecall = Boolean(recallSet?.has(q.id));
+      const recallOriginSet = isRecall && recallOriginMap ? recallOriginMap[q.id] : undefined;
       return {
         q,
         idx,
@@ -342,6 +515,8 @@ export default function TreasureDetailModal({
         isCorrect,
         isUnknown,
         userAns,
+        isRecall,
+        recallOriginSet,
       };
     });
 
@@ -357,7 +532,7 @@ export default function TreasureDetailModal({
     };
   }, [selectedChainItem, currentSubmission]);
 
-  // 채점 수동 수정 핸들러
+  // 채점 수동 수정 핸들러 (할부 세트·바퀴 좌표 함께 전달)
   const handleToggleGrade = async (questionId: string, currentIsCorrect: boolean) => {
     if (!onOverrideGrade || !selectedChainItem) return;
     try {
@@ -366,7 +541,12 @@ export default function TreasureDetailModal({
         student.id,
         selectedChainItem.exam.id,
         questionId,
-        !currentIsCorrect
+        !currentIsCorrect,
+        {
+          setIndex: selectedChainItem.setIndex,
+          setRound: selectedChainItem.setRound,
+          round: selectedChainItem.round,
+        }
       );
       if (updatedSub) {
         setLocalSubmissions((prev) => ({
@@ -444,22 +624,31 @@ export default function TreasureDetailModal({
 
         {/* ======================= 2. 종합 KPI 요약 배너 ======================= */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 bg-slate-50 border-b border-slate-200 shrink-0">
-          {/* 회차 완주 현황 */}
+          {/* 회차 / 할부 진행 현황 */}
           <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs">
             <span className="text-[11px] font-bold text-slate-400 block flex items-center gap-1">
               <Layers size={12} className="text-indigo-500" />
-              진행 회차
+              {installmentInfo ? '할부 진행 현황' : '진행 회차'}
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-black text-slate-800">
                 {kpiStats.completedRounds}
               </span>
               <span className="text-xs font-bold text-slate-400">
-                / {kpiStats.totalRounds}회차 완주
+                / {kpiStats.totalRounds}{installmentInfo ? '바퀴' : '회차'}{' '}
+                {kpiStats.isAllCourseCompleted ? '완주 🎉' : '진행'}
               </span>
             </div>
-            <span className="text-[10px] text-indigo-600 font-semibold block mt-0.5">
-              {roundChain.length > 1 ? '연속 복습 코스 진행 중' : '단일 회차 응시 완료'}
+            <span className="text-[10px] text-indigo-600 font-semibold block mt-0.5 line-clamp-1">
+              {installmentInfo
+                ? kpiStats.isAllCourseCompleted
+                  ? `전체 ${installmentInfo.summary.totalSets}세트 모든 바퀴 정복 완료!`
+                  : `총 ${installmentInfo.summary.totalSets}세트 · 다음: 세트${installmentInfo.summary.progress.activeSetIndex + 1}·${installmentInfo.summary.progress.activeSetRound}바퀴 대기`
+                : roundChain.length > 1
+                ? kpiStats.isAllCourseCompleted
+                  ? '전 회차 복습 코스 완주!'
+                  : '연속 복습 코스 진행 중'
+                : '단일 회차 응시 완료'}
             </span>
           </div>
 
@@ -523,34 +712,99 @@ export default function TreasureDetailModal({
                 </span>
               ) : null}
             </div>
-            <span className="text-[10px] text-amber-700 font-semibold block mt-0.5">
-              {kpiStats.isOriginalTimeMeasured
+            <span className="text-[10px] text-amber-700 font-semibold block mt-0.5 line-clamp-1">
+              {installmentInfo && kpiStats.latestLimitMin > 0
+                ? `최근 바퀴 제한 ${kpiStats.latestLimitMin}분${kpiStats.spareSec > 0 ? ` (${formatDuration(kpiStats.spareSec)} 여유)` : ''}`
+                : kpiStats.isOriginalTimeMeasured
                 ? (kpiStats.timeDiff > 0 ? '최초 대비 속도 향상!' : '신중하게 오답 복습')
                 : (kpiStats.isLatestTimeMeasured ? `설정 제한시간 대비 여유 완주` : '선생님 수동 채점 (시간 미측정)')}
             </span>
           </div>
 
-          {/* 오답 보물회수율 */}
+          {/* 오답 보물회수율 / 선택 바퀴 정답률 */}
           <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-2xs">
             <span className="text-[11px] font-bold text-slate-400 block flex items-center gap-1">
               <Sparkles size={12} className="text-rose-500 fill-rose-500" />
-              오답 회수 성공률
+              {installmentInfo ? '선택 바퀴 정답률' : '오답 회수 성공률'}
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-black text-emerald-600">
                 {kpiStats.recoveryRate}%
               </span>
+              {installmentInfo && (
+                <span className="text-xs font-bold text-slate-500">
+                  ({kpiStats.rateTargetCorrect}/{kpiStats.rateTargetTotal})
+                </span>
+              )}
               {kpiStats.isPerfect && (
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 font-black px-1.5 py-0.5 rounded-full">
                   ALL CLEAR 💎
                 </span>
               )}
             </div>
-            <span className="text-[10px] text-slate-500 font-medium block mt-0.5">
-              {kpiStats.recoveryRate === 100 ? '모든 오답 정복 완료!' : '미회수 오답 추가 보물회수 권장'}
+            <span className="text-[10px] text-slate-500 font-medium block mt-0.5 line-clamp-1">
+              {installmentInfo
+                ? `전체 ${installmentInfo.summary.totalPoolCount}문항 중 ${installmentInfo.summary.attemptedUniqueCount}문항 학습 (${installmentInfo.summary.recoveredUniqueCount}문항 정답)`
+                : kpiStats.recoveryRate === 100
+                ? '모든 오답 정복 완료!'
+                : '미회수 오답 추가 보물회수 권장'}
             </span>
           </div>
         </div>
+
+        {/* ======================= 2-1. 할부·누적 세트별 진행 미니 로드맵 ======================= */}
+        {installmentInfo && (
+          <div className="px-6 py-2.5 bg-indigo-50/50 border-b border-indigo-100 shrink-0">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[11px] font-black text-indigo-900 flex items-center gap-1.5">
+                <span>🧩 할부·누적 세트 로드맵</span>
+                <span className="text-[10px] font-bold text-indigo-600 bg-white px-2 py-0.5 rounded-full border border-indigo-200">
+                  {installmentInfo.summary.totalPoolCount}문항 · {installmentInfo.summary.installment.chunk_size}문항 분할 · {installmentInfo.summary.percent}% ({installmentInfo.summary.progress.completedCourseRounds}/{installmentInfo.summary.progress.totalCourseRounds}바퀴)
+                </span>
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              {installmentInfo.summary.progress.sets.map((sp) => {
+                const isNextActive =
+                  !installmentInfo.summary.progress.isAllCompleted &&
+                  installmentInfo.summary.progress.activeSetIndex === sp.setIndex;
+                const latestRoundOfSet = sp.completedRoundsList[sp.completedRoundsList.length - 1];
+                const matchingTabKey = latestRoundOfSet
+                  ? `${installmentInfo.exam.id}_s${sp.setIndex}_r${latestRoundOfSet}`
+                  : null;
+                const isViewingThisSet =
+                  selectedChainItem?.setIndex === sp.setIndex && activeTab !== 'matrix';
+
+                return (
+                  <button
+                    key={sp.setIndex}
+                    type="button"
+                    disabled={!matchingTabKey}
+                    onClick={() => {
+                      if (matchingTabKey) setActiveTab(matchingTabKey);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 border transition-all flex items-center gap-1 ${
+                      isViewingThisSet
+                        ? 'bg-violet-600 text-white border-violet-600 shadow-xs cursor-pointer'
+                        : sp.isCompleted
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 cursor-pointer'
+                        : isNextActive
+                        ? 'bg-amber-50 text-amber-800 border-amber-300'
+                        : 'bg-white/70 text-slate-400 border-slate-200 cursor-default'
+                    }`}
+                  >
+                    <span>
+                      {sp.isCompleted ? '✓' : isNextActive ? '🔥' : sp.isUnlocked ? '○' : '🔒'} 세트{sp.setIndex + 1}
+                    </span>
+                    <span className="opacity-80">
+                      {sp.completedCount}/{sp.totalRounds}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* ======================= 3. 회차 선택 네비게이션 탭 (버그 1 & 2 해결: flex-wrap 칩 그리드 + 상단 요약 분리) ======================= */}
         <div className="bg-white border-b border-slate-200 shrink-0">
@@ -696,7 +950,7 @@ export default function TreasureDetailModal({
                     const spentWidth = Math.min(100, (spentMin / maxScale) * 100);
 
                     return (
-                      <div key={it.exam.id} className="p-3.5 bg-slate-50/70 rounded-2xl border border-slate-200/60">
+                      <div key={it.keyId} className="p-3.5 bg-slate-50/70 rounded-2xl border border-slate-200/60">
                         <div className="flex items-center justify-between text-xs font-black text-slate-700 mb-2">
                           <span className="flex items-center gap-1.5">
                             <span className="w-2.5 h-2.5 rounded-full bg-violet-600 inline-block"></span>
@@ -766,7 +1020,7 @@ export default function TreasureDetailModal({
                       <tr>
                         <th className="p-3 w-16 text-center">문항</th>
                         {roundChain.map((r) => (
-                          <th key={r.exam.id} className="p-3 text-center border-l border-slate-200">
+                          <th key={r.keyId} className="p-3 text-center border-l border-slate-200">
                             <div className="flex flex-col items-center">
                               <span>{r.roundLabel}</span>
                               <span className="text-[10px] font-bold text-slate-400">
@@ -779,7 +1033,7 @@ export default function TreasureDetailModal({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {/* 원본 시험지 문항을 기준으로 스마트 1:1 매칭 비교 매트릭스 생성 (버그 3 해결: 1~7번 엉뚱 기입 원천 차단) */}
+                      {/* 원본 시험지 문항을 기준으로 스마트 1:1 매칭 비교 매트릭스 생성 (할부 출제 문항만 정확히 매칭) */}
                       {(() => {
                         const baseItem =
                           roundChain.find((r) => r.isOriginal) ||
@@ -790,11 +1044,16 @@ export default function TreasureDetailModal({
                           // 각 회차별 baseQ와 1:1 연결되는 문항(parent_question_id 또는 id) 탐색
                           const roundStatuses = roundChain.map((r) => {
                             let matchedQ: ExamQuestion | undefined;
-                            if (r.keyId === baseItem.keyId || r.exam.id === baseItem.exam.id) {
-                              matchedQ = r.exam.questions?.[qIndex] || baseQ;
+                            const candidatePool =
+                              r.isInstallmentRound && r.activeQuestions && r.activeQuestions.length > 0
+                                ? r.activeQuestions
+                                : r.exam.questions || [];
+
+                            if (r.keyId === baseItem.keyId) {
+                              matchedQ = candidatePool[qIndex] || baseQ;
                             } else {
                               // 보물회수 또는 오답 회차: baseQ의 id를 parent_question_id로 가지거나 일치하는 문항 매칭
-                              matchedQ = r.exam.questions?.find((tq: any) => {
+                              matchedQ = candidatePool.find((tq: any) => {
                                 if (
                                   tq.parent_question_id &&
                                   (tq.parent_question_id === baseQ.id ||
@@ -836,7 +1095,15 @@ export default function TreasureDetailModal({
                           // 보물회수 상태 판별
                           const isOriginallyCorrect = firstStatus?.solved && firstStatus?.isCorrect;
                           const isRecovered = !isOriginallyCorrect && anyRecovered;
-                          const isStillWrong = !isOriginallyCorrect && (!latestTreasureStatus || !latestTreasureStatus.isCorrect);
+                          const isPendingSet =
+                            Boolean(installmentInfo) &&
+                            baseItem.isOriginal &&
+                            !isOriginallyCorrect &&
+                            nonOriginalStatuses.length === 0;
+                          const isStillWrong =
+                            !isOriginallyCorrect &&
+                            !isPendingSet &&
+                            (!latestTreasureStatus || !latestTreasureStatus.isCorrect);
 
                           return (
                             <tr key={baseQ.id || qIndex} className="hover:bg-slate-50 transition-colors">
@@ -897,6 +1164,10 @@ export default function TreasureDetailModal({
                                   <span className="inline-flex items-center gap-1 text-amber-900 bg-amber-100 border border-amber-300 font-black px-2.5 py-1 rounded-xl text-[11px] shadow-2xs animate-pulse">
                                     <Sparkles size={11} className="fill-amber-500 text-amber-500" />
                                     💎 회수 완료!
+                                  </span>
+                                ) : isPendingSet ? (
+                                  <span className="inline-flex items-center gap-1 text-slate-500 bg-slate-100 font-bold px-2 py-0.5 rounded-lg text-[10px]">
+                                    ⏳ 세트 대기 중
                                   </span>
                                 ) : isStillWrong ? (
                                   <span className="inline-flex items-center gap-1 text-rose-800 bg-rose-100/80 font-black px-2 py-0.5 rounded-lg text-[10px]">
@@ -1114,7 +1385,8 @@ export default function TreasureDetailModal({
                       📝 {selectedChainItem.roundLabel} 문항별 풀이 결과
                     </h3>
                     <span className="text-xs text-slate-400 font-bold">
-                      (총 {selectedChainItem.totalQuestions}문항 중 {selectedChainItem.correctCount}문항 정답)
+                      ({selectedChainItem.isInstallmentRound ? '실제 출제 ' : '총 '}
+                      {currentQuestionsWithStats.items.length}문항 중 {selectedChainItem.correctCount}문항 정답)
                     </span>
                   </div>
                   <span className="text-xs text-slate-400">
@@ -1123,7 +1395,7 @@ export default function TreasureDetailModal({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {currentQuestionsWithStats.items.map(({ q, idx, ansInfo, spentSec, isCorrect, isUnknown, userAns }) => {
+                  {currentQuestionsWithStats.items.map(({ q, idx, ansInfo, spentSec, isCorrect, isUnknown, userAns, isRecall, recallOriginSet }) => {
                     const correctAns = ansInfo?.correct_answer || q.answer || '';
                     const isSlow = spentSec > currentQuestionsWithStats.avgSec * 1.5;
                     const isFast = spentSec > 0 && spentSec < currentQuestionsWithStats.avgSec * 0.7;
@@ -1164,6 +1436,18 @@ export default function TreasureDetailModal({
                             >
                               {isCorrect ? '맞음 ⭕' : isUnknown ? '모름 ❓' : '틀림 ❌'}
                             </span>
+
+                            {selectedChainItem.isInstallmentRound && (
+                              isRecall ? (
+                                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
+                                  🔄 기억소환{typeof recallOriginSet === 'number' ? ` (세트${recallOriginSet + 1})` : ''}
+                                </span>
+                              ) : typeof selectedChainItem.setIndex === 'number' ? (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  핵심 (세트{selectedChainItem.setIndex + 1})
+                                </span>
+                              ) : null
+                            )}
 
                             {/* 문항별 소요시간 & 속도 평가 뱃지 (시간 미측정 스마트 폴백) */}
                             {spentSec > 0 ? (
