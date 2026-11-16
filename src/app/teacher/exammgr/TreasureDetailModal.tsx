@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   RotateCcw,
   Sparkles,
@@ -17,10 +17,13 @@ import {
   Layers,
   ArrowRight,
   Maximize2,
+  Minimize2,
+  Expand,
   AlertTriangle,
   Loader2,
   Zap,
-  Target
+  Target,
+  CheckSquare
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import {
@@ -29,7 +32,18 @@ import {
   getInstallmentSubmissionSummary,
   parseExamRoundAndBaseTitle,
   resolveInstallmentSubmissionCoords,
+  TreasureSelectionScope,
+  TreasureSelectionTemplate,
+  TreasureTemplate,
+  DEFAULT_TREASURE_TEMPLATES,
+  DEFAULT_SELECTION_TEMPLATES,
+  getStoredSelectionTemplates,
+  saveStoredSelectionTemplates,
+  evaluateQuestionMatchesRule,
+  computeTreasureCumulativeStats,
 } from './treasureTypes';
+import TreasureSelectionView from './TreasureSelectionView';
+import TreasureTemplateLinkHelpModal from './TreasureTemplateLinkHelpModal';
 
 interface Student {
   id: string;
@@ -67,7 +81,15 @@ interface TreasureDetailModalProps {
   allExams: ExamPaper[];
   allSubmissions: any[];
   onClose: () => void;
-  onCreateWrongExam: (student: Student, sub: any, exam?: ExamPaper) => void;
+  onCreateWrongExam: (
+    student: Student,
+    sub: any,
+    exam?: ExamPaper,
+    options?: {
+      selectedQuestions?: ExamQuestion[];
+      linkedTreasureTemplateId?: string;
+    }
+  ) => void;
   isCreatingWrongExam?: boolean;
   onOverrideGrade?: (
     studentId: string,
@@ -78,6 +100,7 @@ interface TreasureDetailModalProps {
   ) => Promise<any>;
   onOpenSolutionModal?: (solutionDriveId: string) => void;
   onPreviewQuestion?: (question: ExamQuestion) => void;
+  generationTemplates?: TreasureTemplate[];
 }
 
 // 초를 "X분 Y초" 또는 "Y초"로 포맷
@@ -89,6 +112,9 @@ function formatDuration(sec: number): string {
   if (m > 0) return `${m}분`;
   return `${s}초`;
 }
+
+type ModalSizeMode = 'default' | 'wide' | 'fullscreen';
+const STORAGE_KEY_MODAL_SIZE = 'eduest_treasure_modal_size_v1';
 
 export default function TreasureDetailModal({
   student,
@@ -102,6 +128,7 @@ export default function TreasureDetailModal({
   onOverrideGrade,
   onOpenSolutionModal,
   onPreviewQuestion,
+  generationTemplates = DEFAULT_TREASURE_TEMPLATES,
 }: TreasureDetailModalProps) {
   // 로컬 상태 동기화용 submission 맵 (수정 시 roundChain, KPI, 차트, 카드 실시간 반영)
   const [localSubmissions, setLocalSubmissions] = useState<Record<string, any>>({});
@@ -383,10 +410,30 @@ export default function TreasureDetailModal({
     return { roundChain: list, installmentInfo: detectedInstallment };
   }, [allExams, allSubmissions, initialExam, initialSubmission, student.id, localSubmissions]);
 
-  // 현재 활성화된 탭 (특정 회차 keyId 또는 'matrix' 전체 비교 뷰)
+  // 현재 활성화된 탭 (특정 회차 keyId, 'matrix' 전체 비교 뷰, 또는 'selection' 문항별 성적 & 다음 보물회수 선별)
   const [activeTab, setActiveTab] = useState<string>(() => {
     return roundChain[roundChain.length - 1]?.keyId || initialExam.id;
   });
+
+  // 창 크기 모드 ('default' | 'wide' 여백 확대 | 'fullscreen' 풀스크린)
+  const [modalSizeMode, setModalSizeMode] = useState<ModalSizeMode>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY_MODAL_SIZE);
+        if (saved === 'wide' || saved === 'fullscreen' || saved === 'default') return saved;
+      } catch {}
+    }
+    return 'default';
+  });
+
+  const handleSetModalSizeMode = useCallback((nextMode: ModalSizeMode) => {
+    setModalSizeMode(nextMode);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEY_MODAL_SIZE, nextMode);
+      } catch {}
+    }
+  }, []);
 
   // 현재 선택된 회차 정보
   const selectedChainItem = useMemo(() => {
@@ -403,8 +450,158 @@ export default function TreasureDetailModal({
     return selectedChainItem?.submission || null;
   }, [selectedChainItem]);
 
-  // 풀이 사진 모달 상태
+  // 풀이 사진 모달 상태 & 연동 도움말 모달 상태
   const [viewProofModal, setViewProofModal] = useState<{ url: string; title: string } | null>(null);
+  const [showLinkHelpModal, setShowLinkHelpModal] = useState(false);
+
+  // ESC 키 처리 (열린 하위 모달부터 순차 닫기)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showLinkHelpModal) {
+        setShowLinkHelpModal(false);
+        return;
+      }
+      if (viewProofModal) {
+        setViewProofModal(null);
+        return;
+      }
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showLinkHelpModal, viewProofModal, onClose]);
+
+  // 🎯 문항별 누적 성적 & 선별 템플릿 상태
+  const [selectionScope, setSelectionScope] = useState<TreasureSelectionScope>('current_exam');
+  const [selectionTemplates, setSelectionTemplates] = useState<TreasureSelectionTemplate[]>(() =>
+    getStoredSelectionTemplates()
+  );
+  const [activeSelectionTemplateId, setActiveSelectionTemplateId] = useState<string>(() => {
+    const stored = getStoredSelectionTemplates();
+    return stored[0]?.id || DEFAULT_SELECTION_TEMPLATES[0].id;
+  });
+
+  const selectionTargetExam = useMemo(() => {
+    if (selectedChainItem && !selectedChainItem.isOriginal) {
+      return selectedChainItem.exam;
+    }
+    const latestTreasure = [...roundChain].reverse().find((c) => !c.isOriginal);
+    return latestTreasure?.exam || initialExam;
+  }, [selectedChainItem, roundChain, initialExam]);
+
+  const hasMultipleChainExams = useMemo(() => {
+    const uniqueExamIds = new Set(roundChain.map((r) => r.exam.id));
+    return uniqueExamIds.size > 1;
+  }, [roundChain]);
+
+  const cumulativeStats = useMemo(() => {
+    return computeTreasureCumulativeStats<ExamQuestion>(roundChain, selectionTargetExam, selectionScope);
+  }, [roundChain, selectionTargetExam, selectionScope]);
+
+  const activeSelectionTemplate = useMemo(
+    () => selectionTemplates.find((t) => t.id === activeSelectionTemplateId) || selectionTemplates[0],
+    [selectionTemplates, activeSelectionTemplateId]
+  );
+
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<Set<string>>(() => new Set());
+
+  // 대상 시험지나 집계 범위가 바뀔 때 현재 활성 템플릿 기준으로 자동 선택
+  useEffect(() => {
+    if (!activeSelectionTemplate) return;
+    const matched = new Set<string>();
+    cumulativeStats.forEach((st) => {
+      if (evaluateQuestionMatchesRule(st, activeSelectionTemplate.rule)) {
+        matched.add(st.question.id);
+      }
+    });
+    setSelectedQuestionIds(matched);
+  }, [cumulativeStats, activeSelectionTemplate]);
+
+  const handleSelectSelectionTemplate = (tpl: TreasureSelectionTemplate) => {
+    setActiveSelectionTemplateId(tpl.id);
+    const matched = new Set<string>();
+    cumulativeStats.forEach((st) => {
+      if (evaluateQuestionMatchesRule(st, tpl.rule)) {
+        matched.add(st.question.id);
+      }
+    });
+    setSelectedQuestionIds(matched);
+  };
+
+  const handleSaveSelectionTemplate = (tpl: TreasureSelectionTemplate, isNew: boolean) => {
+    const updated = isNew
+      ? [...selectionTemplates, tpl]
+      : selectionTemplates.map((t) => (t.id === tpl.id ? tpl : t));
+    setSelectionTemplates(updated);
+    saveStoredSelectionTemplates(updated);
+    setActiveSelectionTemplateId(tpl.id);
+    const matched = new Set<string>();
+    cumulativeStats.forEach((st) => {
+      if (evaluateQuestionMatchesRule(st, tpl.rule)) {
+        matched.add(st.question.id);
+      }
+    });
+    setSelectedQuestionIds(matched);
+  };
+
+  const handleDeleteSelectionTemplate = (id: string) => {
+    if (selectionTemplates.length <= 1) return;
+    if (!confirm('선택한 선별 기준 템플릿을 삭제하시겠습니까?')) return;
+    const updated = selectionTemplates.filter((t) => t.id !== id);
+    setSelectionTemplates(updated);
+    saveStoredSelectionTemplates(updated);
+    if (activeSelectionTemplateId === id && updated[0]) {
+      handleSelectSelectionTemplate(updated[0]);
+    }
+  };
+
+  const handleResetSelectionTemplates = () => {
+    if (!confirm('선별 기준 템플릿을 기본 프리셋 4종으로 초기화하시겠습니까?')) return;
+    setSelectionTemplates(DEFAULT_SELECTION_TEMPLATES);
+    saveStoredSelectionTemplates(DEFAULT_SELECTION_TEMPLATES);
+    handleSelectSelectionTemplate(DEFAULT_SELECTION_TEMPLATES[0]);
+  };
+
+  const handleToggleSelectedQuestion = (questionId: string) => {
+    setSelectedQuestionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(questionId)) next.delete(questionId);
+      else next.add(questionId);
+      return next;
+    });
+  };
+
+  const handleCreateNextFromSelection = (forceRequireSelection = false) => {
+    const subToUse = currentSubmission || initialSubmission;
+    const examToUse = selectionTargetExam || selectedChainItem?.exam || initialExam;
+    const chosenQuestions = cumulativeStats
+      .filter((st) => selectedQuestionIds.has(st.question.id))
+      .map((st) => st.question);
+
+    const linkedTemplateId =
+      activeSelectionTemplate?.linkGenerationTemplate &&
+      activeSelectionTemplate?.linkedTreasureTemplateId
+        ? activeSelectionTemplate.linkedTreasureTemplateId
+        : undefined;
+
+    if (chosenQuestions.length === 0) {
+      if (forceRequireSelection) {
+        alert('다음 보물회수로 생성할 문항을 1개 이상 선택해 주세요!');
+        return;
+      }
+      // 다른 탭에서 눌렀을 때 선별된 문항이 0개면 선별 탭을 열어 주거나 기존 안내 흐름을 따름
+      onCreateWrongExam(student, subToUse, examToUse, {
+        linkedTreasureTemplateId: linkedTemplateId,
+      });
+      return;
+    }
+
+    onCreateWrongExam(student, subToUse, examToUse, {
+      selectedQuestions: chosenQuestions,
+      linkedTreasureTemplateId: linkedTemplateId,
+    });
+  };
 
   // KPI 요약 지표 계산 (할부 전체 코스 진도 / 원본 분리 / 부동소수점 보정 / 타임어택 스마트 폴백)
   const kpiStats = useMemo(() => {
@@ -565,17 +762,33 @@ export default function TreasureDetailModal({
     initialExam.base_exam_title || initialExam.title
   ).cleanBaseTitle;
 
+  const isExpandedLayout = modalSizeMode !== 'default';
+
+  const outerContainerClass =
+    modalSizeMode === 'fullscreen'
+      ? 'fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-0 animate-in fade-in duration-200'
+      : modalSizeMode === 'wide'
+      ? 'fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-1 sm:p-2 animate-in fade-in duration-200'
+      : 'fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200';
+
+  const modalCardClass =
+    modalSizeMode === 'fullscreen'
+      ? 'bg-white rounded-none w-screen h-screen max-w-none max-h-none flex flex-col shadow-2xl overflow-hidden border-0'
+      : modalSizeMode === 'wide'
+      ? 'bg-white rounded-2xl w-[98vw] h-[96vh] max-w-none max-h-[96vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200'
+      : 'bg-white rounded-3xl max-w-5xl w-full max-h-[94vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200';
+
   return (
-    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[94vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200">
+    <div className={outerContainerClass}>
+      <div className={modalCardClass}>
         {/* ======================= 1. 상단 모달 헤더 ======================= */}
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-400 to-rose-500 flex items-center justify-center shadow-md shadow-amber-500/20 text-white">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-400 to-rose-500 flex items-center justify-center shadow-md shadow-amber-500/20 text-white shrink-0">
               <Sparkles size={20} className="fill-white" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="px-2 py-0.5 bg-violet-500/30 text-violet-200 border border-violet-400/30 font-black rounded-md text-[11px]">
                   {student.grade}
                 </span>
@@ -593,21 +806,59 @@ export default function TreasureDetailModal({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* 다음 보물회수 생성 버튼 */}
             <button
               type="button"
-              onClick={() => {
-                const subToUse = currentSubmission || initialSubmission;
-                const examToUse = selectedChainItem?.exam || initialExam;
-                onCreateWrongExam(student, subToUse, examToUse);
-              }}
+              onClick={() => handleCreateNextFromSelection(activeTab === 'selection')}
               disabled={isCreatingWrongExam}
               className="px-3.5 py-2 bg-gradient-to-r from-amber-500 via-rose-500 to-rose-600 hover:from-amber-600 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              title="이 회차의 오답 문항으로 다음 회차 보물회수 시험지를 즉시 생성합니다"
+              title="선별된 문항(또는 현재 기준 오답 문항)으로 다음 회차 보물회수 시험지를 즉시 생성합니다"
             >
               <RotateCcw size={14} className={isCreatingWrongExam ? 'animate-spin' : ''} />
-              <span>{isCreatingWrongExam ? '생성 중...' : '💎 다음 보물회수 생성'}</span>
+              <span>
+                {isCreatingWrongExam
+                  ? '생성 중...'
+                  : selectedQuestionIds.size > 0
+                  ? `💎 다음 보물회수 생성 (${selectedQuestionIds.size})`
+                  : '💎 다음 보물회수 생성'}
+              </span>
+            </button>
+
+            {/* 살짝 여백 확대 버튼 (98vw x 96vh) */}
+            <button
+              type="button"
+              onClick={() => handleSetModalSizeMode(modalSizeMode === 'wide' ? 'default' : 'wide')}
+              className={`h-9 px-2.5 rounded-xl border flex items-center gap-1 font-bold transition-colors cursor-pointer text-[11px] ${
+                modalSizeMode === 'wide'
+                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-sm'
+                  : 'bg-white/10 hover:bg-white/20 text-slate-200 border-white/15'
+              }`}
+              title={modalSizeMode === 'wide' ? '원래 크기로 복원' : '넓은 창으로 확대 (여백 유지)'}
+            >
+              {modalSizeMode === 'wide' ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              <span className="hidden md:inline">
+                {modalSizeMode === 'wide' ? '기본 크기' : '여백 확대'}
+              </span>
+            </button>
+
+            {/* 풀스크린 버튼 (100vw x 100vh) */}
+            <button
+              type="button"
+              onClick={() =>
+                handleSetModalSizeMode(modalSizeMode === 'fullscreen' ? 'default' : 'fullscreen')
+              }
+              className={`h-9 px-2.5 rounded-xl border flex items-center gap-1 font-bold transition-colors cursor-pointer text-[11px] ${
+                modalSizeMode === 'fullscreen'
+                  ? 'bg-violet-500 text-white border-violet-300 shadow-sm'
+                  : 'bg-white/10 hover:bg-white/20 text-slate-200 border-white/15'
+              }`}
+              title={modalSizeMode === 'fullscreen' ? '원래 크기로 복원' : '화면 꽉 채우기 (풀스크린)'}
+            >
+              {modalSizeMode === 'fullscreen' ? <Minimize2 size={14} /> : <Expand size={14} />}
+              <span className="hidden md:inline">
+                {modalSizeMode === 'fullscreen' ? '창 복원' : '풀스크린'}
+              </span>
             </button>
 
             {/* 닫기 버튼 */}
@@ -773,7 +1024,9 @@ export default function TreasureDetailModal({
                   ? `${installmentInfo.exam.id}_s${sp.setIndex}_r${latestRoundOfSet}`
                   : null;
                 const isViewingThisSet =
-                  selectedChainItem?.setIndex === sp.setIndex && activeTab !== 'matrix';
+                  selectedChainItem?.setIndex === sp.setIndex &&
+                  activeTab !== 'matrix' &&
+                  activeTab !== 'selection';
 
                 return (
                   <button
@@ -816,11 +1069,15 @@ export default function TreasureDetailModal({
                 선택 보기:
               </span>
               <span className="font-bold text-slate-800 bg-white px-2.5 py-0.5 rounded-md border border-slate-200 shadow-2xs">
-                {activeTab === 'matrix' ? '📈 회차별 통합 비교 뷰 (Matrix)' : selectedChainItem?.roundLabel}
+                {activeTab === 'matrix'
+                  ? '📈 회차별 통합 비교 뷰 (Matrix)'
+                  : activeTab === 'selection'
+                  ? '🎯 문항별 누적 성적 & 다음 보물회수 선별'
+                  : selectedChainItem?.roundLabel}
               </span>
             </div>
 
-            {selectedChainItem && activeTab !== 'matrix' && (
+            {selectedChainItem && activeTab !== 'matrix' && activeTab !== 'selection' && (
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 <span className="flex items-center gap-1 font-bold text-slate-600">
                   <Clock size={12} className="text-violet-600" />
@@ -920,13 +1177,60 @@ export default function TreasureDetailModal({
                 <span>📈 회차별 통합 비교 뷰</span>
               </button>
             )}
+
+            {/* 🎯 문항별 누적 성적 & 다음 보물회수 선별 탭 */}
+            <button
+              type="button"
+              onClick={() => setActiveTab('selection')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'selection'
+                  ? 'bg-gradient-to-r from-amber-500 to-rose-600 text-white shadow-md shadow-rose-500/25 scale-[1.02]'
+                  : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-300'
+              }`}
+            >
+              <CheckSquare size={13} className={activeTab === 'selection' ? 'text-white' : 'text-amber-600'} />
+              <span>🎯 문항별 성적 & 다음 보물회수 선별</span>
+              <span
+                className={`ml-0.5 text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                  activeTab === 'selection'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-amber-200/80 text-amber-950'
+                }`}
+              >
+                {selectedQuestionIds.size}
+              </span>
+            </button>
           </div>
         </div>
 
         {/* ======================= 4. 본문 스크롤 영역 ======================= */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 bg-slate-50/50">
-          {/* ===================== [A] 회차별 통합 비교 뷰 (Matrix 모드) ===================== */}
-          {activeTab === 'matrix' ? (
+          {/* ===================== [0] 문항별 누적 성적 & 다음 보물회수 선별 뷰 ===================== */}
+          {activeTab === 'selection' ? (
+            <TreasureSelectionView
+              stats={cumulativeStats}
+              scope={selectionScope}
+              onChangeScope={setSelectionScope}
+              targetExamTitle={selectionTargetExam.title}
+              hasMultipleChainExams={hasMultipleChainExams}
+              templates={selectionTemplates}
+              activeTemplateId={activeSelectionTemplateId}
+              onSelectTemplate={handleSelectSelectionTemplate}
+              onSaveTemplate={handleSaveSelectionTemplate}
+              onDeleteTemplate={handleDeleteSelectionTemplate}
+              onResetTemplates={handleResetSelectionTemplates}
+              generationTemplates={generationTemplates}
+              selectedIds={selectedQuestionIds}
+              onToggleQuestion={handleToggleSelectedQuestion}
+              onSetSelectedIds={setSelectedQuestionIds}
+              isExpandedLayout={isExpandedLayout}
+              isCreatingWrongExam={isCreatingWrongExam}
+              onCreateFromSelected={() => handleCreateNextFromSelection(true)}
+              onOpenHelpModal={() => setShowLinkHelpModal(true)}
+              onOpenSolutionModal={onOpenSolutionModal}
+              onPreviewQuestion={onPreviewQuestion}
+            />
+          ) : activeTab === 'matrix' ? (
             <div className="space-y-6">
               {/* 회차별 시간 & 점수 비교 바 차트 */}
               <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs">
@@ -1394,7 +1698,11 @@ export default function TreasureDetailModal({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div
+                  className={`grid grid-cols-1 md:grid-cols-2 ${
+                    isExpandedLayout ? 'xl:grid-cols-3' : ''
+                  } gap-4`}
+                >
                   {currentQuestionsWithStats.items.map(({ q, idx, ansInfo, spentSec, isCorrect, isUnknown, userAns, isRecall, recallOriginSet }) => {
                     const correctAns = ansInfo?.correct_answer || q.answer || '';
                     const isSlow = spentSec > currentQuestionsWithStats.avgSec * 1.5;
@@ -1631,6 +1939,10 @@ export default function TreasureDetailModal({
             </div>
           </div>
         </div>
+      )}
+      {/* 템플릿 연동 도움말 모달 (목업 이미지 포함) */}
+      {showLinkHelpModal && (
+        <TreasureTemplateLinkHelpModal onClose={() => setShowLinkHelpModal(false)} />
       )}
     </div>
   );

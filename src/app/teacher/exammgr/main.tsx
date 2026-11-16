@@ -2097,23 +2097,37 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   };
 
   // 🌟 오답 맞춤 시험지 생성 모달 열기
-  const handleCreateWrongExam = (st: Student | undefined, sub: any, targetExam?: ExamPaper) => {
+  const handleCreateWrongExam = (
+    st: Student | undefined,
+    sub: any,
+    targetExam?: ExamPaper,
+    options?: {
+      selectedQuestions?: ExamQuestion[];
+      linkedTreasureTemplateId?: string;
+    }
+  ) => {
     const examToUse = targetExam || detailStudent?.exam || resultsModalExam;
-    if (!st || !sub || !examToUse) return;
+    const hasCustomSelection = Boolean(options?.selectedQuestions && options.selectedQuestions.length > 0);
+    if (!st || !examToUse || (!sub && !hasCustomSelection)) return;
 
-    // 틀린 문항 필터링 (할부·누적 모드 시 미응시 세트 문항이 오답으로 오인되지 않도록 안전 필터)
-    const { wrongQuestions, isInstallment, hasUnattemptedSets, totalAttemptedCount } =
-      getEffectiveWrongQuestionsForExam(examToUse, sub);
+    let wrongQuestions: ExamQuestion[] = [];
+    if (hasCustomSelection && options?.selectedQuestions) {
+      wrongQuestions = options.selectedQuestions;
+    } else {
+      // 틀린 문항 필터링 (할부·누적 모드 시 미응시 세트 문항이 오답으로 오인되지 않도록 안전 필터)
+      const extracted = getEffectiveWrongQuestionsForExam(examToUse, sub);
+      wrongQuestions = extracted.wrongQuestions;
 
-    if (wrongQuestions.length === 0) {
-      if (isInstallment && hasUnattemptedSets) {
-        alert(
-          `🧩 '${st.name}' 학생은 현재까지 응시한 ${totalAttemptedCount}문항을 모두 정답 처리했습니다!\n(아직 풀지 않은 남은 할부 세트가 있어 추가 보물회수 대상 오답이 없습니다.)`
-        );
-      } else {
-        alert(`🎉 '${st.name}' 학생은 모든 문제를 맞혔거나 틀린 문항이 없습니다!`);
+      if (wrongQuestions.length === 0) {
+        if (extracted.isInstallment && extracted.hasUnattemptedSets) {
+          alert(
+            `🧩 '${st.name}' 학생은 현재까지 응시한 ${extracted.totalAttemptedCount}문항을 모두 정답 처리했습니다!\n(아직 풀지 않은 남은 할부 세트가 있어 추가 보물회수 대상 오답이 없습니다.)`
+          );
+        } else {
+          alert(`🎉 '${st.name}' 학생은 모든 문제를 맞혔거나 틀린 문항이 없습니다!`);
+        }
+        return;
       }
-      return;
     }
 
     const recommendedMin = Math.max(10, wrongQuestions.length * 3);
@@ -2133,6 +2147,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setWrongExamRemindPopup(false);
     setChangingTwinQuestionId(null);
     setInstallmentSetRounds({});
+
+    // 선별 템플릿에서 생성 설정 연동 옵션이 켜져 있으면 해당 생성 템플릿 자동 적용
+    if (options?.linkedTreasureTemplateId) {
+      const linkedTpl = treasureTemplates.find((t) => t.id === options.linkedTreasureTemplateId);
+      if (linkedTpl) {
+        setTreasureEnabled(true);
+        applyTreasureTemplate(linkedTpl);
+      }
+    }
   };
 
   // 🌟 맞춤 오답 시험지 실제 생성 및 배정
@@ -6027,9 +6050,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           allExams={exams}
           allSubmissions={allSubmissions}
           onClose={() => setDetailStudent(null)}
-          onCreateWrongExam={(st, sub, ex) =>
-            handleCreateWrongExam(st, sub, ex || detailStudent.exam || resultsModalExam || undefined)
+          onCreateWrongExam={(st, sub, ex, opts) =>
+            handleCreateWrongExam(st, sub, ex || detailStudent.exam || resultsModalExam || undefined, opts)
           }
+          generationTemplates={treasureTemplates}
           isCreatingWrongExam={creatingWrongExamModal}
           onOverrideGrade={async (sId, eId, qId, nextIsCorrect, coords) => {
             return await handleOverrideQuestionGrade(qId, !nextIsCorrect, sId, eId, coords);

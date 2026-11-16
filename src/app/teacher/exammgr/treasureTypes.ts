@@ -787,3 +787,479 @@ export function getEffectiveWrongQuestionsForExam<T extends { id: string }>(
     totalAttemptedCount: summary.attemptedUniqueCount,
   };
 }
+
+// ============================================================================
+// 🎯 문항별 누적 정복 성적 집계 & 선별 기준 템플릿 (Selection Rules & Presets)
+// ============================================================================
+
+export type TreasureSelectionScope = 'current_exam' | 'full_chain';
+
+export type TreasureSelectionRuleMode =
+  | 'accuracy_below'
+  | 'wrong_count_min'
+  | 'any_wrong'
+  | 'latest_wrong';
+
+export interface TreasureSelectionRule {
+  mode: TreasureSelectionRuleMode;
+  maxAccuracyPercent?: number; // mode === 'accuracy_below' 일 때: 정답률 X% 이하 (예: 50 -> 50% 이하)
+  minWrongCount?: number; // mode === 'wrong_count_min' 일 때: 누적 오답 N회 이상
+  excludeConsecutiveCorrect?: number; // 0이면 비활성, N이면 최근 N연속 정답 시 제외
+  includeSlowQuestions?: boolean; // true면 평균 풀이시간 1.5배 이상 지체 문항도 함께 포함
+  excludeAlreadyAssigned?: boolean; // true면 이미 후속 보물회수에 배정된 문항 자동 제외 (중복 방지)
+  onlyAttempted?: boolean; // true면 한 번도 풀지 않은 미응시 문항 제외
+}
+
+export interface TreasureSelectionTemplate {
+  id: string;
+  name: string;
+  badge?: string;
+  description?: string;
+  rule: TreasureSelectionRule;
+  linkGenerationTemplate?: boolean; // 다음 보물회수 생성 설정(회차/타임어택) 자동 연동 여부
+  linkedTreasureTemplateId?: string; // 연동 시 적용할 TreasureTemplate ID
+  is_default?: boolean;
+}
+
+export const DEFAULT_SELECTION_TEMPLATES: TreasureSelectionTemplate[] = [
+  {
+    id: 'sel_tpl_weak_50',
+    name: '취약 집중 (정답률 50% 이하)',
+    badge: '🎯',
+    description: '여러 바퀴 중 절반 이하로만 맞힌 진짜 취약 문항만 골라냅니다.',
+    rule: {
+      mode: 'accuracy_below',
+      maxAccuracyPercent: 50,
+      excludeConsecutiveCorrect: 0,
+      includeSlowQuestions: false,
+      excludeAlreadyAssigned: true,
+      onlyAttempted: true,
+    },
+    linkGenerationTemplate: false,
+    is_default: true,
+  },
+  {
+    id: 'sel_tpl_any_wrong',
+    name: '1번이라도 오답 전부',
+    badge: '🔥',
+    description: '단 1회라도 틀린 적이 있는 문항을 중복 없이 1번씩 모두 포함합니다.',
+    rule: {
+      mode: 'any_wrong',
+      minWrongCount: 1,
+      excludeConsecutiveCorrect: 0,
+      includeSlowQuestions: false,
+      excludeAlreadyAssigned: true,
+      onlyAttempted: true,
+    },
+    linkGenerationTemplate: false,
+    is_default: true,
+  },
+  {
+    id: 'sel_tpl_repeat_wrong',
+    name: '반복 오답 (2회 이상)',
+    badge: '🔁',
+    description: '우연한 1회 실수는 빼고, 2번 이상 반복해서 틀린 문항만 추출합니다.',
+    rule: {
+      mode: 'wrong_count_min',
+      minWrongCount: 2,
+      excludeConsecutiveCorrect: 0,
+      includeSlowQuestions: false,
+      excludeAlreadyAssigned: true,
+      onlyAttempted: true,
+    },
+    linkGenerationTemplate: false,
+    is_default: true,
+  },
+  {
+    id: 'sel_tpl_latest_wrong',
+    name: '직전 바퀴 오답만',
+    badge: '⚡',
+    description: '가장 마지막에 응시한 바퀴/회차에서 틀린 문항만 빠르게 추출합니다.',
+    rule: {
+      mode: 'latest_wrong',
+      excludeConsecutiveCorrect: 0,
+      includeSlowQuestions: false,
+      excludeAlreadyAssigned: true,
+      onlyAttempted: true,
+    },
+    linkGenerationTemplate: false,
+    is_default: true,
+  },
+];
+
+export const STORAGE_KEY_SELECTION_TEMPLATES = 'eduest_treasure_selection_templates_v1';
+
+export function getStoredSelectionTemplates(): TreasureSelectionTemplate[] {
+  if (typeof window === 'undefined') return DEFAULT_SELECTION_TEMPLATES;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SELECTION_TEMPLATES);
+    if (!raw) {
+      localStorage.setItem(STORAGE_KEY_SELECTION_TEMPLATES, JSON.stringify(DEFAULT_SELECTION_TEMPLATES));
+      return DEFAULT_SELECTION_TEMPLATES;
+    }
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed;
+    }
+    return DEFAULT_SELECTION_TEMPLATES;
+  } catch (e) {
+    console.error('Failed to load selection templates:', e);
+    return DEFAULT_SELECTION_TEMPLATES;
+  }
+}
+
+export function saveStoredSelectionTemplates(templates: TreasureSelectionTemplate[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY_SELECTION_TEMPLATES, JSON.stringify(templates));
+  } catch (e) {
+    console.error('Failed to save selection templates:', e);
+  }
+}
+
+export interface QuestionAttemptRecord {
+  roundKey: string;
+  roundLabel: string;
+  isCorrect: boolean;
+  isUnknown: boolean;
+  spentSec: number;
+  isRecall: boolean;
+}
+
+export interface CanonicalQuestionLike {
+  id: string;
+  question_number?: number | null;
+  name?: string | null;
+  folder_name?: string | null;
+  parent_question_id?: string | null;
+  is_twin?: boolean | null;
+}
+
+export interface SubmissionAnswerLike {
+  user_answer?: string;
+  is_correct?: boolean;
+  time_spent_sec?: number;
+}
+
+export interface TreasureQuestionCumulativeStat<Q = CanonicalQuestionLike> {
+  question: Q;
+  canonicalId: string;
+  displayNumber: number;
+  setIndex?: number; // 할부 세트 번호 (0-indexed)
+  attempts: QuestionAttemptRecord[];
+  attemptCount: number; // 총 풀이 횟수 (N)
+  correctCount: number; // 정답 횟수 (M)
+  wrongCount: number; // 오답/모름 횟수
+  accuracyPercent: number | null; // null이면 미응시
+  latestIsCorrect: boolean | null;
+  consecutiveCorrectFromEnd: number;
+  avgSpentSec: number;
+  isSlow: boolean;
+  isAlreadyAssignedInNext: boolean;
+  assignedNextExamTitles: string[];
+}
+
+export interface ChainRoundStatInput<Q = CanonicalQuestionLike> {
+  keyId: string;
+  exam: {
+    id: string;
+    title: string;
+    wrong_round?: number;
+    parent_exam_id?: string;
+    questions?: Q[];
+    treasure_config?: TreasureConfig;
+  };
+  round: number;
+  roundLabel: string;
+  isOriginal: boolean;
+  submittedAt: string | null;
+  submission: { answers?: Record<string, SubmissionAnswerLike> } | null;
+  isInstallmentRound?: boolean;
+  activeQuestions?: Q[];
+  recallQuestionIds?: Set<string>;
+}
+
+/**
+ * 한 문항이 주어진 선별 규칙(TreasureSelectionRule)에 부합하는지 판정
+ */
+export function evaluateQuestionMatchesRule(
+  stat: TreasureQuestionCumulativeStat,
+  rule: TreasureSelectionRule
+): boolean {
+  if (rule.onlyAttempted !== false && stat.attemptCount === 0) {
+    return false;
+  }
+  if (rule.excludeAlreadyAssigned && stat.isAlreadyAssignedInNext) {
+    return false;
+  }
+  if (
+    rule.excludeConsecutiveCorrect &&
+    rule.excludeConsecutiveCorrect > 0 &&
+    stat.consecutiveCorrectFromEnd >= rule.excludeConsecutiveCorrect
+  ) {
+    // 단, 시간 지체 포함 옵션이 켜져 있고 실제로 지체된 경우만 예외 허용 가능
+    if (!(rule.includeSlowQuestions && stat.isSlow)) {
+      return false;
+    }
+  }
+
+  let matched = false;
+  if (stat.attemptCount === 0) {
+    matched = false;
+  } else if (rule.mode === 'accuracy_below') {
+    const threshold = rule.maxAccuracyPercent ?? 50;
+    matched = (stat.accuracyPercent ?? 100) <= threshold;
+  } else if (rule.mode === 'wrong_count_min') {
+    const minWrong = Math.max(1, rule.minWrongCount ?? 2);
+    matched = stat.wrongCount >= minWrong;
+  } else if (rule.mode === 'any_wrong') {
+    matched = stat.wrongCount >= 1;
+  } else if (rule.mode === 'latest_wrong') {
+    matched = stat.latestIsCorrect === false;
+  }
+
+  if (!matched && rule.includeSlowQuestions && stat.isSlow && stat.attemptCount > 0) {
+    matched = true;
+  }
+
+  return matched;
+}
+
+function getRootQuestionKey(
+  q: CanonicalQuestionLike,
+  recallVariantToCoreMap: Map<string, string>
+): string {
+  const id = String(q?.id || '');
+  if (recallVariantToCoreMap.has(id)) {
+    return recallVariantToCoreMap.get(id)!;
+  }
+  if (q?.parent_question_id) {
+    return String(q.parent_question_id);
+  }
+  return id;
+}
+
+function isSameCanonicalQuestion(
+  candidate: CanonicalQuestionLike,
+  baseQ: CanonicalQuestionLike,
+  recallVariantToCoreMap: Map<string, string>
+): boolean {
+  if (!candidate || !baseQ) return false;
+  if (candidate.id === baseQ.id) return true;
+
+  const baseRoot = getRootQuestionKey(baseQ, recallVariantToCoreMap);
+  const candRoot = getRootQuestionKey(candidate, recallVariantToCoreMap);
+
+  if (candRoot && baseRoot && candRoot === baseRoot) return true;
+  if (candidate.parent_question_id && candidate.parent_question_id === baseQ.id) return true;
+  if (baseQ.parent_question_id && baseQ.parent_question_id === candidate.id) return true;
+
+  if (
+    candidate.question_number !== undefined &&
+    candidate.question_number !== null &&
+    baseQ.question_number !== undefined &&
+    baseQ.question_number !== null &&
+    candidate.question_number === baseQ.question_number
+  ) {
+    if (!candidate.folder_name || !baseQ.folder_name || candidate.folder_name === baseQ.folder_name) {
+      return true;
+    }
+  }
+
+  if (
+    candidate.name &&
+    baseQ.name &&
+    baseQ.name.length >= 4 &&
+    (candidate.name === baseQ.name ||
+      candidate.name.includes(baseQ.name) ||
+      baseQ.name.includes(candidate.name))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 체인 데이터로부터 등록된 문항별 누적 정복 통계(N번 중 M번 정답, 이력 시퀀스, 중복 배정 여부)를 계산
+ */
+export function computeTreasureCumulativeStats<Q extends CanonicalQuestionLike>(
+  roundChain: ChainRoundStatInput<Q>[],
+  targetExam: ChainRoundStatInput<Q>['exam'],
+  scope: TreasureSelectionScope
+): TreasureQuestionCumulativeStat<Q>[] {
+  const baseQuestions = targetExam?.questions || [];
+  if (baseQuestions.length === 0) return [];
+
+  // 모든 시험지의 리콜 변형 문항 ID -> 핵심 문항 ID 역매핑 구축
+  const recallVariantToCoreMap = new Map<string, string>();
+  const coreToRecallVariantIds = new Map<string, string[]>();
+  roundChain.forEach((r) => {
+    const rvq = r.exam.treasure_config?.installment?.recall_variant_questions;
+    if (rvq && typeof rvq === 'object') {
+      Object.entries(rvq).forEach(([coreId, vq]) => {
+        const variantId = (vq as { id?: string } | null | undefined)?.id;
+        if (variantId) {
+          recallVariantToCoreMap.set(variantId, coreId);
+          const list = coreToRecallVariantIds.get(coreId) || [];
+          list.push(variantId);
+          coreToRecallVariantIds.set(coreId, list);
+        }
+      });
+    }
+  });
+
+  // 할부 세트 소속 맵 (set_index)
+  const setIndexByQId = new Map<string, number>();
+  const instSets = targetExam.treasure_config?.installment?.sets;
+  if (Array.isArray(instSets)) {
+    instSets.forEach((s) => {
+      (s.question_ids || []).forEach((qid) => setIndexByQId.set(qid, s.set_index));
+    });
+  }
+
+  // 집계 대상 회차 필터링 및 시간순 정렬
+  const targetRoundNum = targetExam.wrong_round ?? parseExamRoundAndBaseTitle(targetExam.title).currentRound;
+  const scopedRounds = roundChain
+    .filter((r) => (scope === 'current_exam' ? r.exam.id === targetExam.id : true))
+    .slice()
+    .sort((a, b) => {
+      const exRoundA = a.isOriginal ? 0 : a.exam.wrong_round ?? parseExamRoundAndBaseTitle(a.exam.title).currentRound;
+      const exRoundB = b.isOriginal ? 0 : b.exam.wrong_round ?? parseExamRoundAndBaseTitle(b.exam.title).currentRound;
+      if (exRoundA !== exRoundB) return exRoundA - exRoundB;
+      return a.round - b.round;
+    });
+
+  // 이미 생성된 후속 보물회수 시험지 탐색 (중복 배정 경고용)
+  const subsequentExamsMap = new Map<string, ChainRoundStatInput<Q>['exam']>();
+  roundChain.forEach((r) => {
+    if (r.exam.id === targetExam.id || r.isOriginal) return;
+    const rExRound = r.exam.wrong_round ?? parseExamRoundAndBaseTitle(r.exam.title).currentRound;
+    const isChild = r.exam.parent_exam_id === targetExam.id;
+    const isLaterRound = rExRound > targetRoundNum;
+    if (isChild || isLaterRound) {
+      subsequentExamsMap.set(r.exam.id, r.exam);
+    }
+  });
+  const subsequentExams = Array.from(subsequentExamsMap.values());
+
+  // 동일 뿌리 문항이 targetExam.questions 내에 중복 존재할 경우를 대비한 중복 병합
+  const seenCanonicalKeys = new Set<string>();
+  const rawStats: TreasureQuestionCumulativeStat<Q>[] = [];
+
+  baseQuestions.forEach((baseQ, idx) => {
+    const canonicalId = getRootQuestionKey(baseQ, recallVariantToCoreMap);
+    if (seenCanonicalKeys.has(canonicalId)) return;
+    seenCanonicalKeys.add(canonicalId);
+
+    const attempts: QuestionAttemptRecord[] = [];
+    const seenRoundKeys = new Set<string>();
+
+    scopedRounds.forEach((r) => {
+      if (!r.submission || !r.submission.answers || seenRoundKeys.has(r.keyId)) return;
+      const candidatePool =
+        r.isInstallmentRound && r.activeQuestions && r.activeQuestions.length > 0
+          ? r.activeQuestions
+          : r.exam.questions || [];
+
+      const matchedQ = candidatePool.find((tq) =>
+        isSameCanonicalQuestion(tq, baseQ, recallVariantToCoreMap)
+      );
+
+      // 리콜 변형 문항 ID로도 answers 조회
+      const variantIds = coreToRecallVariantIds.get(baseQ.id) || [];
+      let ans = matchedQ ? r.submission.answers[matchedQ.id] : undefined;
+      if (!ans) ans = r.submission.answers[baseQ.id];
+      if (!ans) {
+        for (const vid of variantIds) {
+          if (r.submission.answers[vid]) {
+            ans = r.submission.answers[vid];
+            break;
+          }
+        }
+      }
+
+      if (!ans) return;
+      seenRoundKeys.add(r.keyId);
+
+      const userAns = String(ans.user_answer || '').trim();
+      const isUnknown = userAns === '모름' || userAns === 'unknown';
+      const isCorrect = Boolean(ans.is_correct) && !isUnknown;
+      const spentSec = Number(ans.time_spent_sec) || 0;
+      const isRecall = Boolean(
+        matchedQ && r.recallQuestionIds?.has(matchedQ.id)
+      );
+
+      attempts.push({
+        roundKey: r.keyId,
+        roundLabel: r.roundLabel,
+        isCorrect,
+        isUnknown,
+        spentSec,
+        isRecall,
+      });
+    });
+
+    const attemptCount = attempts.length;
+    const correctCount = attempts.filter((a) => a.isCorrect).length;
+    const wrongCount = attemptCount - correctCount;
+    const accuracyPercent = attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : null;
+    const latestIsCorrect = attemptCount > 0 ? attempts[attemptCount - 1].isCorrect : null;
+
+    let consecutiveCorrectFromEnd = 0;
+    for (let i = attemptCount - 1; i >= 0; i--) {
+      if (attempts[i].isCorrect) consecutiveCorrectFromEnd++;
+      else break;
+    }
+
+    const timedAttempts = attempts.filter((a) => a.spentSec > 0);
+    const avgSpentSec =
+      timedAttempts.length > 0
+        ? Math.round(timedAttempts.reduce((acc, a) => acc + a.spentSec, 0) / timedAttempts.length)
+        : 0;
+
+    // 후속 보물회수 시험지 중복 배정 여부 체크
+    const assignedNextExamTitles: string[] = [];
+    subsequentExams.forEach((nextEx) => {
+      const alreadyInNext = (nextEx.questions || []).some((nq) =>
+        isSameCanonicalQuestion(nq, baseQ, recallVariantToCoreMap)
+      );
+      if (alreadyInNext) {
+        assignedNextExamTitles.push(nextEx.title);
+      }
+    });
+
+    rawStats.push({
+      question: baseQ,
+      canonicalId,
+      displayNumber: baseQ.question_number ?? idx + 1,
+      setIndex: setIndexByQId.get(baseQ.id),
+      attempts,
+      attemptCount,
+      correctCount,
+      wrongCount,
+      accuracyPercent,
+      latestIsCorrect,
+      consecutiveCorrectFromEnd,
+      avgSpentSec,
+      isSlow: false, // 전체 평균 산출 후 계산
+      isAlreadyAssignedInNext: assignedNextExamTitles.length > 0,
+      assignedNextExamTitles,
+    });
+  });
+
+  // 전체 문항 평균 소요시간 기반 시간 지체(1.5배 초과) 플래그 계산
+  const timedStats = rawStats.filter((s) => s.avgSpentSec > 0);
+  const globalAvgSec =
+    timedStats.length > 0
+      ? timedStats.reduce((acc, s) => acc + s.avgSpentSec, 0) / timedStats.length
+      : 0;
+
+  if (globalAvgSec > 0) {
+    rawStats.forEach((s) => {
+      s.isSlow = s.avgSpentSec > globalAvgSec * 1.5;
+    });
+  }
+
+  return rawStats;
+}
