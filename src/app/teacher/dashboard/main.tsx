@@ -15,9 +15,11 @@ import {
   ArrowUpRight,
   Sparkles,
   FileCheck,
-  Target
+  Target,
+  FolderSync
 } from 'lucide-react';
 import PrecisionSyncModal from './PrecisionSyncModal';
+import FolderMicroSyncModal from './FolderMicroSyncModal';
 import Link from 'next/link';
 
 /** 브라우저→GAS 직접 호출은 CORS 차단 → 서버 프록시 (`GAS_LIBRARY_WEBAPP_URL`로 타깃 덮어쓰기 가능) */
@@ -34,6 +36,7 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
   const [selectedGrade, setSelectedGrade] = useState<string>('ALL');
   const [isIncremental, setIsIncremental] = useState<boolean>(true);
   const [isPrecisionModalOpen, setIsPrecisionModalOpen] = useState(false);
+  const [isFolderMicroSyncOpen, setIsFolderMicroSyncOpen] = useState(false);
   
   // 🔥 [핵심] 하이드레이션 에러 방지를 위한 마운트 상태
   const [isMounted, setIsMounted] = useState(false);
@@ -199,6 +202,18 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
             <div className="space-y-2.5">
               <button
                 type="button"
+                onClick={() => setIsFolderMicroSyncOpen(true)}
+                className="w-full py-3.5 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white rounded-[22px] font-black text-sm md:text-base flex items-center justify-center gap-2.5 transition-all active:scale-95 shadow-lg shadow-sky-200 group"
+              >
+                <FolderSync size={18} className="text-sky-100 group-hover:scale-110 transition-transform duration-300" />
+                <span>폴더 미세 동기화 (특정 폴더 + 하위)</span>
+                <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-black uppercase tracking-wider">
+                  Folder
+                </span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setIsPrecisionModalOpen(true)}
                 className="w-full py-3.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white rounded-[22px] font-black text-sm md:text-base flex items-center justify-center gap-2.5 transition-all active:scale-95 shadow-lg shadow-indigo-200 group"
               >
@@ -291,6 +306,16 @@ export default function DashboardMain({ onNavigate }: DashboardMainProps) {
             </div>
           </div>
       </div>
+
+      {/* 📂 폴더 미세 동기화 모달 */}
+      <FolderMicroSyncModal
+        isOpen={isFolderMicroSyncOpen}
+        onClose={() => setIsFolderMicroSyncOpen(false)}
+        onSuccess={(msg) => {
+          setSyncStatus('success');
+          setSyncMessage(msg);
+        }}
+      />
 
       {/* 🎯 세밀수정 모달 */}
       <PrecisionSyncModal

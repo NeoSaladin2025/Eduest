@@ -21,7 +21,7 @@ const EXCLUDED_IDS = [
 
 // 헬퍼: 1000개 행 제한 없이 특정 학년의 전체 데이터 수집 (페이지네이션)
 async function fetchAllRowsForGrade(targetGrade: string): Promise<ExamLibraryRow[]> {
-  const allRows: ExamLibraryRow[] = [];
+  const rowMap = new Map<string, ExamLibraryRow>();
   const PAGE_SIZE = 1000;
   let from = 0;
   let hasMore = true;
@@ -32,7 +32,9 @@ async function fetchAllRowsForGrade(targetGrade: string): Promise<ExamLibraryRow
       .select("drive_id, parent_id, name, type, grade, question_image_drive_id")
       .not("drive_id", "in", `(${EXCLUDED_IDS.map(id => `"${id}"`).join(",")})`)
       .range(from, from + PAGE_SIZE - 1)
-      .order("name", { ascending: true });
+      // 고유 키(drive_id) 2차 정렬을 반드시 포함해야 동명이인 파일(0013.html 등)이 페이지 경계에서 누락/중복되지 않음
+      .order("name", { ascending: true })
+      .order("drive_id", { ascending: true });
 
     if (targetGrade && targetGrade !== "ALL") {
       query = query.eq("grade", targetGrade);
@@ -44,7 +46,11 @@ async function fetchAllRowsForGrade(targetGrade: string): Promise<ExamLibraryRow
       break;
     }
 
-    allRows.push(...(data as ExamLibraryRow[]));
+    for (const row of data as ExamLibraryRow[]) {
+      if (!rowMap.has(row.drive_id)) {
+        rowMap.set(row.drive_id, row);
+      }
+    }
 
     if (data.length < PAGE_SIZE) {
       hasMore = false;
@@ -53,13 +59,14 @@ async function fetchAllRowsForGrade(targetGrade: string): Promise<ExamLibraryRow
     }
   }
 
-  return allRows;
+  return Array.from(rowMap.values());
 }
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const grade = searchParams.get("grade") || "중3";
+    const includeGradeRoot = searchParams.get("includeGradeRoot") === "1";
 
     const rows = await fetchAllRowsForGrade(grade);
 
@@ -68,9 +75,10 @@ export async function GET(req: NextRequest) {
 
     // 학생 화면과 동일한 규칙: 학년 이름이 포함된 최상위 폴더가 있으면 그 하위 폴더들을 루트로 노출
     // 예: "중3" 폴더 하위의 "중간", "기말", "개별질문" 등을 바로 보여줌
+    // 단, includeGradeRoot=1 요청 시(폴더 미세 동기화 등) 학년 루트 폴더 자체도 선택할 수 있게 유지
     let displayNodes: ExamLibraryNode[] = tree;
 
-    if (grade !== "ALL") {
+    if (grade !== "ALL" && !includeGradeRoot) {
       const gradeRootFolder = tree.find(node => node.name.includes(grade));
       if (gradeRootFolder && (gradeRootFolder.subFolders.length > 0 || gradeRootFolder.files.length > 0)) {
         displayNodes = [

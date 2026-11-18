@@ -16,10 +16,19 @@ export type ExamLibraryNode = ExamLibraryRow & {
 };
 
 export function buildExamLibraryTree(items: ExamLibraryRow[], excludeTwins: boolean = true): ExamLibraryNode[] {
-  let targetItems = items;
+  // 방어적 중복 제거: 동일 drive_id가 중복 전달돼도 자식 배열에 2번 추가되지 않도록 보호
+  const uniqueMap = new Map<string, ExamLibraryRow>();
+  for (const item of items) {
+    if (item?.drive_id && !uniqueMap.has(item.drive_id)) {
+      uniqueMap.set(item.drive_id, item);
+    }
+  }
+  const dedupedItems = Array.from(uniqueMap.values());
+
+  let targetItems = dedupedItems;
   if (excludeTwins) {
     const twinIds = new Set<string>();
-    items.forEach((item) => {
+    dedupedItems.forEach((item) => {
       if (item.name && item.name.includes('쌍둥이')) {
         twinIds.add(item.drive_id);
       }
@@ -28,7 +37,7 @@ export function buildExamLibraryTree(items: ExamLibraryRow[], excludeTwins: bool
     let added = true;
     while (added) {
       added = false;
-      items.forEach((item) => {
+      dedupedItems.forEach((item) => {
         if (item.parent_id && twinIds.has(item.parent_id) && !twinIds.has(item.drive_id)) {
           twinIds.add(item.drive_id);
           added = true;
@@ -36,7 +45,7 @@ export function buildExamLibraryTree(items: ExamLibraryRow[], excludeTwins: bool
       });
     }
 
-    targetItems = items.filter((item) => !twinIds.has(item.drive_id));
+    targetItems = dedupedItems.filter((item) => !twinIds.has(item.drive_id));
   }
 
   const map: Record<string, ExamLibraryNode> = {};

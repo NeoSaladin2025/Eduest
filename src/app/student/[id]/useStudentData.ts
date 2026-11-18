@@ -178,19 +178,25 @@ export function useStudentData(studentId: string) {
         setLibraryLoading(true);
         const pageSize = 1000;
         let from = 0;
-        const dbLibrary: any[] = [];
+        const dbLibraryMap = new Map<string, any>();
         for (;;) {
           const { data: page, error: libErr } = await supabase
             .from('exam_library')
             .select('*')
+            .order('drive_id', { ascending: true })
             .range(from, from + pageSize - 1);
           if (libErr) throw libErr;
           if (!page?.length) break;
-          dbLibrary.push(...page);
+          for (const row of page) {
+            if (row?.drive_id && !dbLibraryMap.has(row.drive_id)) {
+              dbLibraryMap.set(row.drive_id, row);
+            }
+          }
           if (page.length < pageSize) break;
           from += pageSize;
         }
 
+        const dbLibrary = Array.from(dbLibraryMap.values());
         if (dbLibrary.length > 0) {
           setExamLibrary(buildTree(dbLibrary));
         }
