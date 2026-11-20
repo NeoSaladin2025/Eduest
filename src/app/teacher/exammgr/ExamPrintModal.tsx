@@ -31,7 +31,7 @@ import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
 import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
-import { CIRCLED_NUMBERS } from '@/lib/choiceGenerator';
+import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
 
 interface Student {
   id: string;
@@ -1000,11 +1000,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                   </td>
                   {showAnswerKeyType && (
                     <td className="py-1.5 px-2 border-r border-slate-200 text-slate-600 font-bold text-[11px]">
-                      {q.is_descriptive
+                      {q.is_descriptive || q.question_type === 'DESCRIPTIVE'
                         ? '서술형'
                         : isSub
                         ? '소문항'
-                        : q.question_type === 'MULTIPLE' || /^[1-5]$/.test(String(q.answer || '').trim())
+                        : q.question_type === 'MULTIPLE' || (Array.isArray(q.choices) && q.choices.length === 5) || (!q.question_type && /^[1-5]$/.test(String(q.answer || '').trim()))
                         ? '객관식'
                         : '단답형'}
                     </td>
@@ -1029,7 +1029,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                       </div>
                     ) : (
                       <span>
-                        {renderFormattedAnswer(q.answer || q.raw_answer)}
+                        {((q.question_type === 'MULTIPLE' ||
+                          (Array.isArray(q.choices) && q.choices.length === 5) ||
+                          (!q.question_type && !q.is_descriptive && /^[1-5]$/.test(String(q.answer || '').trim()))) &&
+                          /^[1-5]$/.test(String(q.answer || '').trim()))
+                          ? getCircledSymbol(String(q.answer).trim())
+                          : renderFormattedAnswer(q.answer || q.raw_answer)}
                         {Array.isArray(q.choices) && q.choices.length === 5 && q.original_short_answer && (
                           <span className="ml-1.5 text-[10px] font-bold text-slate-500 font-sans">
                             ({q.original_short_answer})
@@ -3068,9 +3073,9 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                             )}
                           </div>
 
-                          {/* 문제 이미지 */}
+                          {/* 문제 이미지 (flex-1 제거: 주입된 객관식 보기가 문제 바로 아래 밀착되도록 자연 높이 유지) */}
                           {q.image_url ? (
-                            <div className="flex-1 min-h-0 flex items-start justify-center overflow-hidden">
+                            <div className="min-h-0 flex items-start justify-center overflow-hidden">
                               <img
                                 src={q.image_url}
                                 alt={`문제 ${globalQuestionNumber}번`}

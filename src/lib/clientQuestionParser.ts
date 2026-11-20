@@ -152,13 +152,30 @@ export function stripHtmlPreservingMath(snippet: string): string {
 export function detectQuestionType(
   cleanAnswer: string,
   rawAnswer: string,
-  subQuestions: SubQuestionItem[] = []
+  subQuestions: SubQuestionItem[] = [],
+  isMultipleHint: boolean = false
 ): 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE' {
   const target = (cleanAnswer || rawAnswer).trim();
+  const rawTrimmed = (rawAnswer || '').trim();
 
-  // 1. 객관식 1~5 단일 번호 (소문항이 없는 경우)
-  if (subQuestions.length === 0 && /^[1-5]$/.test(target)) {
-    return 'MULTIPLE';
+  // 1. 객관식 판별: 원문자(①~⑤ / ❶~❺) 기반, '[1-5]번', 또는 본문 선지 힌트가 있을 때만 객관식
+  //    (단순 아라비아 숫자 1~5 단답형 정답은 객관식으로 오분류하지 않고 'SHORT'로 유지)
+  if (subQuestions.length === 0) {
+    const rawCircledMatches = rawTrimmed.match(/[①②③④⑤❶❷❸❹❺]/g) || [];
+    const hasSubParens = /\([1-9]\)/.test(rawTrimmed);
+    const hasExplicitCircled =
+      rawCircledMatches.length === 1 &&
+      (/^(?:(?:최종\s*)?정답\s*[:：]?\s*)?[①②③④⑤❶❷❸❹❺]/.test(rawTrimmed) || !hasSubParens);
+    const hasExplicitChoiceWord = /^(?:(?:최종\s*)?정답|답)?\s*[:：]?\s*[1-5]\s*번$/.test(rawTrimmed);
+
+    if (
+      isMultipleHint ||
+      /^[①②③④⑤❶❷❸❹❺]$/.test(target) ||
+      hasExplicitCircled ||
+      hasExplicitChoiceWord
+    ) {
+      return 'MULTIPLE';
+    }
   }
 
   // 2. 소문항이 2개 이상 있는 경우
@@ -316,6 +333,7 @@ export function parseQuestionFromHtmlClient(
   }
 
   let isSingleCircledChoice = false;
+  let isExplicitChoiceNumber = false;
   if (rawAnswer) {
     const circledMatches = rawAnswer.match(/[①②③④⑤❶❷❸❹❺]/g) || [];
     const hasSubParens = /\([1-9]\)/.test(rawAnswer);
@@ -326,18 +344,24 @@ export function parseQuestionFromHtmlClient(
       cleanAnswer = normalizeCircledNumber(circledMatches[0]);
       isSingleCircledChoice = true;
     } else if (circledMatches.length === 0) {
-      // 2) '정답: 3' 또는 '답: 3' 단독 패턴 (분수 3/4, 루트 2√3 등은 제외)
-      const ansLabelMatch = rawAnswer.match(/^(?:(?:최종\s*)?정답|답)\s*[:：]?\s*([1-5])(?:\s*번)?$/);
-      if (ansLabelMatch) {
-        cleanAnswer = ansLabelMatch[1];
+      // 2) '정답: 3번' / '3번' 또는 '정답: 3' 단독 패턴 (분수 3/4, 루트 2√3 등은 제외)
+      const ansWordMatch = rawAnswer.trim().match(/^(?:(?:최종\s*)?정답|답)?\s*[:：]?\s*([1-5])\s*번$/);
+      if (ansWordMatch) {
+        cleanAnswer = ansWordMatch[1];
+        isExplicitChoiceNumber = true;
       } else {
-        // 3) 전체가 1~5 단일 번호인 경우만 객관식
-        const normalized = normalizeCircledNumber(rawAnswer).trim();
-        const numMatch = normalized.match(/^([1-5])(?:\s*번)?$/);
-        if (numMatch) {
-          cleanAnswer = numMatch[1];
+        const ansLabelMatch = rawAnswer.match(/^(?:(?:최종\s*)?정답|답)\s*[:：]?\s*([1-5])$/);
+        if (ansLabelMatch) {
+          cleanAnswer = ansLabelMatch[1];
         } else {
-          cleanAnswer = normalized;
+          // 3) 일반 수식/단답 숫자 정제 (단순 1~5는 원문자가 없으면 단답형 후보로 보존)
+          const normalized = normalizeCircledNumber(rawAnswer).trim();
+          const numMatch = normalized.match(/^([1-5])$/);
+          if (numMatch) {
+            cleanAnswer = numMatch[1];
+          } else {
+            cleanAnswer = normalized;
+          }
         }
       }
     } else {
@@ -346,11 +370,27 @@ export function parseQuestionFromHtmlClient(
     }
   }
 
+  // 본문 HTML(풀이/해설 이전 영역)에 ①~④ 이상 선지 마커가 함께 있고 답이 1~5이면 객관식으로 판별
+  const problemSectionRaw = html.split(/<details|final-answer-box|풀이\s*1단계/i)[0] || '';
+  const problemPlain = problemSectionRaw
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  const hasChoicesInBody =
+    /[①❶]/.test(problemPlain) &&
+    /[②❷]/.test(problemPlain) &&
+    /[③❸]/.test(problemPlain) &&
+    /[④❹]/.test(problemPlain);
+
   const finalAns = cleanAnswer || rawAnswer || '';
   const subQuestions = isSingleCircledChoice ? [] : detectSubQuestions(rawAnswer);
+  const isMultipleHint =
+    isSingleCircledChoice ||
+    isExplicitChoiceNumber ||
+    (hasChoicesInBody && /^[1-5]$/.test(finalAns.trim()));
   const questionType = isSingleCircledChoice
     ? 'MULTIPLE'
-    : detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
+    : detectQuestionType(cleanAnswer, rawAnswer, subQuestions, isMultipleHint);
   const isDescriptive = questionType === 'DESCRIPTIVE';
 
   return {

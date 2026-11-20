@@ -1116,13 +1116,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       const cur = next[qIndex];
       if (!cur) return prev;
       const trimmed = newAnswer.trim();
+      const hasCircledInput = /[①②③④⑤❶❷❸❹❺]/.test(trimmed);
       const circledToNum: Record<string, string> = { '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5', '❶': '1', '❷': '2', '❸': '3', '❹': '4', '❺': '5' };
       const normalizedVal = circledToNum[trimmed] || newAnswer;
-      const isSingleChoiceNum = /^[1-5]$/.test(normalizedVal.trim());
+      const nextType = cur.is_descriptive
+        ? 'DESCRIPTIVE'
+        : hasCircledInput || cur.question_type === 'MULTIPLE' || cur.choices?.length === 5
+        ? 'MULTIPLE'
+        : cur.question_type === 'SHORT'
+        ? 'SHORT'
+        : 'SHORT';
       next[qIndex] = {
         ...cur,
         answer: normalizedVal,
-        question_type: cur.is_descriptive ? 'DESCRIPTIVE' : isSingleChoiceNum ? 'MULTIPLE' : cur.choices?.length === 5 ? 'MULTIPLE' : 'SHORT',
+        question_type: nextType,
       };
       return next;
     });
@@ -2308,11 +2315,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         const rawAns = String(twinItem.raw_answer || twinItem.answer || baseQ.raw_answer || '').trim();
         let ans = String(twinItem.answer || baseQ.answer || '').trim();
         const circledMatches = ans.match(/[①②③④⑤❶❷❸❹❺]/g) || [];
-        if (circledMatches.length === 1 && !/\([1-9]\)/.test(ans)) {
+        const isSingleCircled = circledMatches.length === 1 && !/\([1-9]\)/.test(ans);
+        if (isSingleCircled) {
           ans = normalizeCircledNumber(circledMatches[0]);
         }
         const subQs = detectSubQuestions(rawAns);
-        const qType = detectQuestionType(ans, rawAns, subQs);
+        const qType = detectQuestionType(ans, rawAns, subQs, isSingleCircled);
 
         return {
           ...baseQ,
@@ -5193,7 +5201,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           <span className="font-black text-violet-700">문항 {idx + 1}</span>
                           {Array.isArray(q.choices) && q.choices.length === 5 ? (
                             <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[9px] font-black border border-indigo-200">
-                              ✨ 보기 5개
+                              ✨ 보기 5개{/^[1-5]$/.test(String(q.answer || '').trim()) ? ` · ${CIRCLED_NUMBERS[Number(q.answer) - 1]}` : ''}
                             </span>
                           ) : q.is_descriptive ? (
                             <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-300 flex items-center gap-0.5">
@@ -5201,7 +5209,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             </span>
                           ) : isMultiple ? (
                             <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[9px] font-black">
-                              객관식
+                              객관식{/^[1-5]$/.test(String(q.answer || '').trim()) ? ` · ${CIRCLED_NUMBERS[Number(q.answer) - 1]}` : ''}
                             </span>
                           ) : (
                             <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[9px] font-bold">
@@ -5500,24 +5508,26 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               <>
                                 <div className="flex items-center justify-between mb-1 gap-1">
                                   <label className="text-[10px] font-bold text-slate-500">
-                                    설정 정답 (채점 기준)
+                                    설정 정답 {isMultiple ? '(객관식 번호)' : '(채점 기준)'}
                                   </label>
                                   <div className="flex items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        activeAnswerInputRef.current = answerInputRefs.current[singleKey] || null;
-                                        setOpenMathKeypadKey(prev => (prev === singleKey ? null : singleKey));
-                                      }}
-                                      className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 border transition-colors ${
-                                        isSinglePadOpen
-                                          ? 'bg-indigo-600 text-white border-indigo-600'
-                                          : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
-                                      }`}
-                                      title="추출된 정답 수식 확인 및 수식패드 수정"
-                                    >
-                                      <Calculator size={10} /> 수식패드
-                                    </button>
+                                    {!isMultiple && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          activeAnswerInputRef.current = answerInputRefs.current[singleKey] || null;
+                                          setOpenMathKeypadKey(prev => (prev === singleKey ? null : singleKey));
+                                        }}
+                                        className={`text-[10px] px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5 border transition-colors ${
+                                          isSinglePadOpen
+                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                            : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                                        }`}
+                                        title="추출된 정답 수식 확인 및 수식패드 수정"
+                                      >
+                                        <Calculator size={10} /> 수식패드
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => handleAddSubQuestion(idx)}
@@ -5527,7 +5537,40 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                     </button>
                                   </div>
                                 </div>
-                                {q.answer && q.answer.includes('\n') ? (
+                                {isMultiple ? (
+                                  <div className="space-y-1">
+                                    <div className="grid grid-cols-5 gap-1">
+                                      {CIRCLED_NUMBERS.map((sym, cIdx) => {
+                                        const numStr = String(cIdx + 1);
+                                        const trimmedAns = String(q.answer || '').trim();
+                                        const isActive = trimmedAns === numStr || trimmedAns === sym;
+                                        return (
+                                          <button
+                                            key={numStr}
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleUpdateQuestionAnswer(idx, numStr);
+                                            }}
+                                            className={`py-1.5 rounded-lg font-black text-sm transition-all cursor-pointer border ${
+                                              isActive
+                                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                                : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/60'
+                                            }`}
+                                            title={`정답 ${sym} 선택`}
+                                          >
+                                            {sym}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    {!/^[1-5①②③④⑤]$/.test(String(q.answer || '').trim()) && (
+                                      <div className="text-[10px] text-amber-600 font-bold">
+                                        * 정답 번호(①~⑤)를 선택해 주세요{q.answer ? ` (기존값: ${q.answer})` : ''}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : q.answer && q.answer.includes('\n') ? (
                                   <textarea
                                     ref={el => {
                                       answerInputRefs.current[singleKey] = el;

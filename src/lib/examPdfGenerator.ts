@@ -114,7 +114,9 @@ export async function downloadExamAsPdf(
   // 3. 빠른 정답표 페이지 분할 (2단 컴팩트 레이아웃)
   const allAnswerRows: AnswerRowItem[] = exam.questions.map((q, idx) => {
     const isMultiple =
-      q.question_type === 'MULTIPLE' || (!q.is_descriptive && /^[1-5]$/.test(String(q.answer || '').trim()));
+      q.question_type === 'MULTIPLE' ||
+      (Array.isArray(q.choices) && q.choices.length === 5) ||
+      (!q.question_type && !q.is_descriptive && /^[1-5]$/.test(String(q.answer || '').trim()));
     const rawDisplay = q.answer || q.raw_answer || '-';
     const formattedAns =
       Array.isArray(q.choices) && q.choices.length === 5 && /^[1-5]$/.test(String(q.answer || '').trim())
@@ -127,7 +129,7 @@ export async function downloadExamAsPdf(
       globalIndex: idx + 1,
       q,
       points: q.points || (q.is_descriptive ? 5 : 4),
-      type: q.is_descriptive ? '서술형' : isMultiple ? '객관식' : '단답형',
+      type: q.is_descriptive || q.question_type === 'DESCRIPTIVE' ? '서술형' : isMultiple ? '객관식' : '단답형',
       answer: formattedAns,
     };
   });
@@ -400,8 +402,8 @@ export async function downloadExamAsPdf(
                 }
               </div>
 
-              <!-- 문제 이미지 영역 -->
-              <div style="flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
+              <!-- 문제 이미지 영역 (flex: 1 제거: 주입된 객관식 보기가 문제 바로 아래 밀착되도록 자연 높이 유지) -->
+              <div style="min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
                 ${
                   q.image_url
                     ? `<img src="${q.image_url}" crossOrigin="anonymous" style="width: 100%; height: auto; max-height: ${maxImgHeight}; object-fit: contain; object-position: top;" alt="문제 ${globalNum}번" />`
