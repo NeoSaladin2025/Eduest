@@ -28,6 +28,8 @@ export interface ExtractedQuestionData {
   raw_answer: string;
   answer: string;
   is_descriptive: boolean;
+  question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
+  sub_questions?: Array<{ label: string; answer: string }>;
   solution_drive_id?: string;
   debug_info?: {
     matched_rule: string;
@@ -83,10 +85,12 @@ export default function QuestionDiffModal({
   };
 
   const handleApplyCustom = () => {
+    const trimmed = String(customAnswer || '').trim();
     onApply({
       ...newData,
       answer: customAnswer,
       is_descriptive: customIsDescriptive,
+      question_type: customIsDescriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(trimmed) ? 'MULTIPLE' : 'SHORT'),
     });
     onClose();
   };

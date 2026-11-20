@@ -199,10 +199,21 @@ function checkAnswerMatch(
 
   if (!cUser || cUser === "모름" || cUser === "unknown") return false;
 
-  // 1. 공백 제거 후 완전 일치
+  // 1. 객관식(1~5) 정답이 이미 단일 번호인 경우 raw_answer(예: 원래 단답 "16", "4")와 오매칭되지 않도록 정답 번호만 비교
+  if (isMultipleChoice) {
+    const cleanNum = cCorrect.match(/^([1-5])(?:\s*번)?$/);
+    if (cleanNum) {
+      return cleanNum[1] === cUser;
+    }
+    const rawNumMatch = cRaw.match(/^([1-5])/);
+    if (rawNumMatch && rawNumMatch[1] === cUser) return true;
+    return cUser === cCorrect || cUser === cRaw;
+  }
+
+  // 2. 공백 제거 후 완전 일치
   if (cUser === cCorrect || cUser === cRaw) return true;
 
-  // 2. 스마트 단위 제거 후 핵심 값 비교 (단답형 & 소문항 핵심)
+  // 3. 스마트 단위 제거 후 핵심 값 비교 (단답형 & 소문항 핵심)
   const strippedUser = stripUnitsAndExtras(userAns);
   const strippedCorrect = stripUnitsAndExtras(correctAns);
   const strippedRaw = stripUnitsAndExtras(rawAns);
@@ -211,25 +222,13 @@ function checkAnswerMatch(
     return true;
   }
 
-  // 2-1. 단답형 수식 동치 판정 (인수 순서 교환, 분수/루트/거듭제곱 표기 차이 등)
-  if (!isMultipleChoice) {
-    if (
-      areMathAnswersEquivalent(userAns, correctAns) ||
-      (rawAns && areMathAnswersEquivalent(userAns, rawAns)) ||
-      (strippedUser && strippedCorrect && areMathAnswersEquivalent(strippedUser, strippedCorrect))
-    ) {
-      return true;
-    }
-  }
-
-  // 3. 객관식(1~5) 전용 매칭
-  // 주관식 단답형(예: 12cm)에서 1이 매칭되는 오판정을 막기 위해 isMultipleChoice일 때만 허용
-  if (isMultipleChoice) {
-    const correctNumMatch = cCorrect.match(/^([1-5])/);
-    if (correctNumMatch && correctNumMatch[1] === cUser) return true;
-
-    const rawNumMatch = cRaw.match(/^([1-5])/);
-    if (rawNumMatch && rawNumMatch[1] === cUser) return true;
+  // 3-1. 단답형 수식 동치 판정 (인수 순서 교환, 분수/루트/거듭제곱 표기 차이 등)
+  if (
+    areMathAnswersEquivalent(userAns, correctAns) ||
+    (rawAns && areMathAnswersEquivalent(userAns, rawAns)) ||
+    (strippedUser && strippedCorrect && areMathAnswersEquivalent(strippedUser, strippedCorrect))
+  ) {
+    return true;
   }
 
   return false;
@@ -292,10 +291,12 @@ export async function GET(req: NextRequest) {
           points: q.points,
           is_descriptive: qType === 'DESCRIPTIVE' || !!q.is_descriptive,
           question_type: qType,
+          choices: Array.isArray(q.choices) && q.choices.length > 0 ? q.choices : undefined,
           sub_questions: q.sub_questions ? q.sub_questions.map((sq: any) => ({
             label: sq.label,
             answer: canShowSolution ? sq.answer : undefined,
           })) : undefined,
+          original_short_answer: canShowSolution ? q.original_short_answer : undefined,
           answer: canShowSolution ? q.answer : undefined,
           raw_answer: canShowSolution ? q.raw_answer : undefined,
           solution_drive_id: canShowSolution ? q.solution_drive_id : undefined,

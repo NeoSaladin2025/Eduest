@@ -37,6 +37,8 @@ export interface ExamQuestion {
   twin_round?: string;
   parent_question_id?: string;
   question_html?: string;
+  choices?: string[];
+  original_short_answer?: string;
 }
 
 export interface StudentOverrideConfig {
@@ -262,6 +264,8 @@ export async function POST(req: NextRequest) {
           twin_round: typeof q.twin_round === 'string' ? q.twin_round : undefined,
           parent_question_id: typeof q.parent_question_id === 'string' ? q.parent_question_id : undefined,
           question_html: typeof q.question_html === 'string' ? q.question_html : undefined,
+          choices: Array.isArray(q.choices) && q.choices.length > 0 ? q.choices.map((c: any) => String(c ?? '')) : undefined,
+          original_short_answer: typeof q.original_short_answer === 'string' && q.original_short_answer.trim() ? q.original_short_answer.trim() : undefined,
         };
       }),
       assigned_student_ids: Array.isArray(assigned_student_ids) ? assigned_student_ids : [],
@@ -340,6 +344,8 @@ export async function PUT(req: NextRequest) {
           is_descriptive: derivedType === 'DESCRIPTIVE' || !!q.is_descriptive,
           question_type: derivedType,
           sub_questions: Array.isArray(q.sub_questions) && q.sub_questions.length > 0 ? q.sub_questions : undefined,
+          choices: Array.isArray(q.choices) && q.choices.length > 0 ? q.choices.map((c: any) => String(c ?? '')) : undefined,
+          original_short_answer: typeof q.original_short_answer === 'string' && q.original_short_answer.trim() ? q.original_short_answer.trim() : undefined,
         };
       }) : current.questions,
       assigned_student_ids:

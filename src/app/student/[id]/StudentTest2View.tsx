@@ -41,6 +41,8 @@ import {
   Calculator
 } from 'lucide-react';
 import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
+import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
+import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
@@ -3541,6 +3543,11 @@ export default function StudentTest2View({
             const currentAnswer = userAnswers[question.id] || '';
             const spentSec = questionSpentTimes[question.id] || 0;
             const qType = (question as any).question_type || (question.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(question.answer) ? 'MULTIPLE' : 'SHORT'));
+            const injectedChoices: string[] = Array.isArray((question as any).choices) ? (question as any).choices : [];
+            const hasInjectedChoices = qType === 'MULTIPLE' && injectedChoices.length === 5;
+            const hasLongChoices = hasInjectedChoices && injectedChoices.some((c) => c.trim().length >= 20 || c.includes('\n'));
+            const hasVeryLongChoices = hasInjectedChoices && injectedChoices.some((c) => c.trim().length >= 38 || c.includes('\n'));
+            const useWiderRightPanel = hasInjectedChoices && !hasLongChoices;
             const subLabels = getQuestionSubLabels(question);
             const hasSubQuestions = subLabels.length >= 2;
             const isDirectPaperChecked = currentAnswer === '__DIRECT_PAPER__';
@@ -3555,8 +3562,8 @@ export default function StudentTest2View({
               <div className="w-full max-w-6xl mx-auto flex-1 flex flex-col justify-center py-2">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
                 
-                {/* 좌측/중앙: 문제 이미지 뷰어 */}
-                <div className="lg:col-span-8 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl min-h-[500px] flex flex-col justify-between relative overflow-hidden">
+                {/* 좌측/중앙: 문제 이미지 뷰어 (긴 선지가 있는 문항은 문제 바로 아래에 넓은 보기 카드 배치) */}
+                <div className={`${useWiderRightPanel ? 'lg:col-span-7' : 'lg:col-span-8'} bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl min-h-[500px] flex flex-col justify-between relative overflow-hidden`}>
                   <div className="flex items-center justify-between text-xs font-black text-slate-500 uppercase tracking-widest pb-4">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span>QUESTION {currentQuestionIndex + 1}</span>
@@ -3610,6 +3617,50 @@ export default function StudentTest2View({
                     </div>
                   )}
 
+                  {/* 🌟 긴 문장형/수식 보기가 주입된 문항: 문제 바로 아래 넓은 영역에 5지 선지 표시 (글자 잘림 없음) */}
+                  {hasLongChoices && (
+                    <div className="w-full mt-4 pt-4 border-t border-white/10 space-y-2.5">
+                      <div className="flex items-center justify-between text-[11px] font-black text-indigo-300">
+                        <span className="flex items-center gap-1.5">
+                          <Sparkles size={13} className="text-violet-400" />
+                          <span>객관식 보기 선택 (터치하여 바로 마킹)</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-bold">우측 패널과 실시간 연동</span>
+                      </div>
+                      <div className={`grid gap-2.5 ${hasVeryLongChoices ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+                        {injectedChoices.map((choiceText, cIdx) => {
+                          const num = String(cIdx + 1);
+                          const sym = CIRCLED_NUMBERS[cIdx];
+                          const isSelected = currentAnswer === num || currentAnswer === sym;
+                          return (
+                            <button
+                              key={num}
+                              type="button"
+                              onClick={() => handleAnswerSelect(question.id, num)}
+                              className={`w-full text-left px-4 py-3 rounded-2xl border transition-all cursor-pointer flex items-start gap-3 ${
+                                isSelected
+                                  ? 'bg-violet-600 text-white border-violet-400 shadow-lg shadow-violet-600/40 ring-2 ring-violet-400/70'
+                                  : 'bg-white/[0.04] hover:bg-white/[0.09] text-slate-200 border-white/10'
+                              }`}
+                            >
+                              <span
+                                className={`w-7 h-7 rounded-lg font-black text-sm flex items-center justify-center shrink-0 mt-0.5 ${
+                                  isSelected ? 'bg-white text-violet-700' : 'bg-white/10 text-violet-300'
+                                }`}
+                              >
+                                {sym}
+                              </span>
+                              <ChoiceTextRenderer
+                                text={choiceText}
+                                className={`text-sm font-bold flex-1 min-w-0 ${isSelected ? 'text-white' : 'text-slate-100'}`}
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* 이전 / 다음 문제 이동 버튼 */}
                   <div className="w-full flex items-center justify-between pt-4 mt-auto border-t border-white/10">
                     <button
@@ -3633,7 +3684,7 @@ export default function StudentTest2View({
                 </div>
 
                 {/* 우측: 답안 입력 패널 (객관식 / 단답형 / 서술형 3-Way / 소문항 동적 조절) */}
-                <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl flex flex-col justify-between space-y-6">
+                <div className={`${useWiderRightPanel ? 'lg:col-span-5' : 'lg:col-span-4'} bg-white/5 border border-white/10 rounded-[40px] p-6 md:p-8 backdrop-blur-3xl shadow-3xl flex flex-col justify-between space-y-6`}>
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <h4 className="text-base font-black text-white flex items-center gap-2">
@@ -3648,7 +3699,7 @@ export default function StudentTest2View({
                           : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                       }`}>
                         {qType === 'MULTIPLE'
-                          ? '객관식 문항'
+                          ? (hasInjectedChoices ? '객관식 (보기 제공)' : '객관식 문항')
                           : qType === 'SHORT'
                           ? (hasSubQuestions ? `단답형 (소문항 ${subLabels.length}개)` : '단답형 문항')
                           : '서술형 문항'}
@@ -3656,38 +3707,91 @@ export default function StudentTest2View({
                     </div>
                     <p className="text-xs text-slate-400 font-medium">
                       {qType === 'MULTIPLE'
-                        ? '문제 풀이 후 정답 번호를 선택하세요.'
+                        ? (hasInjectedChoices ? '제공된 보기 중 정답을 선택하세요.' : '문제 풀이 후 정답 번호를 선택하세요.')
                         : qType === 'SHORT'
                         ? '문제 풀이 후 정답을 입력칸에 직접 적으세요.'
                         : '종이 제출, 사진 제출, 또는 직접 입력 중 선택하세요.'}
                     </p>
 
-                    {/* CASE 1: 객관식 문항인 경우 -> 1~5번 버튼만 표시 */}
+                    {/* CASE 1: 객관식 문항 */}
                     {qType === 'MULTIPLE' && (
-                      <div className="mt-8 space-y-3">
+                      <div className="mt-6 space-y-3">
                         <label className="block text-[11px] font-black text-slate-500 uppercase tracking-widest">
-                          객관식 정답 선택
+                          {hasInjectedChoices ? '객관식 보기 선택' : '객관식 정답 선택'}
                         </label>
-                        <div className="grid grid-cols-5 gap-2">
-                          {['1', '2', '3', '4', '5'].map((num, i) => {
-                            const symbols = ['①', '②', '③', '④', '⑤'];
-                            const isSelected = currentAnswer === num || currentAnswer === symbols[i];
-                            return (
-                              <button
-                                key={num}
-                                type="button"
-                                onClick={() => handleAnswerSelect(question.id, num)}
-                                className={`py-4 rounded-2xl font-black text-base transition-all cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
-                                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
-                                }`}
-                              >
-                                {symbols[i]}
-                              </button>
-                            );
-                          })}
-                        </div>
+
+                        {/* 1-A: 짧은 보기(20자 미만)가 주입된 경우 -> 넓어진 우측 패널에 5개 세로 보기 카드 */}
+                        {hasInjectedChoices && !hasLongChoices ? (
+                          <div className="space-y-2">
+                            {injectedChoices.map((choiceText, i) => {
+                              const num = String(i + 1);
+                              const sym = CIRCLED_NUMBERS[i];
+                              const isSelected = currentAnswer === num || currentAnswer === sym;
+                              return (
+                                <button
+                                  key={num}
+                                  type="button"
+                                  onClick={() => handleAnswerSelect(question.id, num)}
+                                  className={`w-full text-left px-3.5 py-3 rounded-2xl font-bold text-sm transition-all cursor-pointer flex items-center gap-3 border ${
+                                    isSelected
+                                      ? 'bg-violet-600 text-white border-violet-400 shadow-lg shadow-violet-600/40 ring-2 ring-violet-400/70'
+                                      : 'bg-white/5 hover:bg-white/10 text-slate-200 border-white/10'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-7 h-7 rounded-lg font-black text-sm flex items-center justify-center shrink-0 ${
+                                      isSelected ? 'bg-white text-violet-700' : 'bg-white/10 text-violet-300'
+                                    }`}
+                                  >
+                                    {sym}
+                                  </span>
+                                  <ChoiceTextRenderer
+                                    text={choiceText}
+                                    className={`flex-1 min-w-0 text-sm font-bold ${isSelected ? 'text-white' : 'text-slate-100'}`}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          /* 1-B: 일반 객관식 OR 긴 보기(좌측 문제 하단에 표시됨) -> 5열 번호 마킹 버튼 */
+                          <>
+                            <div className="grid grid-cols-5 gap-2">
+                              {['1', '2', '3', '4', '5'].map((num, i) => {
+                                const sym = CIRCLED_NUMBERS[i];
+                                const isSelected = currentAnswer === num || currentAnswer === sym;
+                                return (
+                                  <button
+                                    key={num}
+                                    type="button"
+                                    onClick={() => handleAnswerSelect(question.id, num)}
+                                    className={`py-4 rounded-2xl font-black text-base transition-all cursor-pointer ${
+                                      isSelected
+                                        ? 'bg-violet-600 text-white shadow-xl shadow-violet-600/50 scale-105 ring-2 ring-violet-400'
+                                        : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
+                                    }`}
+                                  >
+                                    {sym}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {hasLongChoices && (() => {
+                              const selIdx = ['1', '2', '3', '4', '5'].indexOf(
+                                currentAnswer === '①' ? '1' : currentAnswer === '②' ? '2' : currentAnswer === '③' ? '3' : currentAnswer === '④' ? '4' : currentAnswer === '⑤' ? '5' : currentAnswer
+                              );
+                              if (selIdx < 0) return null;
+                              return (
+                                <div className="p-3 rounded-2xl bg-violet-500/15 border border-violet-400/30 text-xs text-violet-100 space-y-1">
+                                  <div className="text-[10px] font-black text-violet-300">
+                                    선택된 보기 ({CIRCLED_NUMBERS[selIdx]})
+                                  </div>
+                                  <ChoiceTextRenderer text={injectedChoices[selIdx]} className="text-xs font-bold block" />
+                                </div>
+                              );
+                            })()}
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -5272,6 +5376,11 @@ export default function StudentTest2View({
                             <span className="inline-flex items-center gap-1 text-amber-300 text-xs">
                               <Camera size={13} /> 서술형 사진 제출
                             </span>
+                          ) : Array.isArray((q as any).choices) && (q as any).choices.length === 5 && /^[1-5]$/.test(userAns.trim()) ? (
+                            <span className="inline-flex items-start gap-1.5 whitespace-normal break-words">
+                              <span>{getCircledSymbol(userAns)}</span>
+                              <ChoiceTextRenderer text={(q as any).choices[Number(userAns.trim()) - 1]} className="text-xs font-bold" />
+                            </span>
                           ) : (
                             userAns
                           )}
@@ -5284,7 +5393,14 @@ export default function StudentTest2View({
                         <span className={`font-black text-sm ${
                           !canShowSolution ? 'text-slate-500 italic text-xs' : 'text-slate-200'
                         }`}>
-                          {correctAns}
+                          {canShowSolution && Array.isArray((q as any).choices) && (q as any).choices.length === 5 && /^[1-5]$/.test(correctAns.trim()) ? (
+                            <span className="inline-flex items-start gap-1.5 whitespace-normal break-words">
+                              <span>{getCircledSymbol(correctAns)}</span>
+                              <ChoiceTextRenderer text={(q as any).choices[Number(correctAns.trim()) - 1]} className="text-xs font-bold" />
+                            </span>
+                          ) : (
+                            correctAns
+                          )}
                         </span>
                       </div>
                     </div>

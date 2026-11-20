@@ -16,6 +16,8 @@ import {
   Edit3
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
+import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
+import { CIRCLED_NUMBERS } from '@/lib/choiceGenerator';
 
 interface BatchAnswerModalProps {
   isOpen: boolean;
@@ -269,32 +271,60 @@ export default function BatchAnswerModal({
                   <div className="mt-2">
                     {/* 1. 객관식 문항 (1 ~ 5) */}
                     {qType === 'MULTIPLE' && (
-                      <div className="flex items-center gap-2 md:gap-3">
-                        {['1', '2', '3', '4', '5'].map((num) => {
-                          const isSelected = String(currentAns) === num;
-                          return (
-                            <button
-                              key={num}
-                              type="button"
-                              onClick={() => {
-                                const nextVal = isSelected ? '' : num;
-                                handleAnswerChange(q.id, nextVal);
-                                if (nextVal) focusNextQuestion(idx);
-                              }}
-                              className={`w-11 h-11 md:w-12 md:h-12 rounded-2xl font-black text-sm md:text-base transition-all flex items-center justify-center ${
-                                isSelected
-                                  ? 'bg-emerald-500 text-neutral-950 shadow-lg shadow-emerald-500/30 scale-105 ring-2 ring-emerald-300'
-                                  : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10'
-                              }`}
-                            >
-                              {num === '1' ? '①' : num === '2' ? '②' : num === '3' ? '③' : num === '4' ? '④' : '⑤'}
-                            </button>
-                          );
-                        })}
-                        <span className="text-xs text-slate-500 ml-2">
-                          (클릭 또는 번호 선택)
-                        </span>
-                      </div>
+                      Array.isArray((q as any).choices) && (q as any).choices.length === 5 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                          {((q as any).choices as string[]).map((choiceText, cIdx) => {
+                            const num = String(cIdx + 1);
+                            const isSelected = String(currentAns) === num;
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                onClick={() => {
+                                  const nextVal = isSelected ? '' : num;
+                                  handleAnswerChange(q.id, nextVal);
+                                  if (nextVal) focusNextQuestion(idx);
+                                }}
+                                className={`px-3 py-2 rounded-xl text-left text-xs font-bold transition-all flex items-start gap-2 ${
+                                  isSelected
+                                    ? 'bg-emerald-500 text-neutral-950 shadow-md ring-2 ring-emerald-300'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10'
+                                }`}
+                              >
+                                <span className="font-black shrink-0">{CIRCLED_NUMBERS[cIdx]}</span>
+                                <ChoiceTextRenderer text={choiceText} className="text-xs font-bold flex-1 min-w-0" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 md:gap-3">
+                          {['1', '2', '3', '4', '5'].map((num) => {
+                            const isSelected = String(currentAns) === num;
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                onClick={() => {
+                                  const nextVal = isSelected ? '' : num;
+                                  handleAnswerChange(q.id, nextVal);
+                                  if (nextVal) focusNextQuestion(idx);
+                                }}
+                                className={`w-11 h-11 md:w-12 md:h-12 rounded-2xl font-black text-sm md:text-base transition-all flex items-center justify-center ${
+                                  isSelected
+                                    ? 'bg-emerald-500 text-neutral-950 shadow-lg shadow-emerald-500/30 scale-105 ring-2 ring-emerald-300'
+                                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10'
+                                }`}
+                              >
+                                {num === '1' ? '①' : num === '2' ? '②' : num === '3' ? '③' : num === '4' ? '④' : '⑤'}
+                              </button>
+                            );
+                          })}
+                          <span className="text-xs text-slate-500 ml-2">
+                            (클릭 또는 번호 선택)
+                          </span>
+                        </div>
+                      )
                     )}
 
                     {/* 2. 단답형 문항 (단일 또는 (1)(2) 소분항) */}

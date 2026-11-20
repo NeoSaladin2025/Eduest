@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { google } from "googleapis";
 import { cookies } from "next/headers";
 import { verifyAdminToken } from "@/lib/authUtils";
-import { detectSubQuestions, detectQuestionType, normalizeOverlines } from "@/lib/extractQuestionUtils";
+import { normalizeCircledNumber, extractQuestionData as parseQuestionFromHtml } from "@/lib/extractQuestionUtils";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -45,119 +45,6 @@ function getDriveClient() {
     console.error("Google Auth initialization error:", e);
     return null;
   }
-}
-
-// 원형 숫자 정규화
-function normalizeCircledNumber(str: string): string {
-  const circledMap: Record<string, string> = {
-    "①": "1", "②": "2", "③": "3", "④": "4", "⑤": "5",
-    "❶": "1", "❷": "2", "❸": "3", "❹": "4", "❺": "5",
-  };
-  return str.replace(/[①②③④⑤❶❷❸❹❺]/g, (match) => circledMap[match] || match);
-}
-
-// HTML 엔티티 디코딩
-function decodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-}
-
-// HTML 텍스트 정제
-function cleanHtmlContent(rawHtml: string): string {
-  if (!rawHtml) return "";
-  let processed = normalizeOverlines(rawHtml);
-  processed = processed
-    .replace(/<mo[^>]*>([≡=≠≤≥≈~+×÷])<\/mo>/gi, " $1 ")
-    .replace(/<mo[^>]*>([,])<\/mo>/gi, "$1 ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
-    .replace(/<(p|div|li|tr|h[1-6])[^>]*>/gi, "")
-    .replace(/<[^>]+>/g, "");
-  processed = decodeHtmlEntities(processed);
-  processed = normalizeOverlines(processed);
-  const lines = processed
-    .split(/\r?\n/)
-    .map((line) => line.replace(/[ \t]+/g, " ").trim())
-    .filter((line) => line.length > 0);
-  return lines.join("\n");
-}
-
-// HTML에서 정답 및 메타데이터 추출
-function parseQuestionFromHtml(html: string, fallbackFile: { drive_id: string; name: string; question_image_drive_id?: string | null }) {
-  let imageUrl = "";
-
-  const mDataSrc = html.match(/id=["']report-export-problem-src["'][^>]*data-src=["']([^"']+)["']/i)
-                || html.match(/data-src=["']([^"']+)["'][^>]*id=["']report-export-problem-src["']/i);
-  if (mDataSrc && mDataSrc[1].trim()) {
-    imageUrl = mDataSrc[1].trim();
-  }
-
-  if (!imageUrl) {
-    const mImg = html.match(/class=["'][^"']*report-original-problem-img[^"']*["'][^>]*src=["']([^"']+)["']/i);
-    if (mImg && mImg[1].trim()) {
-      imageUrl = mImg[1].trim();
-    }
-  }
-
-  if (!imageUrl && fallbackFile.question_image_drive_id) {
-    imageUrl = `https://lh3.googleusercontent.com/d/${fallbackFile.question_image_drive_id}`;
-  }
-
-  if (!imageUrl) {
-    const driveMatch = html.match(/https?:\/\/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]{25,})/i);
-    if (driveMatch) {
-      imageUrl = driveMatch[0];
-    }
-  }
-
-  let extractedRaw = "";
-  const mAnsSpan = html.match(/<span[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
-  const mAnsDiv = html.match(/<div[^>]*class=["'][^"']*final-answer-text[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-  const mAnsBox = html.match(/<div[^>]*class=["'][^"']*final-answer-box[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
-
-  if (mAnsSpan) {
-    extractedRaw = mAnsSpan[1];
-  } else if (mAnsDiv) {
-    extractedRaw = mAnsDiv[1];
-  } else if (mAnsBox) {
-    extractedRaw = mAnsBox[1].replace(/<[^>]*class=["'][^"']*final-answer-label[^"']*["'][^>]*>[\s\S]*?<\/[a-z0-9]+>/i, "");
-  } else {
-    const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
-    if (mAns2) extractedRaw = mAns2[1];
-  }
-
-  const rawAnswer = cleanHtmlContent(extractedRaw);
-  let cleanAnswer = "";
-  if (rawAnswer) {
-    const normalized = normalizeCircledNumber(rawAnswer);
-    const numMatch = normalized.match(/^([1-5])\b/);
-    if (numMatch) {
-      cleanAnswer = numMatch[1];
-    } else {
-      cleanAnswer = normalized.trim();
-    }
-  }
-
-  const finalAns = cleanAnswer || rawAnswer || "";
-  const subQuestions = detectSubQuestions(rawAnswer);
-  const questionType = detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
-  const isDescriptive = questionType === "DESCRIPTIVE";
-
-  return {
-    imageUrl,
-    rawAnswer: rawAnswer || "정답 정보 없음",
-    answer: finalAns,
-    is_descriptive: isDescriptive,
-    question_type: questionType,
-    sub_questions: subQuestions.length > 0 ? subQuestions : undefined,
-  };
 }
 
 // 헬퍼: DB 시험지 목록 가져오기 / 저장

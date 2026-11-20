@@ -15,6 +15,8 @@ export interface ReviewItem {
   examTitle?: string;
   question_type?: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
   is_descriptive?: boolean;
+  choices?: string[];
+  original_short_answer?: string;
   sub_questions?: { label: string; answer: string }[];
   lastTestedAt?: string;
   lastIsCorrect?: boolean;

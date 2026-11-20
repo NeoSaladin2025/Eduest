@@ -22,6 +22,9 @@ export interface ExtractedQuestionResult {
   is_descriptive: boolean;
   question_type: 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE';
   sub_questions?: SubQuestionItem[];
+  imageSource?: string;
+  matchedRule?: string;
+  rawHtmlSnippet?: string;
 }
 
 // 원형 숫자 기호 변환
@@ -130,6 +133,8 @@ export function stripHtmlPreservingMath(snippet: string): string {
   let processed = convertMathMLInHtml(snippet);
   processed = normalizeOverlines(processed);
   processed = processed
+    .replace(/<mo[^>]*>([≡=≠≤≥≈~+×÷])<\/mo>/gi, ' $1 ')
+    .replace(/<mo[^>]*>([,])<\/mo>/gi, '$1 ')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
     .replace(/<(p|div|li|tr|h[1-6])[^>]*>/gi, '')
@@ -207,6 +212,7 @@ export function parseQuestionFromHtmlClient(
 
   // 1. 문제 이미지 링크 추출
   let imageUrl = '';
+  let imageSource = '이미지 미발견';
 
   // 1-1. report-export-problem-src data-src
   const mDataSrc =
@@ -214,6 +220,7 @@ export function parseQuestionFromHtmlClient(
     html.match(/data-src=["']([^"']+)["'][^>]*id=["']report-export-problem-src["']/i);
   if (mDataSrc && mDataSrc[1].trim()) {
     imageUrl = mDataSrc[1].trim();
+    imageSource = 'report-export-problem-src 태그 (data-src 속성)';
   }
 
   // 1-2. report-original-problem-img src
@@ -221,6 +228,7 @@ export function parseQuestionFromHtmlClient(
     const mImg = html.match(/class=["'][^"']*report-original-problem-img[^"']*["'][^>]*src=["']([^"']+)["']/i);
     if (mImg && mImg[1].trim()) {
       imageUrl = mImg[1].trim();
+      imageSource = 'report-original-problem-img 태그 (src 속성)';
     }
   }
 
@@ -229,12 +237,14 @@ export function parseQuestionFromHtmlClient(
     const mModalImg = html.match(/id=["']report-problem-modal-img["'][^>]*src=["']([^"']+)["']/i);
     if (mModalImg && mModalImg[1].trim() && !mModalImg[1].includes('data:image/gif')) {
       imageUrl = mModalImg[1].trim();
+      imageSource = 'report-problem-modal-img 태그 (src 속성)';
     }
   }
 
   // 1-4. question_image_drive_id 보조 fallback
   if (!imageUrl && fallbackFile?.question_image_drive_id) {
     imageUrl = `https://lh3.googleusercontent.com/d/${fallbackFile.question_image_drive_id}`;
+    imageSource = 'DB 등록된 question_image_drive_id 사용';
   }
 
   // 1-5. HTML 내 Drive ID 추출 시도 (예: lh3.googleusercontent.com/d/{driveId})
@@ -242,6 +252,7 @@ export function parseQuestionFromHtmlClient(
     const driveMatch = html.match(/https?:\/\/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]{25,})/i);
     if (driveMatch) {
       imageUrl = driveMatch[0];
+      imageSource = 'HTML 내부 Google Drive 직접 이미지 링크 매칭';
     }
   }
 
@@ -255,19 +266,15 @@ export function parseQuestionFromHtmlClient(
   // 2. 정답 추출
   let rawAnswer = '';
   let cleanAnswer = '';
-
-  // 2-0. Details summary 참고 정답 패턴
-  const mDetails = html.match(/<summary\b[^>]*>[\s\S]*?정답[\s\S]*?<\/summary>\s*<div\b[^>]*>([\s\S]*?)<\/div>/i);
-  if (mDetails) {
-    rawAnswer = stripHtmlPreservingMath(mDetails[1]);
-  }
+  let matchedRule = '정답 패턴 미발견';
+  let rawHtmlSnippet = '';
 
   // 2-1. final-answer-text 태그 검색 (중첩 태그 안전 추출 + MathML 보존)
-  if (!rawAnswer) {
-    const ansTextInner = extractElementInnerByClass(html, 'final-answer-text');
-    if (ansTextInner) {
-      rawAnswer = stripHtmlPreservingMath(ansTextInner);
-    }
+  const ansTextInner = extractElementInnerByClass(html, 'final-answer-text');
+  if (ansTextInner) {
+    rawAnswer = stripHtmlPreservingMath(ansTextInner);
+    matchedRule = 'class="final-answer-text" 전체 태그 매칭 (MathML 보존)';
+    rawHtmlSnippet = ansTextInner.slice(0, 350);
   }
 
   // 2-2. final-answer-box 박스 전체 검색
@@ -279,25 +286,48 @@ export function parseQuestionFromHtmlClient(
         ''
       );
       rawAnswer = stripHtmlPreservingMath(withoutLabel);
+      matchedRule = 'class="final-answer-box" 컨테이너 매칭';
+      rawHtmlSnippet = ansBoxInner.slice(0, 350);
     }
   }
 
-  // 2-3. 정답 표기 패턴 검색 (최종 정답 : ...)
+  // 2-3. Details summary 참고 정답 패턴
+  if (!rawAnswer) {
+    const mDetails = html.match(/<summary\b[^>]*>[\s\S]*?정답[\s\S]*?<\/summary>\s*<div\b[^>]*>([\s\S]*?)<\/div>/i);
+    if (mDetails) {
+      rawAnswer = stripHtmlPreservingMath(mDetails[1]);
+      matchedRule = '<details> 정답 summary 매칭';
+      rawHtmlSnippet = mDetails[1].slice(0, 350);
+    }
+  }
+
+  // 2-4. 정답 표기 패턴 검색 (최종 정답 : ...)
   if (!rawAnswer) {
     const mAns2 = html.match(/(?:최종\s*정답|정답)\s*[:：]?\s*([^\n<]+)/i);
     if (mAns2) {
       rawAnswer = stripHtmlPreservingMath(mAns2[1]);
+      matchedRule = "텍스트 패턴 '(최종정답/정답):' 매칭";
+      rawHtmlSnippet = mAns2[0].slice(0, 350);
     }
   }
 
+  if (!rawHtmlSnippet) {
+    rawHtmlSnippet = html.slice(0, 250);
+  }
+
+  let isSingleCircledChoice = false;
   if (rawAnswer) {
-    // 1) 원형 기호(①~⑤ 또는 ❶~❺)가 단일 객관식 번호로 포함된 경우 우선 탐색
-    const circledMatch = rawAnswer.match(/[①②③④⑤❶❷❸❹❺]/);
-    if (circledMatch && !/\([1-9]\)/.test(rawAnswer)) {
-      cleanAnswer = normalizeCircledNumber(circledMatch[0]);
-    } else {
+    const circledMatches = rawAnswer.match(/[①②③④⑤❶❷❸❹❺]/g) || [];
+    const hasSubParens = /\([1-9]\)/.test(rawAnswer);
+    const startsWithCircled = /^(?:(?:최종\s*)?정답\s*[:：]?\s*)?[①②③④⑤❶❷❸❹❺]/.test(rawAnswer.trim());
+
+    // 1) 단일 원형 기호(①~⑤ / ❶~❺)가 객관식 번호로 포함된 경우 (뒤에 해설값이 붙어 있어도 객관식 번호만 추출)
+    if (circledMatches.length === 1 && (startsWithCircled || !hasSubParens)) {
+      cleanAnswer = normalizeCircledNumber(circledMatches[0]);
+      isSingleCircledChoice = true;
+    } else if (circledMatches.length === 0) {
       // 2) '정답: 3' 또는 '답: 3' 단독 패턴 (분수 3/4, 루트 2√3 등은 제외)
-      const ansLabelMatch = rawAnswer.match(/^(?:정답|답)\s*[:：]?\s*([1-5])(?:\s*번)?$/);
+      const ansLabelMatch = rawAnswer.match(/^(?:(?:최종\s*)?정답|답)\s*[:：]?\s*([1-5])(?:\s*번)?$/);
       if (ansLabelMatch) {
         cleanAnswer = ansLabelMatch[1];
       } else {
@@ -307,16 +337,20 @@ export function parseQuestionFromHtmlClient(
         if (numMatch) {
           cleanAnswer = numMatch[1];
         } else {
-          // 주관식/수식 답안
           cleanAnswer = normalized;
         }
       }
+    } else {
+      // 원형 숫자가 2개 이상(복수/소문항) 또는 소문항 괄호와 혼재된 경우
+      cleanAnswer = normalizeCircledNumber(rawAnswer).trim();
     }
   }
 
   const finalAns = cleanAnswer || rawAnswer || '';
-  const subQuestions = detectSubQuestions(rawAnswer);
-  const questionType = detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
+  const subQuestions = isSingleCircledChoice ? [] : detectSubQuestions(rawAnswer);
+  const questionType = isSingleCircledChoice
+    ? 'MULTIPLE'
+    : detectQuestionType(cleanAnswer, rawAnswer, subQuestions);
   const isDescriptive = questionType === 'DESCRIPTIVE';
 
   return {
@@ -327,5 +361,8 @@ export function parseQuestionFromHtmlClient(
     is_descriptive: isDescriptive,
     question_type: questionType,
     sub_questions: subQuestions.length > 0 ? subQuestions : undefined,
+    imageSource,
+    matchedRule,
+    rawHtmlSnippet,
   };
 }

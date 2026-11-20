@@ -69,6 +69,9 @@ import BatchAssignModal from './BatchAssignModal';
 import BatchFilterChipModal from './BatchFilterChipModal';
 import ScoreTemplateModal from './ScoreTemplateModal';
 import TreasureDetailModal from './TreasureDetailModal';
+import ExamChoicesEditModal from './ExamChoicesEditModal';
+import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
+import { CIRCLED_NUMBERS, generateChoicesFromShortAnswer } from '@/lib/choiceGenerator';
 import {
   TreasureConfig,
   TreasureTemplate,
@@ -224,6 +227,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [selectedAdjustIndices, setSelectedAdjustIndices] = useState<Set<number>>(new Set());
   // 🌟 [신규] 배점 템플릿 모달 상태
   const [isScoreTemplateModalOpen, setIsScoreTemplateModalOpen] = useState(false);
+  // 🌟 [신규] 생성된 시험지 문항·객관식 보기 편집 모달 상태
+  const [choicesEditExam, setChoicesEditExam] = useState<ExamPaper | null>(null);
   // 🌟 [신규] 특정 문항 유형 하이라이트 상태 ('ALL' | 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE')
   const [highlightQuestionType, setHighlightQuestionType] = useState<'ALL' | 'MULTIPLE' | 'SHORT' | 'DESCRIPTIVE'>('ALL');
 
@@ -1082,12 +1087,22 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     const targetIdx = diffModalInfo.questionIndex;
     setExtractedQuestions(prev => {
       const next = [...prev];
+      const ans = String(appliedData.answer ?? next[targetIdx].answer ?? '').trim();
+      const nextType =
+        appliedData.question_type ||
+        (appliedData.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ans) ? 'MULTIPLE' : 'SHORT'));
       next[targetIdx] = {
         ...next[targetIdx],
         answer: appliedData.answer,
         raw_answer: appliedData.raw_answer || next[targetIdx].raw_answer,
-        is_descriptive: !!appliedData.is_descriptive,
+        is_descriptive: nextType === 'DESCRIPTIVE' || !!appliedData.is_descriptive,
+        question_type: nextType,
+        sub_questions: Array.isArray(appliedData.sub_questions) && appliedData.sub_questions.length > 0
+          ? appliedData.sub_questions
+          : undefined,
         image_url: appliedData.image_url || next[targetIdx].image_url,
+        choices: undefined,
+        original_short_answer: undefined,
       };
       return next;
     });
@@ -1097,10 +1112,92 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const handleUpdateQuestionAnswer = (qIndex: number, newAnswer: string) => {
     setExtractedQuestions(prev => {
       const next = [...prev];
+      const cur = next[qIndex];
+      if (!cur) return prev;
+      const trimmed = newAnswer.trim();
+      const circledToNum: Record<string, string> = { '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5', '❶': '1', '❷': '2', '❸': '3', '❹': '4', '❺': '5' };
+      const normalizedVal = circledToNum[trimmed] || newAnswer;
+      const isSingleChoiceNum = /^[1-5]$/.test(normalizedVal.trim());
       next[qIndex] = {
-        ...next[qIndex],
-        answer: newAnswer,
+        ...cur,
+        answer: normalizedVal,
+        question_type: cur.is_descriptive ? 'DESCRIPTIVE' : isSingleChoiceNum ? 'MULTIPLE' : cur.choices?.length === 5 ? 'MULTIPLE' : 'SHORT',
       };
+      return next;
+    });
+  };
+
+  // ✨ 단답형/서술형 문항 하이브리드 객관식화 (규칙 기반 자동 선지 생성 + 문장형 수동/주입 지원)
+  const handleConvertQuestionToMultiple = (qIndex: number) => {
+    const q = extractedQuestions[qIndex];
+    if (!q) return;
+    if (Array.isArray(q.sub_questions) && q.sub_questions.length >= 2) {
+      alert('소문항이 2개 이상 분할된 문항은 객관식화할 수 없습니다.');
+      return;
+    }
+    const baseAns = (q.original_short_answer || q.answer || '').trim();
+    if (!baseAns) {
+      alert('정답이 비어 있어 객관식 보기를 생성할 수 없습니다.');
+      return;
+    }
+
+    const generated = generateChoicesFromShortAnswer(baseAns);
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      if (generated) {
+        next[qIndex] = {
+          ...q,
+          original_short_answer: q.original_short_answer || q.answer,
+          choices: generated.choices,
+          answer: String(generated.correctIndex),
+          question_type: 'MULTIPLE',
+          is_descriptive: false,
+        };
+      } else {
+        next[qIndex] = {
+          ...q,
+          original_short_answer: q.original_short_answer || q.answer,
+          choices: [baseAns, '', '', '', ''],
+          answer: '1',
+          question_type: 'MULTIPLE',
+          is_descriptive: false,
+        };
+      }
+      return next;
+    });
+
+    if (!generated) {
+      alert('긴 문장형/복합 답안입니다. ①번에 원래 정답을 채웠으니 나머지 오답 보기를 직접 입력하시거나, 시험지 발행 후 마눌에게 선지 주입을 요청해 주세요!');
+    }
+  };
+
+  // 객관식화된 문항을 원래 단답형으로 복구
+  const handleRevertMultipleToShort = (qIndex: number) => {
+    const q = extractedQuestions[qIndex];
+    if (!q) return;
+    const restoredAns = q.original_short_answer || q.answer;
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      next[qIndex] = {
+        ...q,
+        answer: restoredAns,
+        choices: undefined,
+        original_short_answer: undefined,
+        question_type: /^[1-5]$/.test(restoredAns.trim()) ? 'MULTIPLE' : 'SHORT',
+        is_descriptive: false,
+      };
+      return next;
+    });
+  };
+
+  const handleUpdateQuestionChoice = (qIndex: number, choiceIdx: number, value: string) => {
+    setExtractedQuestions(prev => {
+      const next = [...prev];
+      const cur = next[qIndex];
+      if (!cur) return prev;
+      const nextChoices = Array.isArray(cur.choices) ? [...cur.choices] : ['', '', '', '', ''];
+      nextChoices[choiceIdx] = value;
+      next[qIndex] = { ...cur, choices: nextChoices };
       return next;
     });
   };
@@ -1443,6 +1540,19 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     if (!isNoTimeLimit && (!examDuration || examDuration <= 0)) {
       alert('제한 시간을 분 단위로 입력하거나 [제한시간 없음]을 체크해주세요.');
       return;
+    }
+    for (let i = 0; i < extractedQuestions.length; i++) {
+      const q = extractedQuestions[i];
+      if (Array.isArray(q.choices) && q.choices.length > 0) {
+        if (q.choices.length !== 5 || q.choices.some(c => !String(c || '').trim())) {
+          alert(`문항 ${i + 1}의 객관식 보기 ①~⑤를 모두 입력해주세요.`);
+          return;
+        }
+        if (!/^[1-5]$/.test(String(q.answer || '').trim())) {
+          alert(`문항 ${i + 1}의 객관식 정답 번호(1~5)를 선택해주세요.`);
+          return;
+        }
+      }
     }
     if (pointsDiff !== 0) {
       const proceed = confirm(
@@ -3691,6 +3801,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           응시 현황
                         </button>
                         <button
+                          type="button"
+                          onClick={() => setChoicesEditExam(exam)}
+                          className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border border-indigo-200/70"
+                          title="문항 정답 및 객관식 보기 관리/주입 검수"
+                        >
+                          <Sparkles size={14} />
+                          보기 관리
+                        </button>
+                        <button
                           onClick={() => setPrintModalExam(exam)}
                           className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border border-emerald-200/60"
                           title="시험지 인쇄 및 출력 설정"
@@ -5046,13 +5165,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       <div className="flex items-center justify-between gap-1 flex-wrap">
                         <div className="flex items-center gap-1.5">
                           <span className="font-black text-violet-700">문항 {idx + 1}</span>
-                          {q.is_descriptive ? (
+                          {Array.isArray(q.choices) && q.choices.length === 5 ? (
+                            <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[9px] font-black border border-indigo-200">
+                              ✨ 보기 5개
+                            </span>
+                          ) : q.is_descriptive ? (
                             <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-black border border-amber-300 flex items-center gap-0.5">
                               ✍️ 서술형
                             </span>
+                          ) : isMultiple ? (
+                            <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[9px] font-black">
+                              객관식
+                            </span>
                           ) : (
                             <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[9px] font-bold">
-                              단답/객관식
+                              단답형
                             </span>
                           )}
 
@@ -5431,15 +5558,93 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               </>
                             );
                           })()}
-                          <div className="mt-1 text-[9px] text-slate-400">
-                            {q.question_type === 'DESCRIPTIVE' || q.is_descriptive ? (
-                              <span className="text-amber-600 font-bold">
-                                ⏳ 학생 제출 시 [채점 대기] (종이 직접 제출 지원)
-                              </span>
-                            ) : (
-                              <span>⚡ 학생 제출 시 자동 일치 채점됩니다.</span>
+                          <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-slate-400">
+                            <div>
+                              {q.question_type === 'DESCRIPTIVE' || q.is_descriptive ? (
+                                <span className="text-amber-600 font-bold">
+                                  ⏳ 학생 제출 시 [채점 대기] (종이 직접 제출 지원)
+                                </span>
+                              ) : (
+                                <span>⚡ 학생 제출 시 자동 일치 채점됩니다.</span>
+                              )}
+                            </div>
+
+                            {!isMultiple && !(q.sub_questions && q.sub_questions.length >= 2) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleConvertQuestionToMultiple(idx);
+                                }}
+                                className="px-2 py-0.5 rounded-md bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-black text-[10px] flex items-center gap-0.5 shrink-0 cursor-pointer"
+                                title="단답형 정답을 바탕으로 5지 선다형 보기를 생성합니다"
+                              >
+                                <Sparkles size={10} />
+                                <span>객관식화</span>
+                              </button>
                             )}
                           </div>
+
+                          {/* ✨ 하이브리드 객관식화 보기 5개 편집기 */}
+                          {Array.isArray(q.choices) && q.choices.length === 5 && (
+                            <div className="mt-2 p-2.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black text-indigo-800 flex items-center gap-1">
+                                  <Sparkles size={10} />
+                                  <span>주입된 5지 선지</span>
+                                  {q.original_short_answer && (
+                                    <span className="text-[9px] font-bold text-slate-500">(원래: {q.original_short_answer})</span>
+                                  )}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRevertMultipleToShort(idx)}
+                                  className="text-[9px] font-bold text-slate-500 hover:text-rose-600 underline cursor-pointer"
+                                >
+                                  단답형 복구
+                                </button>
+                              </div>
+                              <div className="space-y-1">
+                                {q.choices.map((cText, cIdx) => {
+                                  const numStr = String(cIdx + 1);
+                                  const isAnsChoice = String(q.answer).trim() === numStr;
+                                  return (
+                                    <div key={cIdx} className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateQuestionAnswer(idx, numStr)}
+                                        className={`w-5 h-5 rounded font-black text-[10px] shrink-0 cursor-pointer ${
+                                          isAnsChoice
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-white border border-slate-200 text-slate-500 hover:border-indigo-400'
+                                        }`}
+                                        title="정답 번호로 지정"
+                                      >
+                                        {CIRCLED_NUMBERS[cIdx]}
+                                      </button>
+                                      <input
+                                        type="text"
+                                        value={cText}
+                                        onChange={(e) => handleUpdateQuestionChoice(idx, cIdx, e.target.value)}
+                                        placeholder={`보기 ${CIRCLED_NUMBERS[cIdx]}`}
+                                        className={`flex-1 px-2 py-0.5 rounded border text-[11px] font-bold focus:outline-none ${
+                                          isAnsChoice
+                                            ? 'border-emerald-400 bg-emerald-50/50 text-emerald-950'
+                                            : 'border-slate-200 bg-white text-slate-800'
+                                        }`}
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {q.choices[Number(q.answer) - 1] && (
+                                <div className="text-[10px] text-emerald-700 font-bold flex items-center gap-1 pt-0.5">
+                                  <span>정답 미리보기:</span>
+                                  <ChoiceTextRenderer text={q.choices[Number(q.answer) - 1]} />
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -7609,6 +7814,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         currentQuestionCount={extractedQuestions.length}
         currentPoints={extractedQuestions.map((q) => Number(q.points) || 0)}
         onApplyTemplate={handleApplyScoreTemplate}
+      />
+
+      {/* 🌟 [신규] 생성된 시험지 문항 · 객관식 보기 관리 모달 */}
+      <ExamChoicesEditModal
+        exam={choicesEditExam}
+        onClose={() => setChoicesEditExam(null)}
+        onSaved={(updatedExam) => {
+          setExams((prev) => prev.map((ex) => (ex.id === updatedExam.id ? updatedExam : ex)));
+        }}
+        onPreviewQuestion={(q) => setPreviewQuestion(q)}
       />
 
     </div>

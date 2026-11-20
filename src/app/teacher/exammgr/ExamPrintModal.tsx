@@ -30,6 +30,8 @@ import {
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
 import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
+import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
+import { CIRCLED_NUMBERS } from '@/lib/choiceGenerator';
 
 interface Student {
   id: string;
@@ -3063,6 +3065,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                           ) : (
                             <div className="p-4 border border-dashed border-slate-300 rounded-lg text-center text-xs text-slate-400 my-auto">
                               문제 이미지 없음 ({q.name})
+                            </div>
+                          )}
+
+                          {/* 주입된 5지 선지가 있는 문항은 문제 하단에 ①~⑤ 보기 인쇄 */}
+                          {Array.isArray(q.choices) && q.choices.length === 5 && (
+                            <div
+                              className={`mt-2 pt-1.5 border-t border-slate-200/70 grid gap-x-3 gap-y-1 text-[11px] text-slate-800 ${
+                                q.choices.some((c) => c.trim().length >= 24 || c.includes('\n'))
+                                  ? 'grid-cols-1'
+                                  : 'grid-cols-2'
+                              }`}
+                            >
+                              {q.choices.map((cText, cIdx) => (
+                                <div key={cIdx} className="flex items-start gap-1 leading-snug">
+                                  <span className="font-bold shrink-0">{CIRCLED_NUMBERS[cIdx]}</span>
+                                  <ChoiceTextRenderer text={cText} className="text-[11px] font-medium flex-1 min-w-0" />
+                                </div>
+                              ))}
                             </div>
                           )}
 

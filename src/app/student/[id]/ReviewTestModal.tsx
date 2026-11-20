@@ -497,35 +497,39 @@ export default function ReviewTestModal({
 
     if (!cUser || cUser === '모름' || cUser === 'unknown') return false;
 
-    // 1. 공백 제거 후 완전 일치
-    if (cUser === cCorrect || (cRaw && cUser === cRaw)) return true;
-
-    // 2. 수식 동치 채점 (분수/괄호/제곱근/곱셈 순서 등 대수 동치 지원)
-    if (
-      !isMultipleChoice &&
-      (areMathAnswersEquivalent(userAns, correctAns) ||
-        (rawAns && areMathAnswersEquivalent(userAns, rawAns)))
-    ) {
-      return true;
-    }
-
-    // 3. 스마트 단위 제거 후 핵심 값 비교
-    const strippedUser = stripUnitsAndExtras(userAns);
-    const strippedCorrect = stripUnitsAndExtras(correctAns);
-    const strippedRaw = stripUnitsAndExtras(rawAns);
-
-    if (strippedUser && (strippedUser === strippedCorrect || (strippedRaw && strippedUser === strippedRaw))) {
-      return true;
-    }
-
-    // 4. 객관식(1~5) 전용 매칭
+    // 1. 객관식(1~5) 정답이 단일 번호인 경우 raw_answer(예: 원래 단답 "16")와 오매칭되지 않도록 정답 번호만 비교
     if (isMultipleChoice) {
       const symbolMap: Record<string, string> = {
         '①': '1', '②': '2', '③': '3', '④': '4', '⑤': '5',
       };
       const normUser = symbolMap[userAns.trim()] || userAns.trim();
       const correctNumMatch = cCorrect.match(/^([1-5])(?:\s*번)?$/);
-      if (correctNumMatch && correctNumMatch[1] === normUser) return true;
+      if (correctNumMatch) {
+        return correctNumMatch[1] === normUser;
+      }
+      const rawNumMatch = cRaw.match(/^([1-5])/);
+      if (rawNumMatch && rawNumMatch[1] === normUser) return true;
+      return cUser === cCorrect || (!!cRaw && cUser === cRaw);
+    }
+
+    // 2. 공백 제거 후 완전 일치
+    if (cUser === cCorrect || (cRaw && cUser === cRaw)) return true;
+
+    // 3. 수식 동치 채점 (분수/괄호/제곱근/곱셈 순서 등 대수 동치 지원)
+    if (
+      areMathAnswersEquivalent(userAns, correctAns) ||
+      (rawAns && areMathAnswersEquivalent(userAns, rawAns))
+    ) {
+      return true;
+    }
+
+    // 4. 스마트 단위 제거 후 핵심 값 비교
+    const strippedUser = stripUnitsAndExtras(userAns);
+    const strippedCorrect = stripUnitsAndExtras(correctAns);
+    const strippedRaw = stripUnitsAndExtras(rawAns);
+
+    if (strippedUser && (strippedUser === strippedCorrect || (strippedRaw && strippedUser === strippedRaw))) {
+      return true;
     }
 
     return false;

@@ -26,6 +26,8 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
+import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
+import { getCircledSymbol } from '@/lib/choiceGenerator';
 import {
   calculateInstallmentRoundDuration,
   getInstallmentDeliveredQuestions,
@@ -1876,13 +1878,27 @@ export default function TreasureDetailModal({
                                 isCorrect ? 'text-emerald-600' : isUnknown ? 'text-amber-600' : 'text-rose-600'
                               }`}
                             >
-                              {userAns}
+                              {Array.isArray(q.choices) && q.choices.length === 5 && /^[1-5]$/.test(String(userAns || '').trim()) ? (
+                                <span className="inline-flex items-start gap-1 whitespace-normal break-words text-xs">
+                                  <span>{getCircledSymbol(userAns)}</span>
+                                  <ChoiceTextRenderer text={q.choices[Number(String(userAns).trim()) - 1]} />
+                                </span>
+                              ) : (
+                                userAns
+                              )}
                             </span>
                           </div>
                           <div className="p-2.5 rounded-xl bg-white border border-slate-200">
                             <span className="text-slate-400 block text-[10px] font-bold">실제 정답</span>
                             <span className="font-black text-sm text-slate-800 block mt-0.5">
-                              {correctAns || '(미등록)'}
+                              {Array.isArray(q.choices) && q.choices.length === 5 && /^[1-5]$/.test(String(correctAns || '').trim()) ? (
+                                <span className="inline-flex items-start gap-1 whitespace-normal break-words text-xs">
+                                  <span>{getCircledSymbol(correctAns)}</span>
+                                  <ChoiceTextRenderer text={q.choices[Number(String(correctAns).trim()) - 1]} />
+                                </span>
+                              ) : (
+                                correctAns || '(미등록)'
+                              )}
                             </span>
                           </div>
                         </div>

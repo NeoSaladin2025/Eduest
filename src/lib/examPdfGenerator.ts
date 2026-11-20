@@ -2,6 +2,8 @@
 
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from '@/app/teacher/exammgr/treasureTypes';
+import { renderMixedMathToHtml } from '@/components/ChoiceTextRenderer';
+import { CIRCLED_NUMBERS } from '@/lib/choiceGenerator';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
@@ -380,6 +382,24 @@ export async function downloadExamAsPdf(
                     : `<div style="padding: 24px; text-align: center; color: #94a3b8; font-size: 11px; border: 1px dashed #e2e8f0; border-radius: 6px; width: 100%;">문제 이미지 없음 (${q.name})</div>`
                 }
               </div>
+
+              ${
+                Array.isArray(q.choices) && q.choices.length === 5
+                  ? `<div style="margin-top: 6px; padding-top: 5px; border-top: 1px solid #e2e8f0; display: grid; grid-template-columns: ${
+                      q.choices.some((c) => c.trim().length >= 24 || c.includes('\n')) ? '1fr' : '1fr 1fr'
+                    }; gap: 3px 10px; font-size: 10.5px; color: #1e293b; line-height: 1.4;">
+                      ${q.choices
+                        .map(
+                          (cText, cIdx) =>
+                            `<div style="display: flex; align-items: flex-start; gap: 4px; word-break: break-word;">
+                              <span style="font-weight: 800; flex-shrink: 0;">${CIRCLED_NUMBERS[cIdx]}</span>
+                              <span>${renderMixedMathToHtml(cText)}</span>
+                            </div>`
+                        )
+                        .join('')}
+                    </div>`
+                  : ''
+              }
 
               <!-- 1문항/쪽 전용 풀이 공간 -->
               ${
