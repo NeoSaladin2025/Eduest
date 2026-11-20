@@ -72,6 +72,7 @@ import TreasureDetailModal from './TreasureDetailModal';
 import ExamChoicesEditModal from './ExamChoicesEditModal';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, generateChoicesFromShortAnswer } from '@/lib/choiceGenerator';
+import { detectSubQuestions, detectQuestionType, normalizeCircledNumber } from '@/lib/clientQuestionParser';
 import {
   TreasureConfig,
   TreasureTemplate,
@@ -2297,6 +2298,43 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         examTitle = `[오답 ${nextRound}회차] ${cleanBase}`;
       }
 
+      const buildTwinExamQuestion = (
+        baseQ: ExamQuestion,
+        twinRound: string,
+        twinItem: TwinQuestionItem,
+        id: string,
+        parentQuestionId: string
+      ): ExamQuestion => {
+        const rawAns = String(twinItem.raw_answer || twinItem.answer || baseQ.raw_answer || '').trim();
+        let ans = String(twinItem.answer || baseQ.answer || '').trim();
+        const circledMatches = ans.match(/[①②③④⑤❶❷❸❹❺]/g) || [];
+        if (circledMatches.length === 1 && !/\([1-9]\)/.test(ans)) {
+          ans = normalizeCircledNumber(circledMatches[0]);
+        }
+        const subQs = detectSubQuestions(rawAns);
+        const qType = detectQuestionType(ans, rawAns, subQs);
+
+        return {
+          ...baseQ,
+          id,
+          name: `[${twinRound} 쌍둥이] ${baseQ.name}`,
+          image_url: twinItem.image_url || (twinItem.question_html ? '' : baseQ.image_url),
+          question_html: twinItem.question_html || undefined,
+          answer: ans,
+          raw_answer: rawAns,
+          solution_drive_id: twinItem.solution_drive_id || baseQ.solution_drive_id,
+          question_type: qType,
+          is_descriptive: qType === 'DESCRIPTIVE',
+          sub_questions: subQs.length > 0 ? subQs : undefined,
+          // 원본 문항에 주입되어 있던 객관식 보기가 새 쌍둥이 문제로 잘못 이월되지 않도록 초기화
+          choices: undefined,
+          original_short_answer: undefined,
+          is_twin: true,
+          twin_round: twinRound,
+          parent_question_id: parentQuestionId,
+        };
+      };
+
       if (wrongExamMode === 'twin') {
         finalQuestions = wrongQuestions.map(q => {
           const assignedTwin = getAssignedTwinForQuestion(
@@ -2307,19 +2345,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             twinQuestionOverrides
           );
           if (assignedTwin) {
-            return {
-              ...q,
-              id: `twin_${assignedTwin.item.drive_id}_${Date.now()}`,
-              name: `[${assignedTwin.roundName} 쌍둥이] ${q.name}`,
-              image_url: assignedTwin.item.image_url || (assignedTwin.item.question_html ? '' : q.image_url),
-              question_html: assignedTwin.item.question_html || undefined,
-              answer: assignedTwin.item.answer || q.answer,
-              raw_answer: assignedTwin.item.raw_answer || q.raw_answer,
-              solution_drive_id: assignedTwin.item.solution_drive_id || q.solution_drive_id,
-              is_twin: true,
-              twin_round: assignedTwin.roundName,
-              parent_question_id: q.id,
-            };
+            return buildTwinExamQuestion(
+              q,
+              assignedTwin.roundName,
+              assignedTwin.item,
+              `twin_${assignedTwin.item.drive_id}_${Date.now()}`,
+              q.id
+            );
           }
           // 쌍둥이가 없는 문항은 원본 문제로 출제 (Fallback)
           return q;
@@ -2356,19 +2388,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             const availableTwins = getAllAvailableTwinsForQuestion(origQ);
             const nextVariant = availableTwins.find(at => at.roundName !== mainFinalQ.twin_round);
             if (nextVariant) {
-              recallVariantQuestions[mainFinalQ.id] = {
-                ...origQ,
-                id: `recall_twin_${nextVariant.item.drive_id}_${mainFinalQ.id}`,
-                name: `[${nextVariant.roundName} 쌍둥이] ${origQ.name}`,
-                image_url: nextVariant.item.image_url || (nextVariant.item.question_html ? '' : origQ.image_url),
-                question_html: nextVariant.item.question_html || undefined,
-                answer: nextVariant.item.answer || origQ.answer,
-                raw_answer: nextVariant.item.raw_answer || origQ.raw_answer,
-                solution_drive_id: nextVariant.item.solution_drive_id || origQ.solution_drive_id,
-                is_twin: true,
-                twin_round: nextVariant.roundName,
-                parent_question_id: mainFinalQ.id,
-              };
+              recallVariantQuestions[mainFinalQ.id] = buildTwinExamQuestion(
+                origQ,
+                nextVariant.roundName,
+                nextVariant.item,
+                `recall_twin_${nextVariant.item.drive_id}_${mainFinalQ.id}`,
+                mainFinalQ.id
+              );
             }
           });
         }
