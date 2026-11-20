@@ -227,7 +227,7 @@ async function scanDriveSubtree(
   pathMap.set(rootCtx.driveId, rootCtx.name);
 
   const visited = new Set<string>([rootCtx.driveId]);
-  let queue: Array<{ id: string; grade: string | null; path: string }> = [
+  const queue: Array<{ id: string; grade: string | null; path: string }> = [
     { id: rootCtx.driveId, grade: rootCtx.grade, path: rootCtx.name },
   ];
 
@@ -243,8 +243,6 @@ async function scanDriveSubtree(
         return { node, files, calls };
       })
     );
-
-    const nextQueue: typeof queue = [];
 
     for (const { node, files, calls } of results) {
       driveCallCount += calls;
@@ -285,7 +283,7 @@ async function scanDriveSubtree(
           question_image_drive_id: null,
         });
         scannedFoldersCount++;
-        nextQueue.push({ id: sf.id, grade: nextGrade, path: sfPath });
+        queue.push({ id: sf.id, grade: nextGrade, path: sfPath });
       }
 
       for (const hf of htmlFiles) {
@@ -304,8 +302,6 @@ async function scanDriveSubtree(
         scannedFilesCount++;
       }
     }
-
-    queue = nextQueue;
   }
 
   return {
