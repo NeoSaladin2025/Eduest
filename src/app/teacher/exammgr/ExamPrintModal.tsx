@@ -1000,7 +1000,13 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                   </td>
                   {showAnswerKeyType && (
                     <td className="py-1.5 px-2 border-r border-slate-200 text-slate-600 font-bold text-[11px]">
-                      {q.is_descriptive ? '서술형' : isSub ? '소문항' : '단답/객관'}
+                      {q.is_descriptive
+                        ? '서술형'
+                        : isSub
+                        ? '소문항'
+                        : q.question_type === 'MULTIPLE' || /^[1-5]$/.test(String(q.answer || '').trim())
+                        ? '객관식'
+                        : '단답형'}
                     </td>
                   )}
                   {showAnswerKeyPoints && (
@@ -1022,7 +1028,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                         ))}
                       </div>
                     ) : (
-                      <span>{renderFormattedAnswer(q.answer || q.raw_answer)}</span>
+                      <span>
+                        {renderFormattedAnswer(q.answer || q.raw_answer)}
+                        {Array.isArray(q.choices) && q.choices.length === 5 && q.original_short_answer && (
+                          <span className="ml-1.5 text-[10px] font-bold text-slate-500 font-sans">
+                            ({q.original_short_answer})
+                          </span>
+                        )}
+                      </span>
                     )}
                   </td>
                 </tr>
@@ -1228,6 +1241,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         <html>
           <head>
             <meta charset="utf-8" />
+            <base href="${window.location.origin}/" />
             <title>${exam.title} - 시험지 인쇄</title>
             ${combinedStyles}
             <style>
@@ -3017,11 +3031,20 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                       const formattedFolder = q.folder_name
                         ? (q.folder_name.startsWith('[') ? q.folder_name : `[${q.folder_name}]`)
                         : '';
+                      const hasInjectedChoices = Array.isArray(q.choices) && q.choices.length === 5;
+                      const maxChoiceLen = hasInjectedChoices ? Math.max(...q.choices!.map((c) => c.trim().length)) : 0;
+                      const hasChoiceNewline = hasInjectedChoices && q.choices!.some((c) => c.includes('\n'));
+                      const choiceGridClass =
+                        hasChoiceNewline || maxChoiceLen >= 22
+                          ? 'grid-cols-1'
+                          : maxChoiceLen <= 10
+                          ? 'grid-cols-3'
+                          : 'grid-cols-2';
 
                       return (
                         <div
                           key={q.id}
-                          className="print-avoid-break flex flex-col justify-start relative p-2 rounded-lg border border-transparent hover:border-slate-200 transition-colors"
+                          className="print-avoid-break flex flex-col justify-start h-full min-h-0 overflow-hidden relative p-2 rounded-lg border border-transparent hover:border-slate-200 transition-colors"
                         >
                           {/* 문항 번호 및 출처(폴더) & 배점 헤더 */}
                           <div className="flex items-baseline gap-1.5 mb-1.5 shrink-0 flex-wrap">
@@ -3047,12 +3070,20 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
                           {/* 문제 이미지 */}
                           {q.image_url ? (
-                            <div className="flex-1 flex items-start justify-center overflow-hidden">
+                            <div className="flex-1 min-h-0 flex items-start justify-center overflow-hidden">
                               <img
                                 src={q.image_url}
                                 alt={`문제 ${globalQuestionNumber}번`}
                                 className={`w-full object-contain object-top ${
-                                  questionsPerPage === 1
+                                  hasInjectedChoices
+                                    ? questionsPerPage === 1
+                                      ? 'max-h-[110mm]'
+                                      : questionsPerPage === 2
+                                      ? 'max-h-[82mm]'
+                                      : questionsPerPage === 4
+                                      ? (resolvedMargins.isUltra ? 'max-h-[68mm]' : 'max-h-[62mm]')
+                                      : 'max-h-[42mm]'
+                                    : questionsPerPage === 1
                                     ? (resolvedMargins.isUltra ? 'max-h-[160mm]' : 'max-h-[140mm]')
                                     : questionsPerPage === 2
                                     ? (resolvedMargins.isUltra ? 'max-h-[120mm]' : 'max-h-[105mm]')
@@ -3068,19 +3099,15 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                             </div>
                           )}
 
-                          {/* 주입된 5지 선지가 있는 문항은 문제 하단에 ①~⑤ 보기 인쇄 */}
-                          {Array.isArray(q.choices) && q.choices.length === 5 && (
+                          {/* 주입된 5지 선지가 있는 문항은 문제 하단에 ①~⑤ 보기 인쇄 (shrink-0으로 잘림 방지) */}
+                          {hasInjectedChoices && (
                             <div
-                              className={`mt-2 pt-1.5 border-t border-slate-200/70 grid gap-x-3 gap-y-1 text-[11px] text-slate-800 ${
-                                q.choices.some((c) => c.trim().length >= 24 || c.includes('\n'))
-                                  ? 'grid-cols-1'
-                                  : 'grid-cols-2'
-                              }`}
+                              className={`shrink-0 mt-1.5 pt-1.5 border-t border-slate-200/70 grid gap-x-2.5 gap-y-0.5 text-[10.5px] text-slate-800 ${choiceGridClass}`}
                             >
-                              {q.choices.map((cText, cIdx) => (
+                              {q.choices!.map((cText, cIdx) => (
                                 <div key={cIdx} className="flex items-start gap-1 leading-snug">
                                   <span className="font-bold shrink-0">{CIRCLED_NUMBERS[cIdx]}</span>
-                                  <ChoiceTextRenderer text={cText} className="text-[11px] font-medium flex-1 min-w-0" />
+                                  <ChoiceTextRenderer text={cText} className="text-[10.5px] font-medium flex-1 min-w-0" />
                                 </div>
                               ))}
                             </div>

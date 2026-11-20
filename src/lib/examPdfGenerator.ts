@@ -3,7 +3,7 @@
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from '@/app/teacher/exammgr/treasureTypes';
 import { renderMixedMathToHtml } from '@/components/ChoiceTextRenderer';
-import { CIRCLED_NUMBERS } from '@/lib/choiceGenerator';
+import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
@@ -112,13 +112,25 @@ export async function downloadExamAsPdf(
   }
 
   // 3. 빠른 정답표 페이지 분할 (2단 컴팩트 레이아웃)
-  const allAnswerRows: AnswerRowItem[] = exam.questions.map((q, idx) => ({
-    globalIndex: idx + 1,
-    q,
-    points: q.points || (q.is_descriptive ? 5 : 4),
-    type: q.is_descriptive ? '서술형' : '객관식',
-    answer: q.answer || q.raw_answer || '-',
-  }));
+  const allAnswerRows: AnswerRowItem[] = exam.questions.map((q, idx) => {
+    const isMultiple =
+      q.question_type === 'MULTIPLE' || (!q.is_descriptive && /^[1-5]$/.test(String(q.answer || '').trim()));
+    const rawDisplay = q.answer || q.raw_answer || '-';
+    const formattedAns =
+      Array.isArray(q.choices) && q.choices.length === 5 && /^[1-5]$/.test(String(q.answer || '').trim())
+        ? `${getCircledSymbol(q.answer!)}${q.original_short_answer ? ` (${q.original_short_answer})` : ''}`
+        : isMultiple && /^[1-5]$/.test(String(q.answer || '').trim())
+        ? getCircledSymbol(q.answer!)
+        : rawDisplay;
+
+    return {
+      globalIndex: idx + 1,
+      q,
+      points: q.points || (q.is_descriptive ? 5 : 4),
+      type: q.is_descriptive ? '서술형' : isMultiple ? '객관식' : '단답형',
+      answer: formattedAns,
+    };
+  });
 
   const answerPages: AnswerPageData[] = [];
   if (includeAnswerKey) {
@@ -342,16 +354,30 @@ export async function downloadExamAsPdf(
           const formattedFolder = q.folder_name
             ? (q.folder_name.startsWith('[') ? q.folder_name : `[${q.folder_name}]`)
             : '';
+          const hasInjectedChoices = Array.isArray(q.choices) && q.choices.length === 5;
+          const maxChoiceLen = hasInjectedChoices ? Math.max(...q.choices!.map((c) => c.trim().length)) : 0;
+          const hasChoiceNewline = hasInjectedChoices && q.choices!.some((c) => c.includes('\n'));
+          const choiceGridCols =
+            hasChoiceNewline || maxChoiceLen >= 22
+              ? '1fr'
+              : maxChoiceLen <= 10
+              ? '1fr 1fr 1fr'
+              : '1fr 1fr';
 
-          const maxImgHeight =
-            questionsPerPage === 1
-              ? '560px'
+          const maxImgHeight = hasInjectedChoices
+            ? questionsPerPage === 1
+              ? '400px'
               : questionsPerPage === 2
-              ? '420px'
-              : '350px';
+              ? '290px'
+              : '225px'
+            : questionsPerPage === 1
+            ? '560px'
+            : questionsPerPage === 2
+            ? '420px'
+            : '350px';
 
           return `
-            <div style="display: flex; flex-direction: column; justify-content: flex-start; height: 100%; box-sizing: border-box; overflow: hidden;">
+            <div style="display: flex; flex-direction: column; justify-content: flex-start; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden;">
               <!-- 번호 및 배점 / 출처 태그 헤더 -->
               <div style="display: flex; align-items: baseline; gap: 5px; margin-bottom: 6px; flex-shrink: 0; flex-wrap: wrap;">
                 <span style="font-size: 13px; font-weight: 900; color: #0f172a;">
@@ -375,7 +401,7 @@ export async function downloadExamAsPdf(
               </div>
 
               <!-- 문제 이미지 영역 -->
-              <div style="flex: 1; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
+              <div style="flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden;">
                 ${
                   q.image_url
                     ? `<img src="${q.image_url}" crossOrigin="anonymous" style="width: 100%; height: auto; max-height: ${maxImgHeight}; object-fit: contain; object-position: top;" alt="문제 ${globalNum}번" />`
@@ -384,14 +410,12 @@ export async function downloadExamAsPdf(
               </div>
 
               ${
-                Array.isArray(q.choices) && q.choices.length === 5
-                  ? `<div style="margin-top: 6px; padding-top: 5px; border-top: 1px solid #e2e8f0; display: grid; grid-template-columns: ${
-                      q.choices.some((c) => c.trim().length >= 24 || c.includes('\n')) ? '1fr' : '1fr 1fr'
-                    }; gap: 3px 10px; font-size: 10.5px; color: #1e293b; line-height: 1.4;">
-                      ${q.choices
+                hasInjectedChoices
+                  ? `<div style="flex-shrink: 0; margin-top: 6px; padding-top: 5px; border-top: 1px solid #e2e8f0; display: grid; grid-template-columns: ${choiceGridCols}; gap: 3px 8px; font-size: 10px; color: #1e293b; line-height: 1.38;">
+                      ${q.choices!
                         .map(
                           (cText, cIdx) =>
-                            `<div style="display: flex; align-items: flex-start; gap: 4px; word-break: break-word;">
+                            `<div style="display: flex; align-items: flex-start; gap: 3px; word-break: break-word;">
                               <span style="font-weight: 800; flex-shrink: 0;">${CIRCLED_NUMBERS[cIdx]}</span>
                               <span>${renderMixedMathToHtml(cText)}</span>
                             </div>`
