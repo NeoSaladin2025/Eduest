@@ -42,7 +42,7 @@ export function renderMixedMathToHtml(rawText: string): string {
     return parts
       .map((part) => {
         if (part.startsWith('$') && part.endsWith('$') && part.length >= 2) {
-          return `<span class="inline-block align-middle max-w-full overflow-x-auto">${renderKatexToken(part.slice(1, -1))}</span>`;
+          return `<span class="inline-block align-middle max-w-full overflow-visible">${renderKatexToken(part.slice(1, -1))}</span>`;
         }
         return escapeHtml(part);
       })
@@ -55,7 +55,7 @@ export function renderMixedMathToHtml(rawText: string): string {
   // 2. 한글이 없는 순수 수식/식 표현인 경우 (단순 정수 제외)
   if (!hasKorean) {
     if (hasMathSyntax || /[a-zA-Z]/.test(text)) {
-      return `<span class="inline-block align-middle max-w-full overflow-x-auto">${renderKatexToken(text)}</span>`;
+      return `<span class="inline-block align-middle max-w-full overflow-visible">${renderKatexToken(text)}</span>`;
     }
     return escapeHtml(text);
   }
@@ -74,7 +74,7 @@ export function renderMixedMathToHtml(rawText: string): string {
       result += escapeHtml(text.slice(lastIndex, match.index));
     }
     const token = match[0].trim();
-    result += `<span class="inline-block align-middle max-w-full overflow-x-auto">${renderKatexToken(token)}</span>`;
+    result += `<span class="inline-block align-middle max-w-full overflow-visible">${renderKatexToken(token)}</span>`;
     // Preserve trailing whitespace if regex consumed it
     const trailingSpaces = match[0].length - match[0].trimEnd().length;
     if (trailingSpaces > 0) {
