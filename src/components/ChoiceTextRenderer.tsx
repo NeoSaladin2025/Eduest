@@ -49,12 +49,20 @@ export function renderMixedMathToHtml(rawText: string): string {
       .join('');
   }
 
-  const hasKorean = /[가-힣]/.test(text);
-  const hasMathSyntax = /[\^_√/πθαβγ∞±×·÷≤≥≠≈∠△⊥∥≡°\u0305=\\]|([a-zA-Z]\s*\()/.test(text);
+  // 순수 O/X 표기 문항("(1) ○, (2) ○, (3) ×" 등)은 수식이 아닌 일반 텍스트로 렌더링
+  if (/^[\s(),.·/0-9○×]+$/.test(text) && /[○×]/.test(text)) {
+    return escapeHtml(text);
+  }
 
-  // 2. 한글이 없는 순수 수식/식 표현인 경우 (단순 정수 제외)
+  const hasKorean = /[가-힣]/.test(text);
+  // 소문항 구분자 " / (2)" 등에서의 "/"는 나눗셈 분수로 오인하지 않음
+  const textWithoutSubqSlash = text.replace(/\s+\/\s*(?=\([1-9]\))/g, ' ');
+  const hasMathSyntax = /[\^_√/πθαβγ∞±×·÷≤≥≠≈∠△⊥∥≡°\u0305=\\]|([a-zA-Z]\s*\()/.test(textWithoutSubqSlash);
+
+  // 2. 한글이 없는 순수 수식/식 표현인 경우 (단순 정수·소문항 구분 리스트 제외)
   if (!hasKorean) {
-    if (hasMathSyntax || /[a-zA-Z]/.test(text)) {
+    const hasSubqSeparator = /\([1-9]\)\s*.*\s+\/\s*\([2-9]\)/.test(text);
+    if (!hasSubqSeparator && (hasMathSyntax || /[a-zA-Z]/.test(text))) {
       return `<span class="inline-block align-middle max-w-full overflow-visible">${renderKatexToken(text)}</span>`;
     }
     return escapeHtml(text);
@@ -62,8 +70,9 @@ export function renderMixedMathToHtml(rawText: string): string {
 
   // 3. 한글 + 수식 혼합 문장: 수식 토큰만 분리해 KaTeX 렌더링하고 한글은 자연 줄바꿈 유지
   // 예: "x = 1에서 최솟값 -3, f(x) = 6x - 4일 때 8/3"
+  // 주의: "D / (2)", "FGHIJ / (3)"처럼 소문항 구분자 뒤에 (숫자)가 오는 경우는 분수로 변환하지 않음
   const mathTokenRegex =
-    /([A-Za-z](?:[A-Za-z0-9\u0305]*)\s*\([^()]+\)\s*=\s*[A-Za-z0-9+\-*/^_()√πθαβγ.\s]+(?=[가-힣,;\s]|$)|[A-Za-z0-9\u0305]+(?:\([^()]+\))?\s*[=≤≥≠<>]\s*[+-]?[A-Za-z0-9+\-*/^_()√πθαβγ.]+|[+-]?(?:\([^()]+\)|[A-Za-z0-9√πθαβγ]+)\s*\/\s*(?:\([^()]+\)|[A-Za-z0-9√πθαβγ]+)|[+-]?\d*√(?:\([^()]+\)|\d+)|[A-Za-z0-9)]\s*\^\s*(?:\([^()]+\)|[A-Za-z0-9+-]+)|(?:[A-Za-z]\u0305)+)/g;
+    /([A-Za-z](?:[A-Za-z0-9\u0305]*)\s*\([^()]+\)\s*=\s*[A-Za-z0-9+\-*/^_()√πθαβγ.\s]+(?=[가-힣,;\s]|$)|[A-Za-z0-9\u0305]+(?:\([^()]+\))?\s*[=≤≥≠<>]\s*[+-]?[A-Za-z0-9+\-*/^_()√πθαβγ.]+|[+-]?(?:\([^()]+\)|[A-Za-z0-9√πθαβγ]+)\s*\/(?!\s*\([1-9]\))(?:\s*)(?:\([^()]+\)|[A-Za-z0-9√πθαβγ]+)|[+-]?\d*√(?:\([^()]+\)|\d+)|[A-Za-z0-9)]\s*\^\s*(?:\([^()]+\)|[A-Za-z0-9+-]+)|(?:[A-Za-z]\u0305)+)/g;
 
   let result = '';
   let lastIndex = 0;
