@@ -4,6 +4,7 @@ import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from '@/app/teacher/exammgr/treasureTypes';
 import { renderMixedMathToHtml } from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
+import { extractSourceFileName } from '@/lib/clientQuestionParser';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
@@ -24,6 +25,7 @@ export interface ExamPdfOptions {
   showClassName?: boolean;
   showPoints?: boolean;
   showFolderInfo?: boolean;
+  showSourceFileName?: boolean;
   showCenterDivider?: boolean;
   customStudentName?: string;
   customClassName?: string;
@@ -79,6 +81,7 @@ export async function downloadExamAsPdf(
   const includeAnswerKey = options?.includeAnswerKey !== false;
   const showPoints = options?.showPoints !== false;
   const showFolderInfo = options?.showFolderInfo !== false;
+  const showSourceFileName = options?.showSourceFileName !== false;
   const showCenterDivider = options?.showCenterDivider !== false;
   const onProgress = options?.onProgress || (() => {});
   const marginPreset = options?.marginPreset || 'normal';
@@ -356,6 +359,7 @@ export async function downloadExamAsPdf(
           const formattedFolder = q.folder_name
             ? (q.folder_name.startsWith('[') ? q.folder_name : `[${q.folder_name}]`)
             : '';
+          const sourceFileName = extractSourceFileName(q);
           const hasInjectedChoices = Array.isArray(q.choices) && q.choices.length === 5;
           const maxChoiceLen = hasInjectedChoices ? Math.max(...q.choices!.map((c) => c.trim().length)) : 0;
           const hasChoiceNewline = hasInjectedChoices && q.choices!.some((c) => c.includes('\n'));
@@ -388,6 +392,11 @@ export async function downloadExamAsPdf(
                 ${
                   showFolderInfo && formattedFolder
                     ? `<span style="font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe;">${formattedFolder}</span>`
+                    : ''
+                }
+                ${
+                  showFolderInfo && showSourceFileName && sourceFileName
+                    ? `<span style="font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 4px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;">${sourceFileName}</span>`
                     : ''
                 }
                 ${

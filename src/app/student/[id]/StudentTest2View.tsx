@@ -43,6 +43,7 @@ import {
 import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
+import { extractSourceFileName } from '@/lib/clientQuestionParser';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
@@ -3721,6 +3722,15 @@ export default function StudentTest2View({
                           [{question.folder_name}] {question.question_number ? `${question.question_number}번` : ''}
                         </span>
                       )}
+                      {(() => {
+                        const srcName = extractSourceFileName(question);
+                        if (!srcName) return null;
+                        return (
+                          <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-400/30 font-extrabold text-[11px] normal-case">
+                            {srcName}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     {/* 문제별 소요시간 실시간 표시 */}

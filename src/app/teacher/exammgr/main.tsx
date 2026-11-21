@@ -72,7 +72,7 @@ import TreasureDetailModal from './TreasureDetailModal';
 import ExamChoicesEditModal from './ExamChoicesEditModal';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, generateChoicesFromShortAnswer } from '@/lib/choiceGenerator';
-import { detectSubQuestions, detectQuestionType, normalizeCircledNumber } from '@/lib/clientQuestionParser';
+import { detectSubQuestions, detectQuestionType, normalizeCircledNumber, extractSourceFileName } from '@/lib/clientQuestionParser';
 import {
   TreasureConfig,
   TreasureTemplate,
@@ -5554,6 +5554,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               {q.folder_name}
                             </span>
                           )}
+                          {extractSourceFileName(q) && (
+                            <span className="px-1.5 py-0.2 bg-amber-50 text-amber-800 border border-amber-200 rounded text-[9px] font-bold shrink-0">
+                              {extractSourceFileName(q)}
+                            </span>
+                          )}
                           {q.question_number && (
                             <span className="px-1 py-0.2 bg-violet-100 text-violet-800 rounded text-[9px] font-bold shrink-0">
                               {q.question_number}번
@@ -8066,6 +8071,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             <span className="w-5 h-5 rounded-md bg-slate-200 text-slate-700 font-black text-[10px] flex items-center justify-center shrink-0">
                               {idx + 1}
                             </span>
+                            {q.folder_name && (
+                              <span className="px-1.5 py-0.2 bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold rounded text-[10px] shrink-0">
+                                {q.folder_name}
+                              </span>
+                            )}
+                            {extractSourceFileName(q) && (
+                              <span className="px-1.5 py-0.2 bg-amber-50 text-amber-800 border border-amber-200 font-bold rounded text-[10px] shrink-0">
+                                {extractSourceFileName(q)}
+                              </span>
+                            )}
                             {qNum && (
                               <span className="px-1.5 py-0.2 bg-violet-100 text-violet-700 font-bold rounded text-[10px] shrink-0">
                                 {qNum}번

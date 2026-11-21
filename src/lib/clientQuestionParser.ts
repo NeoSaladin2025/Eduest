@@ -406,3 +406,28 @@ export function parseQuestionFromHtmlClient(
     rawHtmlSnippet,
   };
 }
+
+/**
+ * 문항의 원본 파일명에서 폴더 경로·쌍둥이 접두사·확장자를 제거한 순수 파일명만 추출합니다.
+ * 예: "98-8.HTML" -> "98-8", "[1차 쌍둥이] 101-2.html" -> "101-2"
+ */
+export function extractSourceFileName(
+  q?: { name?: string | null; display_name?: string | null } | null
+): string {
+  const raw = (q?.name || q?.display_name || '').trim();
+  if (!raw) return '';
+
+  // 쌍둥이/오답/보물 접두사 제거
+  let cleaned = raw;
+  let prev = '';
+  while (prev !== cleaned) {
+    prev = cleaned;
+    cleaned = cleaned.replace(/^\[[^\]]*(?:쌍둥이|오답|보물)[^\]]*\]\s*/i, '').trim();
+  }
+
+  // 경로 구분자가 포함된 경우 파일명 부분만 취함
+  const base = (cleaned.split(/[\\/]/).pop() || cleaned).trim();
+
+  // 확장자 제거 (대소문자 무관)
+  return base.replace(/\.(?:html?|png|jpe?g|webp|gif|svg|pdf)$/i, '').trim();
+}

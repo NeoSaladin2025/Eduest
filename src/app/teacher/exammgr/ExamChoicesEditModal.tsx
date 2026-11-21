@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Sparkles, RotateCcw, Check, Loader2, Eye } from 'lucide-react';
 import type { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { CIRCLED_NUMBERS, generateChoicesFromShortAnswer } from '@/lib/choiceGenerator';
+import { extractSourceFileName } from '@/lib/clientQuestionParser';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 
 interface ExamChoicesEditModalProps {
@@ -179,10 +180,20 @@ export default function ExamChoicesEditModal({
             return (
               <div key={q.id || idx} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 shadow-2xs">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="px-2.5 py-0.5 rounded-lg bg-violet-100 text-violet-800 font-black text-xs">
                       {idx + 1}번
                     </span>
+                    {q.folder_name && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold text-[11px]">
+                        {q.folder_name}
+                      </span>
+                    )}
+                    {extractSourceFileName(q) && (
+                      <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-bold text-[11px]">
+                        {extractSourceFileName(q)}
+                      </span>
+                    )}
                     <span className="text-xs font-bold text-slate-700">{q.name}</span>
                     <span
                       className={`px-2 py-0.5 rounded-md text-[10px] font-black ${

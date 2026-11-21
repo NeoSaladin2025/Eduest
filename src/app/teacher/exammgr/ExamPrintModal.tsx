@@ -32,6 +32,7 @@ import { parseExamRoundAndBaseTitle } from './treasureTypes';
 import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
+import { extractSourceFileName } from '@/lib/clientQuestionParser';
 
 interface Student {
   id: string;
@@ -113,6 +114,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   const [columnFlowDirection, setColumnFlowDirection] = useState<'vertical' | 'horizontal'>('vertical'); // 디폴트: 세로 우선 (N자형 한국 표준)
   const [showCenterDivider, setShowCenterDivider] = useState(true); // 디폴트: ON (가운데 기준선)
   const [showFolderInfo, setShowFolderInfo] = useState(true); // 디폴트: ON (문제 폴더 정보 [5.1] 표기)
+  const [showSourceFileName, setShowSourceFileName] = useState(true); // 디폴트: ON (원본 파일명 98-8 함께 표기)
 
   // 📖 양면 인쇄 넘김 방향 (긴 가장자리 책넘김 vs 짧은 가장자리 위로넘김)
   const [duplexBinding, setDuplexBinding] = useState<DuplexBindingType>('long'); // 디폴트: 긴 가장자리 (책 넘김★)
@@ -323,6 +325,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         setShowFolderInfo(savedFolderInfo === 'true');
       }
 
+      const savedSourceFileName = localStorage.getItem('eduest_print_show_source_filename');
+      if (savedSourceFileName !== null) {
+        setShowSourceFileName(savedSourceFileName === 'true');
+      }
+
       // 7. 양면 인쇄 넘김 방향 복원 (디폴트: 긴 가장자리 long)
       const savedDuplex = localStorage.getItem('eduest_print_duplex_binding');
       if (savedDuplex === 'long' || savedDuplex === 'short') {
@@ -475,6 +482,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   const handleToggleShowFolderInfo = (checked: boolean) => {
     setShowFolderInfo(checked);
     localStorage.setItem('eduest_print_show_folder_info', String(checked));
+  };
+
+  const handleToggleShowSourceFileName = (checked: boolean) => {
+    setShowSourceFileName(checked);
+    localStorage.setItem('eduest_print_show_source_filename', String(checked));
   };
 
   const handleToggleAcademyName = (enabled: boolean) => {
@@ -1187,6 +1199,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         showClassName,
         showPoints,
         showFolderInfo,
+        showSourceFileName,
         showCenterDivider,
         includeAnswerKey,
         selectedPages: Array.from(effectiveSelectedPages),
@@ -2525,6 +2538,21 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                 </span>
               </label>
 
+              {showFolderInfo && (
+                <label className="flex items-center gap-2 text-[11.5px] text-slate-300 cursor-pointer pl-6">
+                  <input
+                    type="checkbox"
+                    checked={showSourceFileName}
+                    onChange={e => handleToggleShowSourceFileName(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded-sm text-amber-500 accent-amber-500 bg-slate-800 border-slate-700 cursor-pointer"
+                  />
+                  <span className="flex items-center gap-1.5 flex-wrap">
+                    <span>원본 파일명 함께 표시</span>
+                    <span className="text-[10px] text-amber-300 font-bold bg-amber-500/15 border border-amber-400/30 px-1.5 py-0.2 rounded">예: 98-8</span>
+                  </span>
+                </label>
+              )}
+
               {columns === 2 && (
                 <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
                   <input
@@ -3036,6 +3064,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                       const formattedFolder = q.folder_name
                         ? (q.folder_name.startsWith('[') ? q.folder_name : `[${q.folder_name}]`)
                         : '';
+                      const sourceFileName = extractSourceFileName(q);
                       const hasInjectedChoices = Array.isArray(q.choices) && q.choices.length === 5;
                       const maxChoiceLen = hasInjectedChoices ? Math.max(...q.choices!.map((c) => c.trim().length)) : 0;
                       const hasChoiceNewline = hasInjectedChoices && q.choices!.some((c) => c.includes('\n'));
@@ -3059,6 +3088,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                             {showFolderInfo && formattedFolder && (
                               <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 print:border-slate-300 print:bg-slate-100 print:text-slate-600">
                                 {formattedFolder}
+                              </span>
+                            )}
+                            {showFolderInfo && showSourceFileName && sourceFileName && (
+                              <span className="text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-amber-50 text-amber-800 border border-amber-300 print:border-slate-300 print:bg-slate-100 print:text-slate-700">
+                                {sourceFileName}
                               </span>
                             )}
                             {showPoints && (
