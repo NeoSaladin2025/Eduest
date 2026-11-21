@@ -11,6 +11,7 @@ export interface InstallmentSetPlan {
   question_ids: string[]; // 해당 세트의 핵심 문항 ID 목록
   rounds: number; // 이 세트에 지정된 바퀴수 (개별 설정 가능)
   recall_schedule?: string[][]; // recall_schedule[roundIdx] = 해당 바퀴(1..rounds)에 투입될 리콜 원본 문항 ID 배열
+  start_duration_min?: number; // 묶음(세트)별 1바퀴 시작 시간(분) 수동 오버라이드
   manual_round_durations?: number[]; // 바퀴별 수동 지정 제한시간(분), 0-indexed (round 1 = index 0)
 }
 
@@ -288,6 +289,7 @@ export function buildInstallmentPlan(
     setRoundsOverrides?: Record<number, number>;
     recallMode: InstallmentRecallMode;
     recallPoolCount?: number;
+    setStartDurations?: Record<number, number>;
     setManualDurations?: Record<number, number[]>;
   }
 ): InstallmentSetPlan[] {
@@ -355,11 +357,16 @@ export function buildInstallmentPlan(
           })
         : undefined;
 
+    const rawStart = options.setStartDurations?.[setIdx];
+    const startDurationMin =
+      typeof rawStart === 'number' && rawStart > 0 ? Math.max(1, Math.round(rawStart)) : undefined;
+
     return {
       set_index: setIdx,
       question_ids: chunkQIds,
       rounds,
       recall_schedule: recallSchedule,
+      ...(startDurationMin !== undefined ? { start_duration_min: startDurationMin } : {}),
       ...(manualRoundDurations && manualRoundDurations.some((v) => v > 0)
         ? { manual_round_durations: manualRoundDurations }
         : {}),
@@ -507,19 +514,21 @@ export function calculateInstallmentRoundDuration(
     totalExamQuestionsCount,
     activeQuestionsCount
   );
+  const setPlan = typeof setIndex === 'number' ? cfg.installment?.sets?.[setIndex] : undefined;
+  const effectiveBaseMin =
+    typeof setPlan?.start_duration_min === 'number' && setPlan.start_duration_min > 0
+      ? Math.max(1, Math.round(setPlan.start_duration_min))
+      : scaledBaseMin;
 
   // 세트별 개별 바퀴 수동 입력값이 있으면 최우선 적용
-  const setManual =
-    typeof setIndex === 'number'
-      ? cfg.installment?.sets?.[setIndex]?.manual_round_durations
-      : undefined;
+  const setManual = setPlan?.manual_round_durations;
   if (cfg.time_attack_mode === 'manual' && Array.isArray(setManual) && setManual.length >= setRound) {
     const custom = setManual[Math.max(0, setRound - 1)];
     if (typeof custom === 'number' && custom > 0) return Math.max(1, Math.round(custom));
   }
 
   return calculateRoundDuration(
-    scaledBaseMin,
+    effectiveBaseMin,
     setRound,
     cfg.time_attack_mode || 'fixed',
     cfg.percent_reduction || 0,

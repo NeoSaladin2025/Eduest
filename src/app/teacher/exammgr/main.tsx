@@ -349,6 +349,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [installmentChunkSize, setInstallmentChunkSize] = useState<number>(5); // 디폴트 5문항 분할
   const [installmentDefaultRounds, setInstallmentDefaultRounds] = useState<number>(5); // 디폴트 5바퀴
   const [installmentSetRounds, setInstallmentSetRounds] = useState<Record<number, number>>({}); // 세트별 개별 바퀴수
+  const [installmentSetStartDurations, setInstallmentSetStartDurations] = useState<Record<number, number>>({}); // 세트별 1바퀴 시작 시간(분) 수동 지정
+  const [installmentUniformStartInput, setInstallmentUniformStartInput] = useState<number>(15); // 전 묶음 동일 시작시간 빠른 적용 입력
+  const [installmentRecallBonusMin, setInstallmentRecallBonusMin] = useState<number>(3); // 리콜 1문항당 가산 분
   const [installmentManualSetDurations, setInstallmentManualSetDurations] = useState<Record<number, number[]>>({}); // 세트·바퀴별 수동 시간(분)
   const [installmentRecallMode, setInstallmentRecallMode] = useState<InstallmentRecallMode>('per_set'); // 디폴트 A안
   const [installmentRecallPoolCount, setInstallmentRecallPoolCount] = useState<number>(1);
@@ -370,6 +373,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       setInstallmentChunkSize(tpl.installment_preset.chunk_size);
       setInstallmentDefaultRounds(tpl.installment_preset.default_rounds_per_set);
       setInstallmentSetRounds({});
+      setInstallmentSetStartDurations({});
       setInstallmentManualSetDurations({});
       setInstallmentRecallMode(tpl.installment_preset.recall_mode);
       setInstallmentRecallPoolCount(tpl.installment_preset.recall_pool_count || 1);
@@ -396,6 +400,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         activeCount: number;
         setRounds: number;
         scaledBaseMin: number;
+        effectiveStartMin: number;
+        isPinnedStart: boolean;
         roundDurations: number[];
         setTotalMin: number;
       }>, totalCourseRounds: 0, totalCourseMinutes: 0 };
@@ -407,7 +413,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     let totalCourseRounds = 0;
     let totalCourseMinutes = 0;
 
-    const sets = Array.from({ length: numSets }, (_, sIdx) => {
+    // 먼저 세트별 기본/시작시간 메타 구성
+    const metaSets = Array.from({ length: numSets }, (_, sIdx) => {
       const startNum = sIdx * safeChunk + 1;
       const endNum = Math.min((sIdx + 1) * safeChunk, totalQ);
       const coreCount = endNum - startNum + 1;
@@ -420,35 +427,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       const activeCount = coreCount + recallCount;
       const setRounds = Math.max(1, installmentSetRounds[sIdx] ?? installmentDefaultRounds);
       const scaledBaseMin = getInstallmentScaledBaseMin(baseMin, totalQ, activeCount);
-
-      const roundDurations = Array.from({ length: setRounds }, (_, rIdx) => {
-        const r = rIdx + 1;
-        return calculateInstallmentRoundDuration(
-          baseMin,
-          totalQ,
-          activeCount,
-          r,
-          {
-            time_attack_mode: treasureTimeMode,
-            percent_reduction: treasurePercentReduction,
-            manual_durations: treasureManualDurations,
-            variable_reductions: treasureVariableReductions,
-            installment: {
-              sets: Array.from({ length: numSets }, (__, idx2) => ({
-                set_index: idx2,
-                question_ids: [],
-                rounds: Math.max(1, installmentSetRounds[idx2] ?? installmentDefaultRounds),
-                manual_round_durations: installmentManualSetDurations[idx2],
-              })),
-            },
-          },
-          sIdx
-        );
-      });
-
-      const setTotalMin = roundDurations.reduce((acc, d) => acc + d, 0);
-      totalCourseRounds += setRounds;
-      totalCourseMinutes += setTotalMin;
+      const customStart = installmentSetStartDurations[sIdx];
+      const isPinnedStart = baseMin > 0 && typeof customStart === 'number' && customStart > 0;
+      const effectiveStartMin = baseMin <= 0 ? 0 : isPinnedStart ? Math.max(1, Math.round(customStart)) : scaledBaseMin;
       cumulativePrevQ += coreCount;
 
       return {
@@ -460,6 +441,44 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         activeCount,
         setRounds,
         scaledBaseMin,
+        effectiveStartMin,
+        isPinnedStart,
+      };
+    });
+
+    const virtualPlanSets = metaSets.map(m => ({
+      set_index: m.setIndex,
+      question_ids: [] as string[],
+      rounds: m.setRounds,
+      start_duration_min: m.isPinnedStart ? m.effectiveStartMin : undefined,
+      manual_round_durations: installmentManualSetDurations[m.setIndex],
+    }));
+
+    const sets = metaSets.map((m) => {
+      const roundDurations = Array.from({ length: m.setRounds }, (_, rIdx) => {
+        const r = rIdx + 1;
+        return calculateInstallmentRoundDuration(
+          baseMin,
+          totalQ,
+          m.activeCount,
+          r,
+          {
+            time_attack_mode: treasureTimeMode,
+            percent_reduction: treasurePercentReduction,
+            manual_durations: treasureManualDurations,
+            variable_reductions: treasureVariableReductions,
+            installment: { sets: virtualPlanSets },
+          },
+          m.setIndex
+        );
+      });
+
+      const setTotalMin = roundDurations.reduce((acc, d) => acc + d, 0);
+      totalCourseRounds += m.setRounds;
+      totalCourseMinutes += setTotalMin;
+
+      return {
+        ...m,
         roundDurations,
         setTotalMin,
       };
@@ -471,6 +490,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     installmentChunkSize,
     installmentDefaultRounds,
     installmentSetRounds,
+    installmentSetStartDurations,
     installmentRecallMode,
     installmentRecallPoolCount,
     wrongExamDurationMode,
@@ -483,7 +503,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   ]);
 
   /**
-   * 상단 기준시간/감소율 기반으로 수동 입력값(일괄·할부)을 채우는 헬퍼
+   * 상단 기준시간/묶음별 시작시간 & 감소율 기반으로 수동 입력값(일괄·할부)을 채우는 헬퍼
    */
   const populateManualDurationsFromBase = (applyPercentDecay: boolean) => {
     const baseMin = Math.max(1, wrongExamCustomMinutes);
@@ -500,7 +520,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     );
     setTreasureManualDurations(nextBatch);
 
-    // 2) 할부 세트별 바퀴 배열 채우기
+    // 2) 할부 세트별 바퀴 배열 채우기 (묶음별 시작시간 반영)
     if (totalQ > 0) {
       const nextInst: Record<number, number[]> = {};
       installmentPreview.sets.forEach((s) => {
@@ -513,7 +533,16 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             {
               time_attack_mode: applyPercentDecay ? 'percent' : 'fixed',
               percent_reduction: treasurePercentReduction,
-            }
+              installment: {
+                sets: installmentPreview.sets.map(ms => ({
+                  set_index: ms.setIndex,
+                  question_ids: [],
+                  rounds: ms.setRounds,
+                  start_duration_min: ms.effectiveStartMin > 0 ? ms.effectiveStartMin : undefined,
+                })),
+              },
+            },
+            s.setIndex
           )
         );
       });
@@ -2408,6 +2437,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setWrongExamRemindPopup(false);
     setChangingTwinQuestionId(null);
     setInstallmentSetRounds({});
+    setInstallmentSetStartDurations({});
+    setInstallmentUniformStartInput(Math.max(5, Math.min(60, Math.round((recommendedMin * Math.min(installmentChunkSize, wrongQuestions.length)) / Math.max(1, wrongQuestions.length)))));
     setInstallmentManualSetDurations({});
 
     // 선별 템플릿에서 생성 설정 연동 옵션이 켜져 있으면 해당 생성 템플릿 자동 적용
@@ -2535,6 +2566,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             setRoundsOverrides: installmentSetRounds,
             recallMode: installmentRecallMode,
             recallPoolCount: installmentRecallPoolCount,
+            setStartDurations: finalDuration > 0 ? installmentSetStartDurations : undefined,
             setManualDurations: resolvedSetManualMap,
           }
         );
@@ -7187,6 +7219,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   onClick={() => {
                                     setInstallmentChunkSize(sz);
                                     setInstallmentSetRounds({});
+                                    setInstallmentSetStartDurations({});
                                     setInstallmentManualSetDurations({});
                                   }}
                                   className={`px-2 py-1 rounded text-[11px] font-black cursor-pointer ${
@@ -7207,6 +7240,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   const v = Math.max(1, parseInt(e.target.value, 10) || 5);
                                   setInstallmentChunkSize(v);
                                   setInstallmentSetRounds({});
+                                  setInstallmentSetStartDurations({});
                                   setInstallmentManualSetDurations({});
                                 }}
                                 className="w-12 px-1.5 py-1 rounded border border-amber-300 text-center text-xs font-black bg-white ml-auto"
@@ -7380,16 +7414,51 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           </div>
                         </div>
 
-                        {/* 2-C. 실시간 세트 분할 미리보기 & 세트별 개별 바퀴수 / 수동 시간 조정 */}
+                        {/* 2-C. 실시간 세트 분할 미리보기 & 세트별 개별 바퀴수 / 시작시간 / 수동 시간 조정 */}
                         {(() => {
                           const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
                           const isManualActive = treasureTimeMode === 'manual' && baseMin > 0;
+                          const hasAnyPinnedStart = installmentPreview.sets.some(s => s.isPinnedStart);
+
+                          const updateSetStartDuration = (setIdx: number, nextMin: number) => {
+                            const clamped = Math.max(1, Math.min(300, Math.round(nextMin)));
+                            setInstallmentSetStartDurations(prev => ({ ...prev, [setIdx]: clamped }));
+                            if (treasureTimeMode === 'manual') {
+                              setInstallmentManualSetDurations(prev => {
+                                if (!(setIdx in prev)) return prev;
+                                const copy = { ...prev };
+                                delete copy[setIdx];
+                                return copy;
+                              });
+                            }
+                          };
+
+                          const applyUniformStartToAllSets = (targetMin: number) => {
+                            const clamped = Math.max(1, Math.min(300, Math.round(targetMin)));
+                            const nextMap: Record<number, number> = {};
+                            installmentPreview.sets.forEach(s => {
+                              nextMap[s.setIndex] = clamped;
+                            });
+                            setInstallmentSetStartDurations(nextMap);
+                            if (treasureTimeMode === 'manual') setInstallmentManualSetDurations({});
+                          };
+
+                          const applyRecallBonusToAllSets = (bonusPerRecall: number) => {
+                            const safeBonus = Math.max(0, Math.min(30, Math.round(bonusPerRecall)));
+                            const firstBase = installmentPreview.sets[0]?.effectiveStartMin || Math.max(1, installmentUniformStartInput);
+                            const nextMap: Record<number, number> = {};
+                            installmentPreview.sets.forEach(s => {
+                              nextMap[s.setIndex] = Math.max(1, firstBase + s.recallCount * safeBonus);
+                            });
+                            setInstallmentSetStartDurations(nextMap);
+                            if (treasureTimeMode === 'manual') setInstallmentManualSetDurations({});
+                          };
 
                           return (
                             <div className="bg-white/95 border border-amber-300 rounded-xl p-3 space-y-2.5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
-                                  <span>🗓️</span> 할부·누적 코스 미리보기 (세트별 바퀴수{isManualActive ? ' · 바퀴별 시간' : ''} 개별 수정 가능)
+                                  <span>🗓️</span> 할부·누적 코스 미리보기 (묶음별 바퀴수 · 시작시간 개별 설정)
                                 </span>
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
@@ -7400,6 +7469,69 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   </span>
                                 </div>
                               </div>
+
+                              {/* ⏱️ 묶음당 시작시간 원클릭 빠른 설정 바 */}
+                              {baseMin > 0 && (
+                                <div className="flex flex-wrap items-center justify-between gap-2 bg-indigo-50/70 border border-indigo-200 rounded-lg px-2.5 py-2 text-[10.5px]">
+                                  <span className="font-black text-indigo-950 flex items-center gap-1">
+                                    <span>⏱️</span> 묶음당 1바퀴 시작시간:
+                                  </span>
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <div className="flex items-center gap-1 bg-white border border-indigo-200 rounded-md px-1.5 py-0.5">
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={180}
+                                        value={installmentUniformStartInput}
+                                        onChange={e => setInstallmentUniformStartInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                        className="w-10 text-center font-black text-[11px] text-indigo-900 focus:outline-none"
+                                      />
+                                      <span className="text-slate-500 font-bold">분</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => applyUniformStartToAllSets(installmentUniformStartInput)}
+                                        className="px-1.5 py-0.5 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-black cursor-pointer"
+                                      >
+                                        전 묶음 동일 적용
+                                      </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-1 bg-white border border-amber-300 rounded-md px-1.5 py-0.5">
+                                      <span className="text-amber-900 font-bold">리콜 1문항당 +</span>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={30}
+                                        value={installmentRecallBonusMin}
+                                        onChange={e => setInstallmentRecallBonusMin(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                                        className="w-8 text-center font-black text-[11px] text-amber-900 focus:outline-none"
+                                      />
+                                      <span className="text-slate-500 font-bold">분</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => applyRecallBonusToAllSets(installmentRecallBonusMin)}
+                                        className="px-1.5 py-0.5 rounded bg-amber-500 hover:bg-amber-600 text-white font-black cursor-pointer"
+                                        title="1묶음 시작시간을 기준으로 이후 묶음에 리콜 문항 수만큼 시간 자동 가산"
+                                      >
+                                        가산 적용
+                                      </button>
+                                    </div>
+
+                                    {hasAnyPinnedStart && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setInstallmentSetStartDurations({});
+                                          if (treasureTimeMode === 'manual') setInstallmentManualSetDurations({});
+                                        }}
+                                        className="px-2 py-1 rounded-md bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
+                                      >
+                                        상단({baseMin}분) 비례 복원
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
 
                               {isManualActive && (
                                 <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-50/90 border border-amber-200 rounded-lg px-2.5 py-1.5 text-[10.5px]">
@@ -7412,7 +7544,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                       onClick={() => populateManualDurationsFromBase(true)}
                                       className="px-2 py-0.5 rounded bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 font-black cursor-pointer"
                                     >
-                                      상단({baseMin}분) -{treasurePercentReduction}% 채우기
+                                      시작시간 기준 -{treasurePercentReduction}% 채우기
                                     </button>
                                     <button
                                       type="button"
@@ -7491,6 +7623,64 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                         </button>
                                       </div>
 
+                                      {/* ⏱️ 묶음별 1바퀴 시작시간 설정 컨트롤 */}
+                                      {baseMin > 0 && (
+                                        <div className={`rounded-lg px-1.5 py-1 border space-y-1 ${
+                                          s.isPinnedStart
+                                            ? 'bg-indigo-50/70 border-indigo-300'
+                                            : 'bg-white border-slate-200'
+                                        }`}>
+                                          <div className="flex items-center justify-between text-[9.5px] font-bold">
+                                            <span className="text-slate-600">⏱️ 시작시간</span>
+                                            {s.isPinnedStart ? (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setInstallmentSetStartDurations(prev => {
+                                                    const copy = { ...prev };
+                                                    delete copy[sIdx];
+                                                    return copy;
+                                                  });
+                                                }}
+                                                className="text-indigo-700 hover:text-indigo-900 font-black cursor-pointer"
+                                                title="클릭 시 상단 시간 비례 자동 계산으로 복원"
+                                              >
+                                                📌고정 ×
+                                              </button>
+                                            ) : (
+                                              <span className="text-slate-400">비례자동</span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center justify-between gap-1">
+                                            <button
+                                              type="button"
+                                              onClick={() => updateSetStartDuration(sIdx, s.effectiveStartMin - 1)}
+                                              className="w-5 h-5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs flex items-center justify-center cursor-pointer"
+                                            >
+                                              -
+                                            </button>
+                                            <div className="flex items-center gap-0.5">
+                                              <input
+                                                type="number"
+                                                min={1}
+                                                max={300}
+                                                value={s.effectiveStartMin}
+                                                onChange={e => updateSetStartDuration(sIdx, parseInt(e.target.value, 10) || 1)}
+                                                className="w-10 text-center text-[11px] font-black text-indigo-950 bg-white border border-indigo-200 rounded py-0.2 focus:outline-none"
+                                              />
+                                              <span className="text-[10px] font-bold text-slate-500">분</span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              onClick={() => updateSetStartDuration(sIdx, s.effectiveStartMin + 1)}
+                                              className="w-5 h-5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-xs flex items-center justify-center cursor-pointer"
+                                            >
+                                              +
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
+
                                       {baseMin === 0 ? (
                                         <div className="text-[10px] font-bold text-emerald-700 text-center bg-emerald-50 rounded-md py-1 border border-emerald-200">
                                           ♾️ 자율 학습 (무제한)
@@ -7514,7 +7704,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                                           ? [...prev[sIdx]]
                                                           : [...s.roundDurations];
                                                         while (baseArr.length < s.setRounds) {
-                                                          baseArr.push(s.roundDurations[baseArr.length] ?? s.scaledBaseMin);
+                                                          baseArr.push(s.roundDurations[baseArr.length] ?? s.effectiveStartMin);
                                                         }
                                                         baseArr[rIdx] = val;
                                                         return { ...prev, [sIdx]: baseArr };

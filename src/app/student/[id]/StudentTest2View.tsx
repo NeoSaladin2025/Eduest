@@ -231,7 +231,23 @@ export default function StudentTest2View({
   const [currentRecallOriginMap, setCurrentRecallOriginMap] = useState<Record<string, number>>({});
   const fullExamQuestionsRef = useRef<ExamQuestion[]>([]);
   const fullExamBaseDurationRef = useRef<number | null>(null);
+  const activeInstallmentMetaRef = useRef<{
+    isInstallment: boolean;
+    setIndex: number | null;
+    totalSets: number | null;
+    setRound: number | null;
+    setTotalRounds: number | null;
+    recallOriginMap: Record<string, number>;
+  }>({
+    isInstallment: false,
+    setIndex: null,
+    totalSets: null,
+    setRound: null,
+    setTotalRounds: null,
+    recallOriginMap: {},
+  });
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const currentQuestionIndexRef = useRef<number>(0);
 
   // 답안 및 소요시간 관리
   const [userAnswers, setUserAnswers] = useState<Record<string, any>>({});
@@ -708,6 +724,38 @@ export default function StudentTest2View({
       const curTime = overrideTime !== undefined ? overrideTime : timeLeft;
       const isLockdownActive = getExamLockdownActive(activeExam);
       const activeRound = overrideRound !== undefined ? overrideRound : currentRound;
+      const qIdx = Math.max(0, currentQuestionIndexRef.current ?? currentQuestionIndex);
+      const activeQuestions = Array.isArray(activeExam.questions) ? activeExam.questions : [];
+      const curQ = activeQuestions[qIdx];
+      const rawQNum =
+        typeof curQ?.question_number === 'number' && curQ.question_number > 0
+          ? curQ.question_number
+          : (() => {
+              const m = String(curQ?.name || '').match(/(\d+)\s*번/);
+              return m ? parseInt(m[1], 10) : null;
+            })();
+
+      const instMeta = activeInstallmentMetaRef.current;
+      const instSets = activeExam.treasure_config?.installment?.sets;
+      const isInst = Boolean(
+        instMeta.isInstallment ||
+          (activeExam.treasure_config?.installment?.enabled &&
+            Array.isArray(instSets) &&
+            instSets.length > 0 &&
+            (currentSetIndex !== null || instMeta.setIndex !== null))
+      );
+      const resolvedSetIdx = instMeta.setIndex ?? currentSetIndex;
+      const resolvedSetRound = instMeta.setRound ?? currentSetRound;
+      const resolvedTotalSets = instMeta.totalSets ?? (Array.isArray(instSets) ? instSets.length : null);
+      const resolvedSetTotalRounds =
+        instMeta.setTotalRounds ??
+        (resolvedSetIdx !== null && Array.isArray(instSets) ? instSets[resolvedSetIdx]?.rounds ?? null : null);
+      const recallMap =
+        Object.keys(instMeta.recallOriginMap || {}).length > 0
+          ? instMeta.recallOriginMap
+          : currentRecallOriginMap;
+      const isRecallQ = Boolean(isInst && curQ?.id && recallMap && curQ.id in recallMap);
+      const recallOriginSet = isRecallQ && curQ?.id ? recallMap[curQ.id] : null;
 
       const payload = {
         student_id: studentId,
@@ -718,8 +766,16 @@ export default function StudentTest2View({
         bundle_id: currentBundle?.id || null,
         bundle_title: currentBundle?.title || null,
         round: activeRound,
-        question_idx: currentQuestionIndex + 1,
-        total_questions: activeExam.questions ? activeExam.questions.length : 0,
+        question_idx: qIdx + 1,
+        total_questions: activeQuestions.length,
+        current_question_number: rawQNum,
+        is_installment: isInst,
+        set_index: isInst ? resolvedSetIdx : null,
+        total_sets: isInst ? resolvedTotalSets : null,
+        set_round: isInst ? resolvedSetRound : null,
+        set_total_rounds: isInst ? resolvedSetTotalRounds : null,
+        is_recall_question: isRecallQ,
+        recall_origin_set: recallOriginSet,
         test_status: status,
         test_remaining_sec: curTime,
         duration_min: activeExam.duration_min ?? 0,
@@ -761,7 +817,7 @@ export default function StudentTest2View({
         }),
       }).catch(() => {});
     },
-    [currentExam, timeLeft, studentId, studentName, studentGrade, currentBundle, currentRound, currentQuestionIndex]
+    [currentExam, timeLeft, studentId, studentName, studentGrade, currentBundle, currentRound, currentQuestionIndex, currentSetIndex, currentSetRound, currentRecallOriginMap]
   );
 
   // 📡 Supabase Realtime 채널 연결 (선생님의 원격 잠금 해제 승인 수신 & 브로드캐스트)
@@ -923,6 +979,17 @@ export default function StudentTest2View({
         setCurrentSetIndex(resolvedSetIdx);
         setCurrentSetRound(resolvedSetRound);
         setCurrentRecallOriginMap(recallOriginMap);
+        activeInstallmentMetaRef.current = {
+          isInstallment: isInstallmentExam,
+          setIndex: resolvedSetIdx,
+          totalSets: isInstallmentExam && installmentCfg ? installmentCfg.sets.length : null,
+          setRound: resolvedSetRound,
+          setTotalRounds:
+            isInstallmentExam && installmentCfg && resolvedSetIdx !== null
+              ? installmentCfg.sets[resolvedSetIdx]?.rounds ?? null
+              : null,
+          recallOriginMap,
+        };
 
         // 🔀 문항 무작위 믹싱 (셔플)
         if (data.exam.treasure_config?.enable_shuffle || (isTreasureExam && forceNewRound)) {
@@ -960,6 +1027,7 @@ export default function StudentTest2View({
         setCurrentExam(data.exam);
         setCurrentBundle(bundle || null);
         setCurrentRound(effectiveRoundNum);
+        currentQuestionIndexRef.current = 0;
         setCurrentQuestionIndex(0);
         questionEnteredAtRef.current = Date.now();
 
@@ -1057,6 +1125,7 @@ export default function StudentTest2View({
             // 문제 위치 복원
             if (typeof serverProgress?.current_question_idx === 'number' && serverProgress.current_question_idx >= 0) {
               const validIdx = Math.min(serverProgress.current_question_idx, (data.exam?.questions?.length || 1) - 1);
+              currentQuestionIndexRef.current = validIdx;
               setCurrentQuestionIndex(validIdx);
             }
 
@@ -1094,7 +1163,7 @@ export default function StudentTest2View({
           setViewMode('taking');
 
           // 시작 상태 즉시 통지 (감시 시스템 및 교사 모니터링 연동)
-          broadcastProctorStatus('TESTING', initialTime, roundNum, data.exam);
+          broadcastProctorStatus('TESTING', initialTime, effectiveRoundNum, data.exam);
 
           setTimeout(() => {
             supabase
@@ -1109,7 +1178,7 @@ export default function StudentTest2View({
               .then();
 
             // 타이머 안정화 후 한 번 더 보증 발송
-            broadcastProctorStatus('TESTING', initialTime, roundNum, data.exam);
+            broadcastProctorStatus('TESTING', initialTime, effectiveRoundNum, data.exam);
           }, 150);
         }
       } else {
@@ -1506,6 +1575,7 @@ export default function StudentTest2View({
       }
     }
 
+    currentQuestionIndexRef.current = targetIdx;
     setCurrentQuestionIndex(targetIdx);
     setNavGroupIndex(Math.floor(targetIdx / 20));
     questionEnteredAtRef.current = Date.now();

@@ -58,6 +58,14 @@ export interface StudentActivity {
   round?: number;
   question_idx?: number;
   total_questions?: number;
+  current_question_number?: number | null;
+  is_installment?: boolean;
+  set_index?: number | null;
+  total_sets?: number | null;
+  set_round?: number | null;
+  set_total_rounds?: number | null;
+  is_recall_question?: boolean;
+  recall_origin_set?: number | null;
   test_status?: string;
   test_remaining_sec?: number;
   duration_min?: number;
@@ -430,6 +438,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                 round: round,
                 question_idx: qIdx,
                 total_questions: totalQ,
+                current_question_number: pState.current_question_number ?? null,
+                is_installment: Boolean(pState.is_installment),
+                set_index: pState.set_index ?? null,
+                total_sets: pState.total_sets ?? null,
+                set_round: pState.set_round ?? null,
+                set_total_rounds: pState.set_total_rounds ?? null,
+                is_recall_question: Boolean(pState.is_recall_question),
+                recall_origin_set: pState.recall_origin_set ?? null,
                 test_status: s.test_status,
                 test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
                 duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
@@ -455,6 +471,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                   round: undefined,
                   question_idx: undefined,
                   total_questions: undefined,
+                  current_question_number: undefined,
+                  is_installment: undefined,
+                  set_index: undefined,
+                  total_sets: undefined,
+                  set_round: undefined,
+                  set_total_rounds: undefined,
+                  is_recall_question: undefined,
+                  recall_origin_set: undefined,
                   test_remaining_sec: undefined,
                   test_status: s.test_status,
                   updated_at: s.updated_at || new Date().toISOString(),
@@ -567,6 +591,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             round: p.round,
             question_idx: p.question_idx,
             total_questions: p.total_questions,
+            current_question_number: p.current_question_number ?? null,
+            is_installment: Boolean(p.is_installment),
+            set_index: p.set_index ?? null,
+            total_sets: p.total_sets ?? null,
+            set_round: p.set_round ?? null,
+            set_total_rounds: p.set_total_rounds ?? null,
+            is_recall_question: Boolean(p.is_recall_question),
+            recall_origin_set: p.recall_origin_set ?? null,
             test_status: p.test_status,
             test_remaining_sec: p.test_remaining_sec,
             duration_min: p.duration_min !== undefined ? p.duration_min : p.test_duration_min,
@@ -1421,56 +1453,107 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                         </p>
                       </div>
                     ) : isTesting ? (
-                      <div className="bg-violet-50 border border-violet-100 rounded-2xl p-3 space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-black text-violet-900 truncate">
-                            {act?.exam_title || act?.bundle_title || '시험지 진행 중'}
-                          </span>
-                          {act?.round && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 bg-violet-200/70 text-violet-800 rounded">
-                              {act.round}차
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-violet-700 font-bold flex items-center justify-between">
-                          <span>
-                            진행: 문항 {act?.question_idx || 1} / {act?.total_questions || '?'}
-                          </span>
-                          {(() => {
-                            const isUnlimited =
-                              (act?.duration_min !== undefined && act.duration_min <= 0) ||
-                              (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
-                            if (isUnlimited) {
-                              return (
-                                <span className="font-bold text-violet-600 bg-violet-100/80 px-2 py-0.5 rounded text-[10px]">
-                                  자율 응시 (무제한)
+                      (() => {
+                        const isInst = Boolean(
+                          act?.is_installment &&
+                            typeof act.set_index === 'number' &&
+                            typeof act.set_round === 'number'
+                        );
+                        const instBadgeText = isInst
+                          ? `🧩 ${act!.set_index! + 1}${act!.total_sets ? `/${act!.total_sets}` : ''}묶음 · ${act!.set_round}${act!.set_total_rounds ? `/${act!.set_total_rounds}` : ''}바퀴`
+                          : act?.round
+                          ? `${act.round}차`
+                          : null;
+                        const qPosText = `문항 ${act?.question_idx || 1} / ${act?.total_questions || '?'}`;
+
+                        return (
+                          <div className="bg-violet-50 border border-violet-100 rounded-2xl p-3 space-y-1.5">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="text-xs font-black text-violet-900 truncate">
+                                {act?.exam_title || act?.bundle_title || '시험지 진행 중'}
+                              </span>
+                              {instBadgeText && (
+                                <span
+                                  className={`text-[10px] font-black px-1.5 py-0.5 rounded shrink-0 ${
+                                    isInst
+                                      ? 'bg-amber-200/80 text-amber-950 border border-amber-300/70'
+                                      : 'bg-violet-200/70 text-violet-800'
+                                  }`}
+                                >
+                                  {instBadgeText}
                                 </span>
-                              );
-                            }
-                            if (act?.test_remaining_sec !== undefined) {
-                              return (
-                                <span className="font-mono text-violet-900 font-black">
-                                  남은 시간: {Math.floor(act.test_remaining_sec / 60)}분 {act.test_remaining_sec % 60}초
+                              )}
+                            </div>
+
+                            {isInst && (
+                              <div className="flex items-center gap-1 flex-wrap text-[10.5px] font-black text-indigo-900">
+                                <span className="px-1.5 py-0.5 rounded bg-white/90 border border-violet-200">
+                                  {act!.set_index! + 1}묶음 · {act!.set_round}바퀴째
                                 </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
-                      </div>
+                                <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-900">
+                                  {act?.question_idx || 1}번 풀이중 ({act?.question_idx || 1}/{act?.total_questions || '?'})
+                                </span>
+                                {act?.current_question_number ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                                    원본 #{act.current_question_number}번
+                                  </span>
+                                ) : null}
+                                {act?.is_recall_question && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                                    💎리콜{typeof act.recall_origin_set === 'number' ? `(${act.recall_origin_set + 1}묶음)` : ''}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="text-[11px] text-violet-700 font-bold flex items-center justify-between gap-2">
+                              <span className="flex items-center gap-1">
+                                <span>진행: {qPosText}</span>
+                                {!isInst && act?.current_question_number ? (
+                                  <span className="text-[10px] text-indigo-700">(#{act.current_question_number}번)</span>
+                                ) : null}
+                              </span>
+                              {(() => {
+                                const isUnlimited =
+                                  (act?.duration_min !== undefined && act.duration_min <= 0) ||
+                                  (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
+                                if (isUnlimited) {
+                                  return (
+                                    <span className="font-bold text-violet-600 bg-violet-100/80 px-2 py-0.5 rounded text-[10px]">
+                                      자율 응시 (무제한)
+                                    </span>
+                                  );
+                                }
+                                if (act?.test_remaining_sec !== undefined) {
+                                  return (
+                                    <span className="font-mono text-violet-900 font-black">
+                                      남은 시간: {Math.floor(act.test_remaining_sec / 60)}분 {act.test_remaining_sec % 60}초
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
+                            </div>
+                          </div>
+                        );
+                      })()
                     ) : isOnline ? (
                       <div className="space-y-1.5">
                         {/* 메뉴 구분 아이콘 */}
-                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-500 flex-wrap">
                           {isUnlimited ? (
                             <>
                               <FileCheck size={14} className="text-emerald-600" />
                               <span className="font-black text-emerald-800">자율 시험 (무제한)</span>
-                              {act?.round && (
+                              {act?.is_installment && typeof act.set_index === 'number' && typeof act.set_round === 'number' ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-200 font-black">
+                                  🧩 {act.set_index + 1}{act.total_sets ? `/${act.total_sets}` : ''}묶음 · {act.set_round}{act.set_total_rounds ? `/${act.set_total_rounds}` : ''}바퀴
+                                </span>
+                              ) : act?.round ? (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
                                   {act.round}차
                                 </span>
-                              )}
+                              ) : null}
                             </>
                           ) : act?.mode === 'library' ? (
                             <Library size={14} className="text-indigo-600" />
@@ -1516,9 +1599,27 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
 
                         {/* 🌟 [사용자 요청] 무제한 시험지 실시간 진행률 & 현재상황 확인 버튼 */}
                         {isUnlimited && (
-                          <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700 pt-0.5">
-                            <span>
-                              진행: 문항 {act?.question_idx || 1} / {act?.total_questions || '?'}
+                          <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700 pt-0.5 gap-1.5 flex-wrap">
+                            <span className="flex items-center gap-1 flex-wrap">
+                              {act?.is_installment && typeof act.set_index === 'number' && typeof act.set_round === 'number' ? (
+                                <span>
+                                  진행: {act.set_index + 1}묶음 {act.set_round}바퀴 · 문항 {act?.question_idx || 1}/{act?.total_questions || '?'}
+                                </span>
+                              ) : (
+                                <span>
+                                  진행: 문항 {act?.question_idx || 1} / {act?.total_questions || '?'}
+                                </span>
+                              )}
+                              {act?.current_question_number ? (
+                                <span className="text-[10px] px-1 py-0.2 rounded bg-emerald-100 text-emerald-900">
+                                  #{act.current_question_number}번
+                                </span>
+                              ) : null}
+                              {act?.is_recall_question && (
+                                <span className="text-[10px] px-1 py-0.2 rounded bg-amber-100 text-amber-800">
+                                  💎리콜
+                                </span>
+                              )}
                             </span>
                             {act?.exam_id && (
                               <button

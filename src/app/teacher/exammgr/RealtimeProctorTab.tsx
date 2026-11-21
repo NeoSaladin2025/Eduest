@@ -42,6 +42,14 @@ interface Student {
   current_round?: number;
   current_question_idx?: number;
   total_questions?: number;
+  current_question_number?: number | null;
+  is_installment?: boolean;
+  set_index?: number | null;
+  total_sets?: number | null;
+  set_round?: number | null;
+  set_total_rounds?: number | null;
+  is_recall_question?: boolean;
+  recall_origin_set?: number | null;
   enable_lockdown?: boolean; // 🌟 이탈방지 여부 (이탈방지 ON 시험만 시험감독 모니터링 대상)
 }
 
@@ -188,6 +196,14 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
             current_round: pState?.round,
             current_question_idx: pState?.question_idx,
             total_questions: pState?.total_questions,
+            current_question_number: pState?.current_question_number ?? null,
+            is_installment: Boolean(pState?.is_installment),
+            set_index: pState?.set_index ?? null,
+            total_sets: pState?.total_sets ?? null,
+            set_round: pState?.set_round ?? null,
+            set_total_rounds: pState?.set_total_rounds ?? null,
+            is_recall_question: Boolean(pState?.is_recall_question),
+            recall_origin_set: pState?.recall_origin_set ?? null,
             enable_lockdown: pState?.enable_lockdown,
             updated_at: pState?.updated_at || s.updated_at,
             last_away_at: s.last_away_at,
@@ -245,6 +261,14 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
               current_round: p.round || existing.current_round,
               current_question_idx: p.question_idx,
               total_questions: p.total_questions,
+              current_question_number: p.current_question_number ?? null,
+              is_installment: Boolean(p.is_installment),
+              set_index: p.set_index ?? null,
+              total_sets: p.total_sets ?? null,
+              set_round: p.set_round ?? null,
+              set_total_rounds: p.set_total_rounds ?? null,
+              is_recall_question: Boolean(p.is_recall_question),
+              recall_origin_set: p.recall_origin_set ?? null,
               enable_lockdown: p.enable_lockdown !== undefined ? p.enable_lockdown : existing.enable_lockdown,
               updated_at: p.updated_at,
             },
@@ -927,30 +951,58 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
                       </div>
 
                       {/* 진도 표시: 실제 시험 중이거나 이탈 상태일 때만 */}
-                      {isTesting || isAway ? (
-                        <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100">
-                          <div className="flex items-center gap-1.5">
-                            {isTreasure ? (
-                              <span className="px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 rounded-md font-black text-[11px] shadow-2xs">
-                                💎 {live.current_round ? `${live.current_round}회차` : '보물회수'}
-                              </span>
-                            ) : live.current_round ? (
-                              <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-md font-black text-[11px]">
-                                제 {live.current_round}회
-                              </span>
-                            ) : null}
-                            <span className="font-black text-slate-800 text-sm">
-                              {live.current_question_idx ? `${live.current_question_idx}번 풀이 중` : '문제 풀이 중'}
-                            </span>
-                          </div>
+                      {isTesting || isAway ? (() => {
+                        const isInst = Boolean(
+                          live.is_installment &&
+                            typeof live.set_index === 'number' &&
+                            typeof live.set_round === 'number'
+                        );
+                        return (
+                          <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                            <div className="flex items-center justify-between text-xs gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {isInst ? (
+                                  <span className="px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 rounded-md font-black text-[11px] shadow-2xs">
+                                    🧩 {live.set_index! + 1}{live.total_sets ? `/${live.total_sets}` : ''}묶음 · {live.set_round}{live.set_total_rounds ? `/${live.set_total_rounds}` : ''}바퀴째
+                                  </span>
+                                ) : isTreasure ? (
+                                  <span className="px-2 py-0.5 bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 rounded-md font-black text-[11px] shadow-2xs">
+                                    💎 {live.current_round ? `${live.current_round}회차` : '보물회수'}
+                                  </span>
+                                ) : live.current_round ? (
+                                  <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-md font-black text-[11px]">
+                                    제 {live.current_round}회
+                                  </span>
+                                ) : null}
+                                <span className="font-black text-slate-800 text-sm">
+                                  {live.current_question_idx ? `${live.current_question_idx}번 풀이 중` : '문제 풀이 중'}
+                                </span>
+                              </div>
 
-                          {live.total_questions ? (
-                            <span className="text-[11px] text-slate-400 font-bold">
-                              ({live.current_question_idx || 1} / {live.total_questions})
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : isFinished ? (
+                              {live.total_questions ? (
+                                <span className="text-[11px] text-slate-400 font-bold shrink-0">
+                                  ({live.current_question_idx || 1} / {live.total_questions})
+                                </span>
+                              ) : null}
+                            </div>
+
+                            {(live.current_question_number || live.is_recall_question) && (
+                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-black">
+                                {live.current_question_number ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    원본 #{live.current_question_number}번
+                                  </span>
+                                ) : null}
+                                {live.is_recall_question && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                                    💎 기억소환 리콜{typeof live.recall_origin_set === 'number' ? ` (${live.recall_origin_set + 1}묶음)` : ''}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })() : isFinished ? (
                         <p className="text-xs text-blue-600 font-bold pt-1">
                           답안 제출이 완료되었습니다.
                         </p>
