@@ -192,24 +192,27 @@ export interface ParsedExamTitleInfo {
 export function parseExamRoundAndBaseTitle(title: string): ParsedExamTitleInfo {
   let t = (title || '').trim();
 
-  // 1. 끝에 붙은 (학생이름) 또는 [학생이름] 추출 및 제거 (여러 개 반복되어 있는 경우도 모두 제거)
-  let studentName: string | undefined = undefined;
-  while (true) {
-    const studentMatch = t.match(/[\(\[]([가-힣a-zA-Z0-9\s]{2,10})[\)\]]\s*$/);
-    if (studentMatch && studentMatch[1]) {
-      const candidate = studentMatch[1].trim();
-      if (!candidate.match(/(?:오답|보물|쌍둥이|회차|차|스페셜)/)) {
-        if (!studentName) studentName = candidate;
-        t = t.replace(/[\(\[][가-힣a-zA-Z0-9\s]{2,10}[\)\]]\s*$/, '').trim();
-        continue;
-      }
-    }
-    break;
-  }
-
   const isTreasure = t.includes('보물');
   const isTwin = t.includes('쌍둥이');
   const isWrong = t.includes('오답') || isTreasure;
+
+  // 1. 오답/보물회수 시험지 레거시 제목 끝에 붙은 (학생이름) 소괄호 접미사만 추출·제거
+  //    주의: [미래엔], [교과서원본], [원본문제] 등 대괄호([...]) 분류 태그는 절대 제거하지 않음!
+  let studentName: string | undefined = undefined;
+  if (isWrong) {
+    while (true) {
+      const studentMatch = t.match(/\(([가-힣a-zA-Z0-9\s]{2,10})\)\s*$/);
+      if (studentMatch && studentMatch[1]) {
+        const candidate = studentMatch[1].trim();
+        if (!candidate.match(/(?:오답|보물|쌍둥이|회차|차|스페셜)/)) {
+          if (!studentName) studentName = candidate;
+          t = t.replace(/\([가-힣a-zA-Z0-9\s]{2,10}\)\s*$/, '').trim();
+          continue;
+        }
+      }
+      break;
+    }
+  }
 
   // 2. 기존 회차 숫자 파싱 (예: [오답 2회차], [보물회수 3차], 오답 1회차 등)
   let currentRound = 0;
