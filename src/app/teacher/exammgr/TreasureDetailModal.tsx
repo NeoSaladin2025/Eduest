@@ -30,6 +30,7 @@ import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { getCircledSymbol } from '@/lib/choiceGenerator';
 import {
   calculateInstallmentRoundDuration,
+  resolveTreasureBaseDuration,
   getInstallmentDeliveredQuestions,
   getInstallmentSubmissionSummary,
   parseExamRoundAndBaseTitle,
@@ -192,7 +193,7 @@ export default function TreasureDetailModal({
         }
       }
 
-      const baseDur = ex.treasure_config?.base_duration_min || Number(ex.duration_min) || 0;
+      const baseDur = resolveTreasureBaseDuration(ex.treasure_config, Number(ex.duration_min) || 0);
 
       // 🌟 round_history가 있거나 할부 시험인 경우 각 회차/바퀴를 정확히 펼쳐서 표시!
       if (
@@ -222,7 +223,8 @@ export default function TreasureDetailModal({
                   ex.questions?.length || 0,
                   delivered.questions.length,
                   sRound,
-                  ex.treasure_config!
+                  ex.treasure_config!,
+                  sIdx
                 )
               : Number(ex.duration_min) || 0;
 
@@ -296,7 +298,8 @@ export default function TreasureDetailModal({
                 ex.questions?.length || 0,
                 delivered.questions.length,
                 coords.setRound,
-                ex.treasure_config!
+                ex.treasure_config!,
+                coords.setIndex
               )
             : Number(ex.duration_min) || 0;
 
@@ -392,7 +395,17 @@ export default function TreasureDetailModal({
         isOriginal: false,
         isTreasure: true,
         isTwin: Boolean(initialExam.is_twin_variant || parsed.isTwin),
-        durationMin: Number(initialExam.duration_min) || 0,
+        durationMin:
+          isInst && instCfg && coords && delivered
+            ? calculateInstallmentRoundDuration(
+                resolveTreasureBaseDuration(initialExam.treasure_config, Number(initialExam.duration_min) || 0),
+                initialExam.questions?.length || 0,
+                delivered.questions.length,
+                coords.setRound,
+                initialExam.treasure_config!,
+                coords.setIndex
+              )
+            : Number(initialExam.duration_min) || 0,
         submission: effInitialSub,
         totalSpentSec: spentSec,
         score: effInitialSub ? Number(effInitialSub.score) : null,

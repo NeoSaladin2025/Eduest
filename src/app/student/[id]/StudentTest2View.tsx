@@ -53,6 +53,8 @@ import ZoomableImageViewer from './ZoomableImageViewer';
 import {
   calculateRoundDuration,
   calculateInstallmentRoundDuration,
+  resolveTreasureBaseDuration,
+  InstallmentSetPlan,
   getInstallmentActiveQuestions,
   getInstallmentGlobalRound,
   computeInstallmentProgress,
@@ -228,6 +230,7 @@ export default function StudentTest2View({
   const [currentSetRound, setCurrentSetRound] = useState<number | null>(null);
   const [currentRecallOriginMap, setCurrentRecallOriginMap] = useState<Record<string, number>>({});
   const fullExamQuestionsRef = useRef<ExamQuestion[]>([]);
+  const fullExamBaseDurationRef = useRef<number | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
 
   // 답안 및 소요시간 관리
@@ -851,6 +854,7 @@ export default function StudentTest2View({
         const isTreasureExam = Boolean(data.exam.is_treasure_hunt || data.exam.treasure_config?.enabled || data.exam.title?.includes('보물'));
         const originalQuestions: ExamQuestion[] = Array.isArray(data.exam.questions) ? [...data.exam.questions] : [];
         fullExamQuestionsRef.current = originalQuestions;
+        fullExamBaseDurationRef.current = typeof data.exam.duration_min === 'number' ? data.exam.duration_min : null;
 
         const installmentCfg = data.exam.treasure_config?.installment;
         const isInstallmentExam = Boolean(installmentCfg?.enabled && Array.isArray(installmentCfg.sets) && installmentCfg.sets.length > 0);
@@ -930,17 +934,19 @@ export default function StudentTest2View({
         // ⏱️ 타임어택 회차별 제한시간 계산
         if (data.exam.treasure_config?.enabled) {
           const cfg = data.exam.treasure_config;
+          const resolvedBaseMin = resolveTreasureBaseDuration(cfg, data.exam.duration_min);
           if (isInstallmentExam && resolvedSetRound !== null) {
             data.exam.duration_min = calculateInstallmentRoundDuration(
-              cfg.base_duration_min || data.exam.duration_min || 30,
+              resolvedBaseMin,
               originalQuestions.length,
               data.exam.questions.length,
               resolvedSetRound,
-              cfg
+              cfg,
+              resolvedSetIdx ?? undefined
             );
           } else {
             const calculatedMin = calculateRoundDuration(
-              cfg.base_duration_min || data.exam.duration_min || 30,
+              resolvedBaseMin,
               effectiveRoundNum,
               cfg.time_attack_mode,
               cfg.percent_reduction,
@@ -2878,25 +2884,73 @@ export default function StudentTest2View({
                               <h3 className="text-xl font-black text-white group-hover:text-amber-200 transition-colors line-clamp-2" title={cleanDisplayTitle}>
                                 {cleanDisplayTitle}
                               </h3>
-                              <p className="text-xs text-amber-300/70 font-bold mt-2 flex items-center gap-2 flex-wrap">
-                                <span>💎 보물 문항 총 {exam.question_count}문제</span>
-                                <span>•</span>
-                                <span>{exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한'}</span>
-                                {repeatRounds > 1 && (
-                                  <>
+                              {(() => {
+                                let durationLabel = exam.duration_min > 0 ? `기본 ${exam.duration_min}분` : '무제한';
+                                if (instProgress && instCfg && tConfig) {
+                                  const baseDur = resolveTreasureBaseDuration(tConfig, exam.duration_min);
+                                  if (baseDur <= 0) {
+                                    durationLabel = '무제한';
+                                  } else {
+                                    const allDurs: number[] = [];
+                                    instCfg.sets.forEach((s: InstallmentSetPlan) => {
+                                      const activeCnt = s.question_ids.length + (s.recall_schedule?.[0]?.length || 0);
+                                      for (let r = 1; r <= Math.max(1, s.rounds); r++) {
+                                        allDurs.push(
+                                          calculateInstallmentRoundDuration(
+                                            baseDur,
+                                            exam.question_count || 1,
+                                            Math.max(1, activeCnt),
+                                            r,
+                                            tConfig,
+                                            s.set_index
+                                          )
+                                        );
+                                      }
+                                    });
+                                    const activeSetObj = instCfg.sets[instProgress.activeSetIndex];
+                                    const activeCnt = activeSetObj
+                                      ? activeSetObj.question_ids.length + (activeSetObj.recall_schedule?.[0]?.length || 0)
+                                      : 1;
+                                    const nextDur = calculateInstallmentRoundDuration(
+                                      baseDur,
+                                      exam.question_count || 1,
+                                      Math.max(1, activeCnt),
+                                      instProgress.activeSetRound,
+                                      tConfig,
+                                      instProgress.activeSetIndex
+                                    );
+                                    const minD = allDurs.length > 0 ? Math.min(...allDurs) : nextDur;
+                                    const maxD = allDurs.length > 0 ? Math.max(...allDurs) : nextDur;
+                                    durationLabel =
+                                      minD === maxD
+                                        ? `바퀴당 ${minD}분`
+                                        : isAllCompleted
+                                        ? `바퀴당 ${minD}~${maxD}분`
+                                        : `바퀴당 ${minD}~${maxD}분 (다음 ${nextDur}분)`;
+                                  }
+                                }
+                                return (
+                                  <p className="text-xs text-amber-300/70 font-bold mt-2 flex items-center gap-2 flex-wrap">
+                                    <span>💎 보물 문항 총 {exam.question_count}문제</span>
                                     <span>•</span>
-                                    <span className="text-amber-200">
-                                      {instProgress ? `🧩 ${instCfg!.sets.length}세트 총 ${repeatRounds}바퀴` : `🔁 총 ${repeatRounds}회차 코스`}
-                                    </span>
-                                  </>
-                                )}
-                                {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) && (
-                                  <>
-                                    <span>•</span>
-                                    <span className="text-amber-300">🔀 문항 믹싱</span>
-                                  </>
-                                )}
-                              </p>
+                                    <span>{durationLabel}</span>
+                                    {repeatRounds > 1 && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-amber-200">
+                                          {instProgress ? `🧩 ${instCfg!.sets.length}세트 총 ${repeatRounds}바퀴` : `🔁 총 ${repeatRounds}회차 코스`}
+                                        </span>
+                                      </>
+                                    )}
+                                    {Boolean(tConfig?.enable_shuffle || tConfig?.enable_mixing) && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="text-amber-300">🔀 문항 믹싱</span>
+                                      </>
+                                    )}
+                                  </p>
+                                );
+                              })()}
 
                               {/* 🌟 [오라버니 기획] 할부 세트 로드맵 OR 일반 회차별 스텝 인디케이터 바 */}
                               {instProgress ? (
@@ -4518,16 +4572,18 @@ export default function StudentTest2View({
               ? getInstallmentActiveQuestions(fullQs, instCfg!, nextSetIdx, nextSetRound).questions.length
               : (currentExam.questions?.length || 1);
 
+            const resolvedBaseDur = resolveTreasureBaseDuration(tConfig, fullExamBaseDurationRef.current ?? currentExam.duration_min);
             const nextDuration = instProgress && nextSetRound !== undefined
               ? calculateInstallmentRoundDuration(
-                  tConfig?.base_duration_min || currentExam.duration_min || 30,
+                  resolvedBaseDur,
                   fullQs.length,
                   nextActiveCount,
                   nextSetRound,
-                  tConfig
+                  tConfig,
+                  nextSetIdx
                 )
               : calculateRoundDuration(
-                  tConfig?.base_duration_min || currentExam.duration_min || 30,
+                  resolvedBaseDur,
                   nextRound,
                   tConfig?.time_attack_mode || 'fixed',
                   tConfig?.percent_reduction || 0,
@@ -5634,16 +5690,18 @@ export default function StudentTest2View({
                 ? getInstallmentActiveQuestions(fullQs, instCfg!, nextSetIdx, nextSetRound).questions.length
                 : (currentExam.questions?.length || 1);
 
+              const resolvedBaseDur = resolveTreasureBaseDuration(tConfig, fullExamBaseDurationRef.current ?? currentExam.duration_min);
               const nextDuration = instProgress && nextSetRound !== undefined
                 ? calculateInstallmentRoundDuration(
-                    tConfig?.base_duration_min || currentExam.duration_min || 30,
+                    resolvedBaseDur,
                     fullQs.length,
                     nextActiveCount,
                     nextSetRound,
-                    tConfig
+                    tConfig,
+                    nextSetIdx
                   )
                 : calculateRoundDuration(
-                    tConfig?.base_duration_min || currentExam.duration_min || 30,
+                    resolvedBaseDur,
                     nextRound,
                     tConfig?.time_attack_mode || 'fixed',
                     tConfig?.percent_reduction || 0,

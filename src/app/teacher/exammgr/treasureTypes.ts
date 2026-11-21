@@ -11,6 +11,7 @@ export interface InstallmentSetPlan {
   question_ids: string[]; // 해당 세트의 핵심 문항 ID 목록
   rounds: number; // 이 세트에 지정된 바퀴수 (개별 설정 가능)
   recall_schedule?: string[][]; // recall_schedule[roundIdx] = 해당 바퀴(1..rounds)에 투입될 리콜 원본 문항 ID 배열
+  manual_round_durations?: number[]; // 바퀴별 수동 지정 제한시간(분), 0-indexed (round 1 = index 0)
 }
 
 export interface InstallmentConfig {
@@ -108,6 +109,22 @@ export const DEFAULT_TREASURE_TEMPLATES: TreasureTemplate[] = [
   },
 ];
 
+/**
+ * 보물회수 기준 제한시간(분)을 안전하게 해석 (0=무제한 보존, undefined/null일 때만 fallback 30)
+ */
+export function resolveTreasureBaseDuration(
+  cfg?: Pick<TreasureConfig, 'base_duration_min'> | null,
+  examDurationMin?: number | null
+): number {
+  if (typeof cfg?.base_duration_min === 'number' && !isNaN(cfg.base_duration_min)) {
+    return Math.max(0, cfg.base_duration_min);
+  }
+  if (typeof examDurationMin === 'number' && !isNaN(examDurationMin)) {
+    return Math.max(0, examDurationMin);
+  }
+  return 30;
+}
+
 // ⏱️ 특정 회차의 제한 시간 계산 헬퍼
 export function calculateRoundDuration(
   baseMin: number,
@@ -118,27 +135,29 @@ export function calculateRoundDuration(
   variableReductions?: number[]
 ): number {
   if (baseMin <= 0) return 0; // 무제한
-  if (round <= 1) return baseMin;
+  const safeRound = Math.max(1, round);
+
+  if (mode === 'manual' && manualDurations && manualDurations.length >= safeRound) {
+    const custom = manualDurations[safeRound - 1];
+    if (typeof custom === 'number' && custom > 0) return Math.max(1, Math.round(custom));
+  }
+
+  if (safeRound <= 1) return baseMin;
 
   if (mode === 'fixed') {
     return baseMin;
   }
 
-  if (mode === 'manual' && manualDurations && manualDurations.length >= round) {
-    const custom = manualDurations[round - 1];
-    if (typeof custom === 'number' && custom > 0) return custom;
-  }
-
   if (mode === 'percent') {
     // 1회차 대비 회차마다 percentReduction% 씩 단축 (최소 1분 보장)
-    const reductionFactor = 1 - (percentReduction / 100) * (round - 1);
+    const reductionFactor = 1 - (percentReduction / 100) * (safeRound - 1);
     const computed = Math.round(baseMin * Math.max(0.1, reductionFactor));
     return Math.max(1, computed);
   }
 
   if (mode === 'variable_percent' && variableReductions) {
     let current = baseMin;
-    for (let r = 2; r <= round; r++) {
+    for (let r = 2; r <= safeRound; r++) {
       const p = variableReductions[r - 2] ?? percentReduction;
       current = Math.round(current * (1 - p / 100));
     }
@@ -269,6 +288,7 @@ export function buildInstallmentPlan(
     setRoundsOverrides?: Record<number, number>;
     recallMode: InstallmentRecallMode;
     recallPoolCount?: number;
+    setManualDurations?: Record<number, number[]>;
   }
 ): InstallmentSetPlan[] {
   const safeChunkSize = Math.max(1, Math.floor(options.chunkSize || 5));
@@ -326,11 +346,23 @@ export function buildInstallmentPlan(
       }
     }
 
+    const rawManual = options.setManualDurations?.[setIdx];
+    const manualRoundDurations =
+      Array.isArray(rawManual) && rawManual.length > 0
+        ? Array.from({ length: rounds }, (_, rIdx) => {
+            const val = rawManual[rIdx];
+            return typeof val === 'number' && val > 0 ? Math.max(1, Math.round(val)) : 0;
+          })
+        : undefined;
+
     return {
       set_index: setIdx,
       question_ids: chunkQIds,
       rounds,
       recall_schedule: recallSchedule,
+      ...(manualRoundDurations && manualRoundDurations.some((v) => v > 0)
+        ? { manual_round_durations: manualRoundDurations }
+        : {}),
     };
   });
 
@@ -443,19 +475,49 @@ export function getInstallmentActiveQuestions<T extends { id: string }>(
 }
 
 /**
- * 할부 세트·바퀴별 제한시간 계산 (문항 수 비례 기본시간 스케일링 + 세트 내 바퀴 타임어택)
+ * 할부 세트별 1바퀴 기본시간 산출 (전체 기준시간 × 세트 바퀴당 문항수 / 전체 문항수)
+ */
+export function getInstallmentScaledBaseMin(
+  baseExamDurationMin: number,
+  totalExamQuestionsCount: number,
+  activeQuestionsCount: number
+): number {
+  if (baseExamDurationMin <= 0) return 0;
+  const safeTotal = Math.max(1, totalExamQuestionsCount);
+  const safeActive = Math.max(1, activeQuestionsCount);
+  return Math.max(1, Math.round((baseExamDurationMin * safeActive) / safeTotal));
+}
+
+/**
+ * 할부 세트·바퀴별 제한시간 계산 (문항 수 비례 기본시간 스케일링 + 세트 내 바퀴 타임어택/수동 지정)
  */
 export function calculateInstallmentRoundDuration(
   baseExamDurationMin: number,
   totalExamQuestionsCount: number,
   activeQuestionsCount: number,
   setRound: number,
-  cfg: Pick<TreasureConfig, 'time_attack_mode' | 'percent_reduction' | 'manual_durations' | 'variable_reductions'>
+  cfg: Pick<TreasureConfig, 'time_attack_mode' | 'percent_reduction' | 'manual_durations' | 'variable_reductions'> & {
+    installment?: Pick<InstallmentConfig, 'sets'>;
+  },
+  setIndex?: number
 ): number {
   if (baseExamDurationMin <= 0) return 0; // 무제한
-  const safeTotal = Math.max(1, totalExamQuestionsCount);
-  const safeActive = Math.max(1, activeQuestionsCount);
-  const scaledBaseMin = Math.max(1, Math.round((baseExamDurationMin * safeActive) / safeTotal));
+  const scaledBaseMin = getInstallmentScaledBaseMin(
+    baseExamDurationMin,
+    totalExamQuestionsCount,
+    activeQuestionsCount
+  );
+
+  // 세트별 개별 바퀴 수동 입력값이 있으면 최우선 적용
+  const setManual =
+    typeof setIndex === 'number'
+      ? cfg.installment?.sets?.[setIndex]?.manual_round_durations
+      : undefined;
+  if (cfg.time_attack_mode === 'manual' && Array.isArray(setManual) && setManual.length >= setRound) {
+    const custom = setManual[Math.max(0, setRound - 1)];
+    if (typeof custom === 'number' && custom > 0) return Math.max(1, Math.round(custom));
+  }
+
   return calculateRoundDuration(
     scaledBaseMin,
     setRound,

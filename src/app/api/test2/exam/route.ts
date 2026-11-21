@@ -237,11 +237,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const parsedDurationMin =
+      typeof duration_min === 'number' && !isNaN(duration_min)
+        ? Math.max(0, duration_min)
+        : duration_min !== undefined && duration_min !== null && duration_min !== '' && !isNaN(Number(duration_min))
+        ? Math.max(0, Number(duration_min))
+        : 50;
+
     const newExam: ExamPaper = {
       id: `exam_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       title: title.trim(),
       grade: grade || "공통",
-      duration_min: Number(duration_min) || 50,
+      duration_min: parsedDurationMin,
       questions: questions.map((q: any, idx: number) => {
         const ans = String(q.answer ?? "").trim();
         const derivedType = q.question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ans) ? 'MULTIPLE' : 'SHORT'));
@@ -331,11 +338,19 @@ export async function PUT(req: NextRequest) {
     }
 
     const current = existingExams[idx];
+    const nextDurationMin =
+      duration_min !== undefined ? Math.max(0, Number(duration_min) || 0) : current.duration_min;
+    const syncedTreasureConfig =
+      duration_min !== undefined && current.treasure_config
+        ? { ...current.treasure_config, base_duration_min: nextDurationMin }
+        : current.treasure_config;
+
     const updatedExam: ExamPaper = {
       ...current,
       title: title !== undefined ? title.trim() : current.title,
       grade: grade !== undefined ? grade : current.grade,
-      duration_min: duration_min !== undefined ? Number(duration_min) : current.duration_min,
+      duration_min: nextDurationMin,
+      treasure_config: syncedTreasureConfig,
       questions: questions !== undefined ? questions.map((q: any) => {
         const ans = String(q.answer ?? "").trim();
         const derivedType = q.question_type || (q.is_descriptive ? 'DESCRIPTIVE' : (/^[1-5]$/.test(ans) ? 'MULTIPLE' : 'SHORT'));

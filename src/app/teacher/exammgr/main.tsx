@@ -79,6 +79,7 @@ import {
   DEFAULT_TREASURE_TEMPLATES,
   calculateRoundDuration,
   calculateInstallmentRoundDuration,
+  getInstallmentScaledBaseMin,
   buildInstallmentPlan,
   getInstallmentTotalRounds,
   getInstallmentSubmissionSummary,
@@ -348,6 +349,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [installmentChunkSize, setInstallmentChunkSize] = useState<number>(5); // 디폴트 5문항 분할
   const [installmentDefaultRounds, setInstallmentDefaultRounds] = useState<number>(5); // 디폴트 5바퀴
   const [installmentSetRounds, setInstallmentSetRounds] = useState<Record<number, number>>({}); // 세트별 개별 바퀴수
+  const [installmentManualSetDurations, setInstallmentManualSetDurations] = useState<Record<number, number[]>>({}); // 세트·바퀴별 수동 시간(분)
   const [installmentRecallMode, setInstallmentRecallMode] = useState<InstallmentRecallMode>('per_set'); // 디폴트 A안
   const [installmentRecallPoolCount, setInstallmentRecallPoolCount] = useState<number>(1);
   const [installmentRecallTwinMode, setInstallmentRecallTwinMode] = useState<InstallmentRecallTwinMode>('same'); // 디폴트 동일 문항
@@ -368,6 +370,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       setInstallmentChunkSize(tpl.installment_preset.chunk_size);
       setInstallmentDefaultRounds(tpl.installment_preset.default_rounds_per_set);
       setInstallmentSetRounds({});
+      setInstallmentManualSetDurations({});
       setInstallmentRecallMode(tpl.installment_preset.recall_mode);
       setInstallmentRecallPoolCount(tpl.installment_preset.recall_pool_count || 1);
       setInstallmentRecallTwinMode(tpl.installment_preset.recall_twin_mode);
@@ -375,6 +378,146 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       setInstallmentShowRecallBadge(tpl.installment_preset.show_recall_badge ?? true);
     } else {
       setInstallmentEnabled(false);
+    }
+  };
+
+  /**
+   * 할부·누적 코스 미리보기 계산 (상단 요약 + 미리보기 카드 + 수동 초기화가 공유)
+   */
+  const installmentPreview = useMemo(() => {
+    const totalQ = wrongExamModal?.wrongQuestions.length ?? 0;
+    if (totalQ === 0) {
+      return { sets: [] as Array<{
+        setIndex: number;
+        startNum: number;
+        endNum: number;
+        coreCount: number;
+        recallCount: number;
+        activeCount: number;
+        setRounds: number;
+        scaledBaseMin: number;
+        roundDurations: number[];
+        setTotalMin: number;
+      }>, totalCourseRounds: 0, totalCourseMinutes: 0 };
+    }
+    const safeChunk = Math.max(1, installmentChunkSize);
+    const numSets = Math.ceil(totalQ / safeChunk);
+    const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+    let cumulativePrevQ = 0;
+    let totalCourseRounds = 0;
+    let totalCourseMinutes = 0;
+
+    const sets = Array.from({ length: numSets }, (_, sIdx) => {
+      const startNum = sIdx * safeChunk + 1;
+      const endNum = Math.min((sIdx + 1) * safeChunk, totalQ);
+      const coreCount = endNum - startNum + 1;
+      const recallCount =
+        sIdx === 0
+          ? 0
+          : installmentRecallMode === 'per_set'
+          ? sIdx
+          : Math.min(installmentRecallPoolCount, cumulativePrevQ);
+      const activeCount = coreCount + recallCount;
+      const setRounds = Math.max(1, installmentSetRounds[sIdx] ?? installmentDefaultRounds);
+      const scaledBaseMin = getInstallmentScaledBaseMin(baseMin, totalQ, activeCount);
+
+      const roundDurations = Array.from({ length: setRounds }, (_, rIdx) => {
+        const r = rIdx + 1;
+        return calculateInstallmentRoundDuration(
+          baseMin,
+          totalQ,
+          activeCount,
+          r,
+          {
+            time_attack_mode: treasureTimeMode,
+            percent_reduction: treasurePercentReduction,
+            manual_durations: treasureManualDurations,
+            variable_reductions: treasureVariableReductions,
+            installment: {
+              sets: Array.from({ length: numSets }, (__, idx2) => ({
+                set_index: idx2,
+                question_ids: [],
+                rounds: Math.max(1, installmentSetRounds[idx2] ?? installmentDefaultRounds),
+                manual_round_durations: installmentManualSetDurations[idx2],
+              })),
+            },
+          },
+          sIdx
+        );
+      });
+
+      const setTotalMin = roundDurations.reduce((acc, d) => acc + d, 0);
+      totalCourseRounds += setRounds;
+      totalCourseMinutes += setTotalMin;
+      cumulativePrevQ += coreCount;
+
+      return {
+        setIndex: sIdx,
+        startNum,
+        endNum,
+        coreCount,
+        recallCount,
+        activeCount,
+        setRounds,
+        scaledBaseMin,
+        roundDurations,
+        setTotalMin,
+      };
+    });
+
+    return { sets, totalCourseRounds, totalCourseMinutes };
+  }, [
+    wrongExamModal,
+    installmentChunkSize,
+    installmentDefaultRounds,
+    installmentSetRounds,
+    installmentRecallMode,
+    installmentRecallPoolCount,
+    wrongExamDurationMode,
+    wrongExamCustomMinutes,
+    treasureTimeMode,
+    treasurePercentReduction,
+    treasureManualDurations,
+    treasureVariableReductions,
+    installmentManualSetDurations,
+  ]);
+
+  /**
+   * 상단 기준시간/감소율 기반으로 수동 입력값(일괄·할부)을 채우는 헬퍼
+   */
+  const populateManualDurationsFromBase = (applyPercentDecay: boolean) => {
+    const baseMin = Math.max(1, wrongExamCustomMinutes);
+    const totalQ = wrongExamModal?.wrongQuestions.length ?? 0;
+
+    // 1) 일반 일괄 회수용 회차 배열 채우기
+    const nextBatch = Array.from({ length: Math.max(1, treasureRounds) }, (_, i) =>
+      calculateRoundDuration(
+        baseMin,
+        i + 1,
+        applyPercentDecay ? 'percent' : 'fixed',
+        treasurePercentReduction
+      )
+    );
+    setTreasureManualDurations(nextBatch);
+
+    // 2) 할부 세트별 바퀴 배열 채우기
+    if (totalQ > 0) {
+      const nextInst: Record<number, number[]> = {};
+      installmentPreview.sets.forEach((s) => {
+        nextInst[s.setIndex] = Array.from({ length: s.setRounds }, (_, rIdx) =>
+          calculateInstallmentRoundDuration(
+            baseMin,
+            totalQ,
+            s.activeCount,
+            rIdx + 1,
+            {
+              time_attack_mode: applyPercentDecay ? 'percent' : 'fixed',
+              percent_reduction: treasurePercentReduction,
+            }
+          )
+        );
+      });
+      setInstallmentManualSetDurations(nextInst);
     }
   };
 
@@ -2265,6 +2408,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setWrongExamRemindPopup(false);
     setChangingTwinQuestionId(null);
     setInstallmentSetRounds({});
+    setInstallmentManualSetDurations({});
 
     // 선별 템플릿에서 생성 설정 연동 옵션이 켜져 있으면 해당 생성 템플릿 자동 적용
     if (options?.linkedTreasureTemplateId) {
@@ -2376,6 +2520,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       let effectiveTotalRounds = Math.max(1, treasureRounds);
 
       if (treasureEnabled && installmentEnabled) {
+        const resolvedSetManualMap: Record<number, number[]> | undefined =
+          treasureTimeMode === 'manual' && finalDuration > 0
+            ? Object.fromEntries(
+                installmentPreview.sets.map(s => [s.setIndex, s.roundDurations])
+              )
+            : undefined;
+
         const setsPlan = buildInstallmentPlan(
           finalQuestions.map(q => q.id),
           {
@@ -2384,6 +2535,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             setRoundsOverrides: installmentSetRounds,
             recallMode: installmentRecallMode,
             recallPoolCount: installmentRecallPoolCount,
+            setManualDurations: resolvedSetManualMap,
           }
         );
         effectiveTotalRounds = Math.max(1, getInstallmentTotalRounds(setsPlan));
@@ -2421,6 +2573,15 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         };
       }
 
+      const normalizedManualDurations =
+        treasureEnabled && !installmentEnabled && treasureTimeMode === 'manual' && finalDuration > 0
+          ? Array.from({ length: Math.min(12, effectiveTotalRounds) }, (_, idx) =>
+              treasureManualDurations[idx] && treasureManualDurations[idx] > 0
+                ? treasureManualDurations[idx]
+                : calculateRoundDuration(finalDuration, idx + 1, 'percent', treasurePercentReduction)
+            )
+          : undefined;
+
       const treasureConfigPayload: TreasureConfig | undefined = treasureEnabled ? {
         enabled: true,
         total_rounds: effectiveTotalRounds,
@@ -2428,7 +2589,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         time_attack_mode: treasureTimeMode,
         base_duration_min: finalDuration,
         percent_reduction: treasurePercentReduction,
-        manual_durations: treasureTimeMode === 'manual' ? treasureManualDurations : undefined,
+        manual_durations: normalizedManualDurations,
         variable_reductions: treasureTimeMode === 'variable_percent' ? treasureVariableReductions : undefined,
         installment: installmentPayload,
       } : undefined;
@@ -2741,14 +2902,30 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setExams(prev =>
           prev.map(e =>
             e.id === durationModalExam.id
-              ? { ...e, title: finalTitle, duration_min: finalDuration, filter_chip_ids: editFilterChipIds }
+              ? {
+                  ...e,
+                  title: finalTitle,
+                  duration_min: finalDuration,
+                  filter_chip_ids: editFilterChipIds,
+                  treasure_config: e.treasure_config
+                    ? { ...e.treasure_config, base_duration_min: finalDuration }
+                    : e.treasure_config,
+                }
               : e
           )
         );
         if (assignModalExam && assignModalExam.id === durationModalExam.id) {
           setAssignModalExam(prev =>
             prev
-              ? { ...prev, title: finalTitle, duration_min: finalDuration, filter_chip_ids: editFilterChipIds }
+              ? {
+                  ...prev,
+                  title: finalTitle,
+                  duration_min: finalDuration,
+                  filter_chip_ids: editFilterChipIds,
+                  treasure_config: prev.treasure_config
+                    ? { ...prev.treasure_config, base_duration_min: finalDuration }
+                    : prev.treasure_config,
+                }
               : null
           );
         }
@@ -6589,21 +6766,42 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
               )}
 
               {/* 🌟 1-2. 시험 제한 시간 및 리마인드 팝업 설정 카드 */}
-              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+              {(() => {
+                const totalWrongCnt = Math.max(1, wrongExamModal.wrongQuestions.length);
+                const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+                const perQMin = baseMin > 0 ? +(baseMin / totalWrongCnt).toFixed(1) : 0;
+                const updateBaseMinutes = (nextMin: number) => {
+                  const clamped = Math.max(1, Math.min(300, nextMin));
+                  setWrongExamCustomMinutes(clamped);
+                  if (treasureEnabled && !installmentEnabled && treasureTimeMode === 'manual') {
+                    setTreasureManualDurations(prev => {
+                      const next = [...prev];
+                      next[0] = clamped;
+                      return next;
+                    });
+                  }
+                };
+
+                return (
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2.5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
                   {/* 제한 시간 설정 */}
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between text-xs gap-2">
                       <span className="font-bold text-slate-700 flex items-center gap-1">
                         <Clock size={14} className="text-slate-500" />
-                        시험 제한 시간
+                        {!treasureEnabled
+                          ? '시험 제한 시간'
+                          : installmentEnabled
+                          ? `전체 ${totalWrongCnt}문항 기준 시간 (할부 1바퀴 산출용)`
+                          : '1회차 기준 제한 시간'}
                       </span>
-                      <span className="text-[11px] text-slate-400">
-                        권장: {Math.max(10, wrongExamModal.wrongQuestions.length * 3)}분
+                      <span className="text-[11px] text-slate-400 shrink-0">
+                        권장: {Math.max(10, totalWrongCnt * 3)}분
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl border border-slate-200">
                         <button
                           type="button"
@@ -6633,7 +6831,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         <div className="flex items-center bg-white border border-slate-300 rounded-xl overflow-hidden shadow-2xs">
                           <button
                             type="button"
-                            onClick={() => setWrongExamCustomMinutes(prev => Math.max(5, prev - 5))}
+                            onClick={() => updateBaseMinutes(Math.max(5, wrongExamCustomMinutes - 5))}
                             className="px-2.5 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                           >
                             -5분
@@ -6643,13 +6841,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                             min={1}
                             max={300}
                             value={wrongExamCustomMinutes}
-                            onChange={e => setWrongExamCustomMinutes(Math.max(1, parseInt(e.target.value) || 1))}
+                            onChange={e => updateBaseMinutes(parseInt(e.target.value, 10) || 1)}
                             className="w-14 text-center text-xs font-black text-slate-800 border-x border-slate-200 py-1 focus:outline-none focus:bg-purple-50/50"
                           />
                           <span className="text-[10px] font-bold text-slate-400 px-1">분</span>
                           <button
                             type="button"
-                            onClick={() => setWrongExamCustomMinutes(prev => prev + 5)}
+                            onClick={() => updateBaseMinutes(wrongExamCustomMinutes + 5)}
                             className="px-2.5 py-1.5 text-xs font-black text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
                           >
                             +5분
@@ -6657,6 +6855,29 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                         </div>
                       )}
                     </div>
+
+                    {wrongExamDurationMode !== 'unlimited' && treasureEnabled && (
+                      <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                        <span className="text-[10px] font-bold text-slate-500 mr-0.5">문항당 빠른 설정:</span>
+                        {[2, 3, 4, 5].map(perM => {
+                          const targetTotal = totalWrongCnt * perM;
+                          return (
+                            <button
+                              key={perM}
+                              type="button"
+                              onClick={() => updateBaseMinutes(targetTotal)}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors cursor-pointer ${
+                                wrongExamCustomMinutes === targetTotal
+                                  ? 'bg-purple-600 text-white border-purple-600'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:border-purple-300 hover:text-purple-700'
+                              }`}
+                            >
+                              {perM}분/문항 ({targetTotal}분)
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* 학생 접속 리마인드 팝업 알림 토글 */}
@@ -6686,7 +6907,39 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     </label>
                   </div>
                 </div>
+
+                {/* 💡 상단 시간과 보물회수(일괄/할부) 연결 구조 안내 바 */}
+                {treasureEnabled && (
+                  <div className={`rounded-xl px-3 py-2 text-[11px] flex flex-wrap items-center justify-between gap-2 border ${
+                    baseMin === 0
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : installmentEnabled
+                      ? 'bg-amber-50 border-amber-200 text-amber-950'
+                      : 'bg-purple-50/70 border-purple-200 text-purple-950'
+                  }`}>
+                    {baseMin === 0 ? (
+                      <span className="font-bold">
+                        ♾️ 현재 <strong>시간제한 없음(자율 학습)</strong> 모드입니다. 모든 회차·세트가 타이머 없이 진행됩니다.
+                      </span>
+                    ) : installmentEnabled ? (
+                      <>
+                        <span>
+                          💡 <strong>할부 시간 기준:</strong> 전체 <strong>{baseMin}분 ÷ {totalWrongCnt}문항 = 문항당 약 {perQMin}분</strong> 비율로 각 세트 <strong>1바퀴 시간</strong>이 자동 산출됩니다.
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-white border border-amber-300 font-black text-amber-900 text-[10.5px] shrink-0">
+                          총 {installmentPreview.totalCourseRounds}바퀴 · 완주 누적 약 {installmentPreview.totalCourseMinutes}분
+                        </span>
+                      </>
+                    ) : (
+                      <span>
+                        💡 <strong>일괄 시간 기준:</strong> 1회차 <strong>{baseMin}분</strong> (문항당 약 {perQMin}분)에서 시작해 {treasureRounds}회차까지 타임어택이 적용됩니다.
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
+                );
+              })()}
 
               {/* 🌟 1-3. 💎 보물회수 (반복 훈련 & 타임어택 & 믹싱) 특화 설정 */}
               <div className="bg-gradient-to-br from-amber-50 via-yellow-50/40 to-amber-100/50 border-2 border-amber-300 rounded-2xl p-4 space-y-4 shadow-sm">
@@ -6794,6 +7047,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                     {(() => {
                       const totalWrongCnt = wrongExamModal.wrongQuestions.length;
                       const isHighOrMany = totalWrongCnt >= 8 || wrongExamModal.student.grade.includes('고');
+                      const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+                      const perQMin = totalWrongCnt > 0 && baseMin > 0 ? +(baseMin / totalWrongCnt).toFixed(1) : 0;
                       return (
                         <div className="space-y-2">
                           <label className="text-xs font-black text-amber-950 flex items-center justify-between">
@@ -6820,6 +7075,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               <p className="text-[10px] text-slate-500 mt-1 leading-snug">
                                 틀린 {totalWrongCnt}문항 전체를 1회차~N회차까지 매번 통째로 반복합니다.
                               </p>
+                              <p className="text-[10px] font-bold text-amber-800 mt-1.5 pt-1 border-t border-amber-100">
+                                ⏱️ {baseMin > 0 ? `상단 ${baseMin}분 = 1회차 시간 → 이후 타임어택` : '전체 자율(무제한) 진행'}
+                              </p>
                             </button>
 
                             <button
@@ -6841,6 +7099,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               </div>
                               <p className="text-[10px] text-slate-500 mt-1 leading-snug">
                                 {installmentChunkSize}문항씩 쪼개 집중 회전 + 다음 세트에 이전 문제를 중복 없이 순환 투입
+                              </p>
+                              <p className="text-[10px] font-bold text-amber-800 mt-1.5 pt-1 border-t border-amber-100">
+                                ⏱️ {baseMin > 0 ? `문항당 약 ${perQMin}분 × 세트 문항수 = 1바퀴 시간` : '전체 자율(무제한) 진행'}
                               </p>
                             </button>
                           </div>
@@ -6926,6 +7187,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   onClick={() => {
                                     setInstallmentChunkSize(sz);
                                     setInstallmentSetRounds({});
+                                    setInstallmentManualSetDurations({});
                                   }}
                                   className={`px-2 py-1 rounded text-[11px] font-black cursor-pointer ${
                                     installmentChunkSize === sz
@@ -6945,6 +7207,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                   const v = Math.max(1, parseInt(e.target.value, 10) || 5);
                                   setInstallmentChunkSize(v);
                                   setInstallmentSetRounds({});
+                                  setInstallmentManualSetDurations({});
                                 }}
                                 className="w-12 px-1.5 py-1 rounded border border-amber-300 text-center text-xs font-black bg-white ml-auto"
                               />
@@ -7117,51 +7380,56 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                           </div>
                         </div>
 
-                        {/* 2-C. 실시간 세트 분할 미리보기 & 세트별 개별 바퀴수 조정 */}
+                        {/* 2-C. 실시간 세트 분할 미리보기 & 세트별 개별 바퀴수 / 수동 시간 조정 */}
                         {(() => {
-                          const totalQ = wrongExamModal.wrongQuestions.length;
-                          const safeChunk = Math.max(1, installmentChunkSize);
-                          const numSets = Math.ceil(totalQ / safeChunk);
                           const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
-                          let cumulativePrevQ = 0;
+                          const isManualActive = treasureTimeMode === 'manual' && baseMin > 0;
 
                           return (
                             <div className="bg-white/95 border border-amber-300 rounded-xl p-3 space-y-2.5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <span className="text-xs font-black text-amber-950 flex items-center gap-1.5">
-                                  <span>🗓️</span> 할부·누적 코스 미리보기 (세트별 바퀴수 개별 수정 가능)
+                                  <span>🗓️</span> 할부·누적 코스 미리보기 (세트별 바퀴수{isManualActive ? ' · 바퀴별 시간' : ''} 개별 수정 가능)
                                 </span>
-                                <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
-                                  🔀 바퀴마다 이전 문항 겹침 없이 순환 투입
-                                </span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
+                                    🔀 바퀴마다 이전 문항 겹침 없이 순환 투입
+                                  </span>
+                                  <span className="text-[10px] font-black text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                                    총 {installmentPreview.totalCourseRounds}바퀴 · {baseMin === 0 ? '자율(무제한)' : `누적 약 ${installmentPreview.totalCourseMinutes}분`}
+                                  </span>
+                                </div>
                               </div>
 
+                              {isManualActive && (
+                                <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-50/90 border border-amber-200 rounded-lg px-2.5 py-1.5 text-[10.5px]">
+                                  <span className="font-bold text-amber-900">
+                                    ✏️ 아래 각 묶음 카드 안의 바퀴별 시간(분)을 직접 입력할 수 있습니다.
+                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => populateManualDurationsFromBase(true)}
+                                      className="px-2 py-0.5 rounded bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 font-black cursor-pointer"
+                                    >
+                                      상단({baseMin}분) -{treasurePercentReduction}% 채우기
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => populateManualDurationsFromBase(false)}
+                                      className="px-2 py-0.5 rounded bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
+                                    >
+                                      1바퀴 동일시간 채우기
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
                               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                                {Array.from({ length: numSets }, (_, sIdx) => {
-                                  const startNum = sIdx * safeChunk + 1;
-                                  const endNum = Math.min((sIdx + 1) * safeChunk, totalQ);
-                                  const coreCount = endNum - startNum + 1;
-                                  const recallCount =
-                                    sIdx === 0
-                                      ? 0
-                                      : installmentRecallMode === 'per_set'
-                                      ? sIdx
-                                      : Math.min(installmentRecallPoolCount, cumulativePrevQ);
-                                  const activeCount = coreCount + recallCount;
-                                  const setRounds = installmentSetRounds[sIdx] ?? installmentDefaultRounds;
-                                  const firstDur = calculateInstallmentRoundDuration(baseMin, totalQ, activeCount, 1, {
-                                    time_attack_mode: treasureTimeMode,
-                                    percent_reduction: treasurePercentReduction,
-                                    manual_durations: treasureManualDurations,
-                                    variable_reductions: treasureVariableReductions,
-                                  });
-                                  const lastDur = calculateInstallmentRoundDuration(baseMin, totalQ, activeCount, setRounds, {
-                                    time_attack_mode: treasureTimeMode,
-                                    percent_reduction: treasurePercentReduction,
-                                    manual_durations: treasureManualDurations,
-                                    variable_reductions: treasureVariableReductions,
-                                  });
-                                  cumulativePrevQ += coreCount;
+                                {installmentPreview.sets.map((s) => {
+                                  const sIdx = s.setIndex;
+                                  const firstDur = s.roundDurations[0] ?? 0;
+                                  const lastDur = s.roundDurations[s.roundDurations.length - 1] ?? firstDur;
 
                                   return (
                                     <div
@@ -7175,21 +7443,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                       <div className="flex items-center justify-between text-[11px] font-black text-slate-800">
                                         <span>{sIdx + 1}묶음</span>
                                         <span className="px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-700 text-[9px]">
-                                          #{startNum}~#{endNum}
+                                          #{s.startNum}~#{s.endNum}
                                         </span>
                                       </div>
 
                                       <div className="text-[11px] leading-snug bg-white rounded-lg p-2 border border-slate-200/80">
-                                        <div className="font-bold text-slate-700">신규 {coreCount}문항</div>
-                                        {recallCount > 0 ? (
+                                        <div className="font-bold text-slate-700">신규 {s.coreCount}문항</div>
+                                        {s.recallCount > 0 ? (
                                           <div className="font-black text-amber-700">
-                                            + 리콜 {recallCount}문항
+                                            + 리콜 {s.recallCount}문항
                                           </div>
                                         ) : (
                                           <div className="text-[10px] text-slate-400">(리콜 없음)</div>
                                         )}
                                         <div className="font-black text-indigo-700 mt-0.5 pt-0.5 border-t border-slate-100">
-                                          = 바퀴당 {activeCount}문항
+                                          = 바퀴당 {s.activeCount}문항
                                         </div>
                                       </div>
 
@@ -7207,7 +7475,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                           -
                                         </button>
                                         <span className="text-[11px] font-black text-slate-900">
-                                          {setRounds}바퀴
+                                          {s.setRounds}바퀴
                                         </span>
                                         <button
                                           type="button"
@@ -7223,13 +7491,63 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                         </button>
                                       </div>
 
-                                      <div className="text-[9.5px] font-bold text-slate-500 text-center">
-                                        {baseMin === 0
-                                          ? '무제한 (자율)'
-                                          : firstDur === lastDur
-                                          ? `⏱️ 바퀴당 ${firstDur}분`
-                                          : `⏱️ ${firstDur}분 ➔ ${lastDur}분`}
-                                      </div>
+                                      {baseMin === 0 ? (
+                                        <div className="text-[10px] font-bold text-emerald-700 text-center bg-emerald-50 rounded-md py-1 border border-emerald-200">
+                                          ♾️ 자율 학습 (무제한)
+                                        </div>
+                                      ) : isManualActive ? (
+                                        <div className="space-y-1 bg-white rounded-lg p-1.5 border border-amber-200">
+                                          <div className="grid grid-cols-2 gap-1">
+                                            {s.roundDurations.map((dur, rIdx) => (
+                                              <label key={rIdx} className="flex items-center justify-between gap-1 text-[9.5px] font-bold text-slate-600 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                                                <span>{rIdx + 1}바퀴</span>
+                                                <div className="flex items-center gap-0.5">
+                                                  <input
+                                                    type="number"
+                                                    min={1}
+                                                    max={180}
+                                                    value={dur}
+                                                    onChange={e => {
+                                                      const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                                      setInstallmentManualSetDurations(prev => {
+                                                        const baseArr = prev[sIdx]
+                                                          ? [...prev[sIdx]]
+                                                          : [...s.roundDurations];
+                                                        while (baseArr.length < s.setRounds) {
+                                                          baseArr.push(s.roundDurations[baseArr.length] ?? s.scaledBaseMin);
+                                                        }
+                                                        baseArr[rIdx] = val;
+                                                        return { ...prev, [sIdx]: baseArr };
+                                                      });
+                                                    }}
+                                                    className="w-9 text-center font-black text-[10px] text-amber-900 bg-white border border-amber-300 rounded py-0.2 focus:outline-none"
+                                                  />
+                                                  <span>분</span>
+                                                </div>
+                                              </label>
+                                            ))}
+                                          </div>
+                                          <div className="text-[9.5px] font-black text-amber-800 text-center pt-0.5 border-t border-slate-100">
+                                            소계 {s.setTotalMin}분
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="space-y-1 text-center bg-white/90 rounded-lg p-1.5 border border-slate-200/70">
+                                          <div className="text-[10px] font-black text-slate-700">
+                                            {firstDur === lastDur
+                                              ? `⏱️ 바퀴당 ${firstDur}분`
+                                              : `⏱️ 1바퀴 ${firstDur}분 ➔ ${s.setRounds}바퀴 ${lastDur}분`}
+                                          </div>
+                                          {s.roundDurations.length > 1 && (
+                                            <div className="text-[9px] text-slate-500 font-medium leading-tight">
+                                              {s.roundDurations.map((d, idx) => `${idx + 1}R:${d}`).join(' · ')}분
+                                            </div>
+                                          )}
+                                          <div className="text-[9.5px] font-black text-indigo-700">
+                                            소계 {s.setTotalMin}분
+                                          </div>
+                                        </div>
+                                      )}
                                     </div>
                                   );
                                 })}
@@ -7248,13 +7566,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {[
                           { id: 'percent', label: '일괄 % 감소', desc: '매회 동일 % 단축' },
-                          { id: 'manual', label: '회차별 직접 입력', desc: '회차별 분 지정' },
+                          { id: 'manual', label: '회차별 직접 입력', desc: '회차·바퀴별 분 지정' },
                           { id: 'variable_percent', label: '단계별 가변 %', desc: '회차 사이별 차등 단축' },
                           { id: 'fixed', label: '고정 시간', desc: '동일 시간 반복' },
                         ].map(m => (
                           <div
                             key={m.id}
-                            onClick={() => setTreasureTimeMode(m.id as TimeAttackMode)}
+                            onClick={() => {
+                              const nextMode = m.id as TimeAttackMode;
+                              setTreasureTimeMode(nextMode);
+                              if (nextMode === 'manual') {
+                                if (!installmentEnabled && treasureManualDurations.length < treasureRounds) {
+                                  populateManualDurationsFromBase(true);
+                                }
+                              }
+                            }}
                             className={`p-2 rounded-xl border-2 cursor-pointer transition-all text-center select-none ${
                               treasureTimeMode === m.id
                                 ? 'border-amber-500 bg-white shadow-xs ring-1 ring-amber-400'
@@ -7270,9 +7596,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
                     {/* 4. 타임어택 세부 옵션 인풋 */}
                     {treasureTimeMode === 'percent' && (
-                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex items-center justify-between text-xs">
+                      <div className="bg-white/80 p-3 rounded-xl border border-amber-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <span className="font-bold text-amber-900">회차당 시간 감소율:</span>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           {[10, 15, 20, 25].map(p => (
                             <button
                               key={p}
@@ -7300,41 +7626,196 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                       </div>
                     )}
 
-                    {/* 5. ⏱️ 실시간 회차별 타임라인 미리보기 (일반 일괄 모드용) */}
-                    {!installmentEnabled && (
-                      <div className="bg-amber-900/5 border border-amber-200/80 rounded-xl p-3 space-y-1.5">
-                        <span className="text-[11px] font-black text-amber-900 flex items-center gap-1">
-                          <span>🎯</span> 회차별 예상 타임어택 코스 미리보기:
-                        </span>
-                        <div className="flex items-center gap-1.5 flex-wrap text-xs">
-                          {Array.from({ length: Math.min(10, treasureRounds) }, (_, i) => {
-                            const r = i + 1;
-                            const baseMin = wrongExamDurationMode === 'unlimited' ? 30 : Math.max(1, wrongExamCustomMinutes);
-                            const dur = calculateRoundDuration(
-                              baseMin,
-                              r,
-                              treasureTimeMode,
-                              treasurePercentReduction,
-                              treasureManualDurations,
-                              treasureVariableReductions
-                            );
-                            return (
-                              <div key={r} className="flex items-center gap-1">
-                                <span className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 font-black text-amber-950 text-[11px] shadow-2xs">
-                                  {r}회차: <strong className="text-amber-700 font-extrabold">{dur}분</strong>
+                    {treasureTimeMode === 'manual' && (
+                      <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-2 text-xs">
+                        {wrongExamDurationMode === 'unlimited' ? (
+                          <div className="text-[11px] font-bold text-emerald-700">
+                            ♾️ 상단에서 <strong>시간제한 없음(자율)</strong>이 선택되어 있습니다. 회차별 분을 직접 입력하려면 상단에서 <strong>제한시간 설정</strong>을 선택해주세요.
+                          </div>
+                        ) : installmentEnabled ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                            <span className="font-bold text-amber-900">
+                              ✏️ 할부·누적 모드에서는 위의 <strong>할부·누적 코스 미리보기</strong> 각 묶음 카드 안에서 바퀴별 시간을 직접 수정할 수 있습니다.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => populateManualDurationsFromBase(true)}
+                              className="px-2.5 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-[10.5px] cursor-pointer shrink-0"
+                            >
+                              상단({wrongExamCustomMinutes}분) 기준 자동 채우기
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-black text-amber-950">✏️ 회차별 제한 시간 직접 입력 (1회차는 상단 시간과 동기화)</span>
+                              <button
+                                type="button"
+                                onClick={() => populateManualDurationsFromBase(true)}
+                                className="px-2.5 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-[10.5px] cursor-pointer"
+                              >
+                                상단({wrongExamCustomMinutes}분) -{treasurePercentReduction}% 기준 채우기
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {Array.from({ length: Math.min(12, treasureRounds) }, (_, idx) => {
+                                const r = idx + 1;
+                                const currentVal =
+                                  treasureManualDurations[idx] && treasureManualDurations[idx] > 0
+                                    ? treasureManualDurations[idx]
+                                    : calculateRoundDuration(
+                                        Math.max(1, wrongExamCustomMinutes),
+                                        r,
+                                        'percent',
+                                        treasurePercentReduction
+                                      );
+                                return (
+                                  <label
+                                    key={r}
+                                    className="flex items-center gap-1.5 bg-amber-50/70 border border-amber-200 rounded-lg px-2 py-1"
+                                  >
+                                    <span className="text-[11px] font-black text-amber-900">{r}회차</span>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={300}
+                                      value={currentVal}
+                                      onChange={e => {
+                                        const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                        setTreasureManualDurations(prev => {
+                                          const baseArr = Array.from({ length: Math.max(treasureRounds, prev.length) }, (__, i2) =>
+                                            prev[i2] && prev[i2] > 0
+                                              ? prev[i2]
+                                              : calculateRoundDuration(
+                                                  Math.max(1, wrongExamCustomMinutes),
+                                                  i2 + 1,
+                                                  'percent',
+                                                  treasurePercentReduction
+                                                )
+                                          );
+                                          baseArr[idx] = val;
+                                          return baseArr;
+                                        });
+                                        if (idx === 0) {
+                                          setWrongExamCustomMinutes(val);
+                                        }
+                                      }}
+                                      className="w-12 px-1 py-0.5 rounded border border-amber-300 bg-white text-center font-black text-xs text-slate-900"
+                                    />
+                                    <span className="text-[10px] font-bold text-slate-500">분</span>
+                                  </label>
+                                );
+                              })}
+                              {treasureRounds > 12 && (
+                                <span className="text-[10px] font-bold text-amber-700">
+                                  (13~{treasureRounds}회차는 상단 기준시간 유지)
                                 </span>
-                                {r < Math.min(10, treasureRounds) && (
-                                  <span className="text-amber-400 font-bold">➔</span>
-                                )}
-                              </div>
-                            );
-                          })}
-                          {treasureRounds > 10 && (
-                            <span className="text-[10px] text-amber-600 font-bold">... (총 {treasureRounds}회차까지 진행)</span>
-                          )}
-                        </div>
+                              )}
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
+
+                    {treasureTimeMode === 'variable_percent' && (() => {
+                      const maxRoundsForSteps = installmentEnabled
+                        ? Math.max(2, ...installmentPreview.sets.map(s => s.setRounds))
+                        : Math.max(2, treasureRounds);
+                      const stepCount = Math.min(8, Math.max(1, maxRoundsForSteps - 1));
+                      const unitLabel = installmentEnabled ? '바퀴' : '회차';
+                      return (
+                        <div className="bg-white/90 p-3 rounded-xl border border-amber-200 space-y-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-black text-amber-950">📉 단계별 시간 감소율(%) 직접 지정</span>
+                            <span className="text-[10px] text-slate-500 font-bold">직전 {unitLabel} 대비 단축률</span>
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {Array.from({ length: stepCount }, (_, idx) => {
+                              const pVal = treasureVariableReductions[idx] ?? treasurePercentReduction;
+                              return (
+                                <label
+                                  key={idx}
+                                  className="flex items-center gap-1 bg-amber-50/70 border border-amber-200 rounded-lg px-2 py-1"
+                                >
+                                  <span className="text-[10.5px] font-black text-amber-900">
+                                    {idx + 1}➔{idx + 2}{unitLabel}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={70}
+                                    value={pVal}
+                                    onChange={e => {
+                                      const val = Math.max(0, Math.min(70, parseInt(e.target.value, 10) || 0));
+                                      setTreasureVariableReductions(prev => {
+                                        const next = [...prev];
+                                        next[idx] = val;
+                                        return next;
+                                      });
+                                    }}
+                                    className="w-11 px-1 py-0.5 rounded border border-amber-300 bg-white text-center font-black text-xs text-slate-900"
+                                  />
+                                  <span className="text-[10px] font-bold text-slate-500">%</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 5. ⏱️ 실시간 회차별 타임라인 미리보기 (일반 일괄 모드용) */}
+                    {!installmentEnabled && (() => {
+                      const baseMin = wrongExamDurationMode === 'unlimited' ? 0 : Math.max(1, wrongExamCustomMinutes);
+                      const allDurs = Array.from({ length: Math.max(1, treasureRounds) }, (_, i) =>
+                        calculateRoundDuration(
+                          baseMin,
+                          i + 1,
+                          treasureTimeMode,
+                          treasurePercentReduction,
+                          treasureManualDurations,
+                          treasureVariableReductions
+                        )
+                      );
+                      const totalBatchMin = allDurs.reduce((acc, d) => acc + d, 0);
+
+                      return (
+                        <div className="bg-amber-900/5 border border-amber-200/80 rounded-xl p-3 space-y-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] font-black text-amber-900 flex items-center gap-1">
+                              <span>🎯</span> 회차별 예상 타임어택 코스 미리보기:
+                            </span>
+                            <span className="text-[10px] font-black text-amber-900 bg-white/80 px-2 py-0.5 rounded-full border border-amber-200">
+                              총 {treasureRounds}회차 · {baseMin === 0 ? '자율(무제한)' : `완주 누적 약 ${totalBatchMin}분`}
+                            </span>
+                          </div>
+                          {baseMin === 0 ? (
+                            <div className="text-xs font-bold text-emerald-700 py-1">
+                              ♾️ 모든 {treasureRounds}회차가 시간제한 없음(자율 학습)으로 진행됩니다.
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                              {allDurs.slice(0, 10).map((dur, i) => {
+                                const r = i + 1;
+                                return (
+                                  <div key={r} className="flex items-center gap-1">
+                                    <span className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 font-black text-amber-950 text-[11px] shadow-2xs">
+                                      {r}회차: <strong className="text-amber-700 font-extrabold">{dur}분</strong>
+                                    </span>
+                                    {r < Math.min(10, treasureRounds) && (
+                                      <span className="text-amber-400 font-bold">➔</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {treasureRounds > 10 && (
+                                <span className="text-[10px] text-amber-600 font-bold">... (총 {treasureRounds}회차까지 진행)</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
