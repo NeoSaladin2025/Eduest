@@ -820,6 +820,22 @@ export default function StudentTest2View({
     [currentExam, timeLeft, studentId, studentName, studentGrade, currentBundle, currentRound, currentQuestionIndex, currentSetIndex, currentSetRound, currentRecallOriginMap]
   );
 
+  // ping_students / ping_proctor / 20초 주기 동기화에서 최신 상태 참조용 Ref
+  const proctorSyncStateRef = useRef({
+    viewMode,
+    currentExam,
+    isLocked,
+    timeLeft,
+    broadcastProctorStatus,
+  });
+  proctorSyncStateRef.current = {
+    viewMode,
+    currentExam,
+    isLocked,
+    timeLeft,
+    broadcastProctorStatus,
+  };
+
   // 📡 Supabase Realtime 채널 연결 (선생님의 원격 잠금 해제 승인 수신 & 브로드캐스트)
   useEffect(() => {
     if (!studentId) return;
@@ -838,14 +854,16 @@ export default function StudentTest2View({
       })
       .on('broadcast', { event: 'ping_students' }, () => {
         // 선생님 모니터링 화면에서 핑 요청 시 현재 시험 응시 상태 즉시 회신
-        if (viewMode === 'taking' && currentExam) {
-          broadcastProctorStatus(isLocked ? 'AWAY' : 'TESTING');
+        const cur = proctorSyncStateRef.current;
+        if (cur.viewMode === 'taking' && cur.currentExam) {
+          cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
         }
       })
       .on('broadcast', { event: 'ping_proctor' }, () => {
         // 시험 감독 동기화 핑 요청 시 즉시 회신
-        if (viewMode === 'taking' && currentExam) {
-          broadcastProctorStatus(isLocked ? 'AWAY' : 'TESTING');
+        const cur = proctorSyncStateRef.current;
+        if (cur.viewMode === 'taking' && cur.currentExam) {
+          cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
         }
       })
       .on('postgres_changes', {
@@ -1329,16 +1347,17 @@ export default function StudentTest2View({
     return () => clearInterval(timer);
   }, [viewMode, currentExam, isLocked, isPaused, studentId]);
 
-  // 주기적(20초마다) DB 동기화
+  // 주기적(20초마다) DB 동기화 (timeLeft 변경으로 인터벌이 리셋되지 않도록 Ref 사용)
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam || isLocked || isPaused) return;
 
     const syncInterval = setInterval(() => {
-      broadcastProctorStatus('TESTING', timeLeft);
+      const cur = proctorSyncStateRef.current;
+      cur.broadcastProctorStatus('TESTING', cur.timeLeft);
     }, 20000);
 
     return () => clearInterval(syncInterval);
-  }, [viewMode, currentExam, isLocked, isPaused, timeLeft, broadcastProctorStatus]);
+  }, [viewMode, currentExam, isLocked, isPaused]);
 
   // 💾 서버 임시 답안 실시간 동기화 (선생님이 실시간 모니터링할 수 있도록 백그라운드 전송)
   const syncTempProgressToServer = useCallback((answersToSync: Record<string, any>) => {

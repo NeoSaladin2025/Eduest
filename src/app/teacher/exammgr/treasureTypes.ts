@@ -422,6 +422,77 @@ export function resolveInstallmentCoordsFromGlobalRound(
 }
 
 /**
+ * 실시간 모니터링용 할부 메타 보완 헬퍼
+ * (학생 구버전 클라이언트/캐시 또는 DB 재조회 시에도 시험지 설정의 할부 정보로 묶음·바퀴를 자동 복원)
+ */
+export function enrichInstallmentProctorMeta(
+  state: {
+    round?: number;
+    is_installment?: boolean;
+    set_index?: number | null;
+    total_sets?: number | null;
+    set_round?: number | null;
+    set_total_rounds?: number | null;
+    current_question_number?: number | null;
+    is_recall_question?: boolean;
+    recall_origin_set?: number | null;
+  },
+  exam?: { treasure_config?: TreasureConfig } | null
+): {
+  is_installment: boolean;
+  set_index: number | null;
+  total_sets: number | null;
+  set_round: number | null;
+  set_total_rounds: number | null;
+  current_question_number: number | null;
+  is_recall_question: boolean;
+  recall_origin_set: number | null;
+} {
+  if (
+    state.is_installment &&
+    typeof state.set_index === 'number' &&
+    typeof state.set_round === 'number'
+  ) {
+    return {
+      is_installment: true,
+      set_index: state.set_index,
+      total_sets: state.total_sets ?? null,
+      set_round: state.set_round,
+      set_total_rounds: state.set_total_rounds ?? null,
+      current_question_number: state.current_question_number ?? null,
+      is_recall_question: Boolean(state.is_recall_question),
+      recall_origin_set: state.recall_origin_set ?? null,
+    };
+  }
+
+  const inst = exam?.treasure_config?.installment;
+  if (inst?.enabled && Array.isArray(inst.sets) && inst.sets.length > 0) {
+    const coords = resolveInstallmentCoordsFromGlobalRound(inst.sets, Math.max(1, Number(state.round) || 1));
+    return {
+      is_installment: true,
+      set_index: coords.setIndex,
+      total_sets: inst.sets.length,
+      set_round: coords.setRound,
+      set_total_rounds: inst.sets[coords.setIndex]?.rounds ?? null,
+      current_question_number: state.current_question_number ?? null,
+      is_recall_question: Boolean(state.is_recall_question),
+      recall_origin_set: state.recall_origin_set ?? null,
+    };
+  }
+
+  return {
+    is_installment: Boolean(state.is_installment),
+    set_index: state.set_index ?? null,
+    total_sets: state.total_sets ?? null,
+    set_round: state.set_round ?? null,
+    set_total_rounds: state.set_total_rounds ?? null,
+    current_question_number: state.current_question_number ?? null,
+    is_recall_question: Boolean(state.is_recall_question),
+    recall_origin_set: state.recall_origin_set ?? null,
+  };
+}
+
+/**
  * 특정 세트 & 바퀴에 실제 출제될 문항 배열과 리콜 메타 정보 반환
  */
 export function getInstallmentActiveQuestions<T extends { id: string }>(

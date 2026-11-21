@@ -39,6 +39,7 @@ import { StudentAwayLog } from '@/app/api/monitoring/away-logs/route';
 import LiveExamMonitoringModal from '@/app/teacher/exammgr/LiveExamMonitoringModal';
 import DirectAlertModal from './DirectAlertModal';
 import { DirectAlertPayload } from '@/lib/directAlertTypes';
+import { enrichInstallmentProctorMeta } from '@/app/teacher/exammgr/treasureTypes';
 
 export interface StudentActivity {
   student_id: string;
@@ -396,17 +397,30 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     }
   }, []);
 
+  const examsByIdRef = useRef<Record<string, any>>({});
+
   // 🌟 [최초 로드 및 수동 동기화] DB 전수 스캔 및 시험 종료 학생 좀비 상태 정화
   const fetchActiveTestingStudents = useCallback(async () => {
     try {
-      const [studentsRes, proctorRes] = await Promise.all([
+      const [studentsRes, proctorRes, examsRes] = await Promise.all([
         supabase
           .from('students')
           .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at'),
         fetch('/api/test2/proctor-state')
           .then((r) => r.json())
           .catch(() => ({ states: {} })),
+        fetch('/api/test2/exam')
+          .then((r) => r.json())
+          .catch(() => ({ exams: [] })),
       ]);
+
+      if (examsRes?.success && Array.isArray(examsRes.exams)) {
+        const examMap: Record<string, any> = {};
+        examsRes.exams.forEach((ex: any) => {
+          if (ex?.id) examMap[ex.id] = ex;
+        });
+        examsByIdRef.current = examMap;
+      }
 
       const data = studentsRes.data;
       const activeStates = proctorRes?.states || {};
@@ -424,6 +438,8 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const totalQ = pState.total_questions !== undefined ? pState.total_questions : 0;
 
             if (isTesting) {
+              const matchedExam = pState.exam_id ? examsByIdRef.current[pState.exam_id] : undefined;
+              const instMeta = enrichInstallmentProctorMeta(pState, matchedExam);
               next[s.id] = {
                 ...(next[s.id] || {}),
                 student_id: s.id,
@@ -438,14 +454,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                 round: round,
                 question_idx: qIdx,
                 total_questions: totalQ,
-                current_question_number: pState.current_question_number ?? null,
-                is_installment: Boolean(pState.is_installment),
-                set_index: pState.set_index ?? null,
-                total_sets: pState.total_sets ?? null,
-                set_round: pState.set_round ?? null,
-                set_total_rounds: pState.set_total_rounds ?? null,
-                is_recall_question: Boolean(pState.is_recall_question),
-                recall_origin_set: pState.recall_origin_set ?? null,
+                current_question_number: instMeta.current_question_number,
+                is_installment: instMeta.is_installment,
+                set_index: instMeta.set_index,
+                total_sets: instMeta.total_sets,
+                set_round: instMeta.set_round,
+                set_total_rounds: instMeta.set_total_rounds,
+                is_recall_question: instMeta.is_recall_question,
+                recall_origin_set: instMeta.recall_origin_set,
                 test_status: s.test_status,
                 test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
                 duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
@@ -576,6 +592,9 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           updated_at: p.updated_at,
         };
 
+        const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
+        const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
+
         return {
           ...prev,
           [p.student_id]: {
@@ -591,14 +610,14 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             round: p.round,
             question_idx: p.question_idx,
             total_questions: p.total_questions,
-            current_question_number: p.current_question_number ?? null,
-            is_installment: Boolean(p.is_installment),
-            set_index: p.set_index ?? null,
-            total_sets: p.total_sets ?? null,
-            set_round: p.set_round ?? null,
-            set_total_rounds: p.set_total_rounds ?? null,
-            is_recall_question: Boolean(p.is_recall_question),
-            recall_origin_set: p.recall_origin_set ?? null,
+            current_question_number: instMeta.current_question_number,
+            is_installment: instMeta.is_installment,
+            set_index: instMeta.set_index,
+            total_sets: instMeta.total_sets,
+            set_round: instMeta.set_round,
+            set_total_rounds: instMeta.set_total_rounds,
+            is_recall_question: instMeta.is_recall_question,
+            recall_origin_set: instMeta.recall_origin_set,
             test_status: p.test_status,
             test_remaining_sec: p.test_remaining_sec,
             duration_min: p.duration_min !== undefined ? p.duration_min : p.test_duration_min,
@@ -607,6 +626,31 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           },
         };
       });
+
+      if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
+        fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
+          .then((r) => r.json())
+          .then((res) => {
+            if (res?.success && res.exam?.id) {
+              examsByIdRef.current[res.exam.id] = res.exam;
+              const enriched = enrichInstallmentProctorMeta(p, res.exam);
+              if (enriched.is_installment) {
+                setLiveMap((prev) => {
+                  const cur = prev[p.student_id];
+                  if (!cur || cur.exam_id !== p.exam_id) return prev;
+                  return {
+                    ...prev,
+                    [p.student_id]: {
+                      ...cur,
+                      ...enriched,
+                    },
+                  };
+                });
+              }
+            }
+          })
+          .catch(() => {});
+      }
     });
 
     // 3. Supabase DB 변경 실시간 감지 (시험 상태 동기화)

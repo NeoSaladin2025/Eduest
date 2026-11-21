@@ -27,6 +27,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { enrichInstallmentProctorMeta } from './treasureTypes';
 
 interface Student {
   id: string;
@@ -160,30 +161,40 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
     }
   }, []);
 
+  const examsByIdRef = useRef<Record<string, any>>({});
+
   // 🌟 [핵심 함수] 전체 학생 상태 로드 & 실시간 시험 상세 상태(/api/test2/proctor-state) 스캔
   const fetchStudentsData = useCallback(async () => {
     try {
-      // 1) DB students 기본 상태 로드 (유효한 컬럼만 조회하여 DB 42703 에러 원천 방지)
-      const { data: dbStudents } = await supabase
-        .from('students')
-        .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at');
+      // 1) DB students 기본 상태 로드 + proctor-state + 시험지 메타 병렬 조회
+      const [studentsRes, proctorJson, examsJson] = await Promise.all([
+        supabase
+          .from('students')
+          .select('id, name, grade, test_status, test_remaining_sec, test_duration_min, updated_at, last_away_at'),
+        fetch('/api/test2/proctor-state')
+          .then(r => r.json())
+          .catch(() => ({ states: {} })),
+        fetch('/api/test2/exam')
+          .then(r => r.json())
+          .catch(() => ({ exams: [] })),
+      ]);
 
-      // 2) 실시간 시험 상세 정보(/api/test2/proctor-state) 로드
-      let activeStates: Record<string, any> = {};
-      try {
-        const res = await fetch('/api/test2/proctor-state');
-        const json = await res.json();
-        if (json.success && json.states) {
-          activeStates = json.states;
-        }
-      } catch (e) {
-        console.warn('Failed to fetch proctor states:', e);
+      const dbStudents = studentsRes.data;
+      const activeStates: Record<string, any> = proctorJson?.success && proctorJson.states ? proctorJson.states : {};
+      if (examsJson?.success && Array.isArray(examsJson.exams)) {
+        const examMap: Record<string, any> = {};
+        examsJson.exams.forEach((ex: any) => {
+          if (ex?.id) examMap[ex.id] = ex;
+        });
+        examsByIdRef.current = examMap;
       }
 
       if (dbStudents) {
         const map: Record<string, Student> = {};
         dbStudents.forEach((s: any) => {
           const pState = activeStates[s.id];
+          const matchedExam = pState?.exam_id ? examsByIdRef.current[pState.exam_id] : undefined;
+          const instMeta = pState ? enrichInstallmentProctorMeta(pState, matchedExam) : null;
           map[s.id] = {
             id: s.id,
             name: s.name,
@@ -196,14 +207,14 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
             current_round: pState?.round,
             current_question_idx: pState?.question_idx,
             total_questions: pState?.total_questions,
-            current_question_number: pState?.current_question_number ?? null,
-            is_installment: Boolean(pState?.is_installment),
-            set_index: pState?.set_index ?? null,
-            total_sets: pState?.total_sets ?? null,
-            set_round: pState?.set_round ?? null,
-            set_total_rounds: pState?.set_total_rounds ?? null,
-            is_recall_question: Boolean(pState?.is_recall_question),
-            recall_origin_set: pState?.recall_origin_set ?? null,
+            current_question_number: instMeta?.current_question_number ?? null,
+            is_installment: instMeta?.is_installment ?? false,
+            set_index: instMeta?.set_index ?? null,
+            total_sets: instMeta?.total_sets ?? null,
+            set_round: instMeta?.set_round ?? null,
+            set_total_rounds: instMeta?.set_total_rounds ?? null,
+            is_recall_question: instMeta?.is_recall_question ?? false,
+            recall_origin_set: instMeta?.recall_origin_set ?? null,
             enable_lockdown: pState?.enable_lockdown,
             updated_at: pState?.updated_at || s.updated_at,
             last_away_at: s.last_away_at,
@@ -250,6 +261,9 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
 
           prevStatusesRef.current[p.student_id] = p.test_status;
 
+          const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
+          const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
+
           return {
             ...prev,
             [p.student_id]: {
@@ -261,19 +275,44 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
               current_round: p.round || existing.current_round,
               current_question_idx: p.question_idx,
               total_questions: p.total_questions,
-              current_question_number: p.current_question_number ?? null,
-              is_installment: Boolean(p.is_installment),
-              set_index: p.set_index ?? null,
-              total_sets: p.total_sets ?? null,
-              set_round: p.set_round ?? null,
-              set_total_rounds: p.set_total_rounds ?? null,
-              is_recall_question: Boolean(p.is_recall_question),
-              recall_origin_set: p.recall_origin_set ?? null,
+              current_question_number: instMeta.current_question_number,
+              is_installment: instMeta.is_installment,
+              set_index: instMeta.set_index,
+              total_sets: instMeta.total_sets,
+              set_round: instMeta.set_round,
+              set_total_rounds: instMeta.set_total_rounds,
+              is_recall_question: instMeta.is_recall_question,
+              recall_origin_set: instMeta.recall_origin_set,
               enable_lockdown: p.enable_lockdown !== undefined ? p.enable_lockdown : existing.enable_lockdown,
               updated_at: p.updated_at,
             },
           };
         });
+
+        if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
+          fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
+            .then(r => r.json())
+            .then(res => {
+              if (res?.success && res.exam?.id) {
+                examsByIdRef.current[res.exam.id] = res.exam;
+                const enriched = enrichInstallmentProctorMeta(p, res.exam);
+                if (enriched.is_installment) {
+                  setLiveStudentsMap(prev => {
+                    const cur = prev[p.student_id];
+                    if (!cur) return prev;
+                    return {
+                      ...prev,
+                      [p.student_id]: {
+                        ...cur,
+                        ...enriched,
+                      },
+                    };
+                  });
+                }
+              }
+            })
+            .catch(() => {});
+        }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
         const student = payload.new;
