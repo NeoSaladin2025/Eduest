@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
-import { downloadExamAsPdf } from '@/lib/examPdfGenerator';
+import { downloadExamAsPdf, type DuplexBindingMode } from '@/lib/examPdfGenerator';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
 import { extractSourceFileName } from '@/lib/clientQuestionParser';
@@ -48,7 +48,7 @@ interface ExamPrintModalProps {
 }
 
 export type QuestionsPerPageType = 1 | 2 | 4 | 6;
-export type DuplexBindingType = 'long' | 'short';
+export type DuplexBindingType = DuplexBindingMode;
 export type AnswerFontFamilyType = 'math' | 'sans' | 'serif';
 export type AnswerFontSizeType = 'small' | 'medium' | 'large';
 export type AnswerFontWeightType = 'medium' | 'bold' | 'black';
@@ -330,12 +330,17 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         setShowSourceFileName(savedSourceFileName === 'true');
       }
 
-      // 7. 양면 인쇄 넘김 방향 복원 (디폴트: 긴 가장자리 long)
+      // 7. 양면 인쇄 넘김 방향 및 미리보기 강제 회전 복원 (디폴트: 책 넘김 180° 보정 long)
       const savedDuplex = localStorage.getItem('eduest_print_duplex_binding');
-      if (savedDuplex === 'long' || savedDuplex === 'short') {
+      if (savedDuplex === 'long' || savedDuplex === 'long_raw' || savedDuplex === 'short') {
         setDuplexBinding(savedDuplex);
       } else {
-        setDuplexBinding('long'); // 디폴트: 긴 가장자리 (책 넘김★)
+        setDuplexBinding('long'); // 디폴트: 책 넘김 (뒷면 180° 자동 보정★)
+      }
+
+      const savedRotateEven = localStorage.getItem('eduest_print_preview_rotate_even');
+      if (savedRotateEven !== null) {
+        setPreviewRotateEven(savedRotateEven === 'true');
       }
 
       // 8. 제목 크기 & 헤더 밀도 & 수험표 복원
@@ -447,6 +452,11 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   const handleDuplexBindingChange = (binding: DuplexBindingType) => {
     setDuplexBinding(binding);
     localStorage.setItem('eduest_print_duplex_binding', binding);
+  };
+
+  const handleTogglePreviewRotateEven = (checked: boolean) => {
+    setPreviewRotateEven(checked);
+    localStorage.setItem('eduest_print_preview_rotate_even', String(checked));
   };
 
   const handleToggleFlowDirection = (dir: 'vertical' | 'horizontal') => {
@@ -1207,6 +1217,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         titleFontSize,
         headerDensity,
         marginPreset,
+        duplexBinding,
       });
     } catch (err) {
       console.error('PDF 다운로드 실패:', err);
@@ -1418,6 +1429,24 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
   };
 
   if (!isOpen || !exam) return null;
+
+  const renderDuplexSheetOverlay = (isEvenPage: boolean, shouldRotate: boolean) => {
+    if (!isEvenPage || duplexBinding === 'short') return null;
+    return (
+      <>
+        <div
+          className="no-print absolute inset-y-6 left-1.5 w-0 border-l-2 border-dashed border-violet-400/50 pointer-events-none"
+          aria-hidden="true"
+        />
+        <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
+          <BookOpen size={11} />
+          <span>
+            {shouldRotate ? '뒷면 · 인쇄/PDF 시 180° 자동 회전' : '뒷면 · 책넘김(원본 그대로)'}
+          </span>
+        </div>
+      </>
+    );
+  };
 
   return (
     <div className="eduest-print-modal-root fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md flex flex-col overflow-hidden animate-in fade-in duration-200">
@@ -2127,70 +2156,114 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             </div>
           )}
 
-          {/* 2-2. 📖 양면 인쇄 넘김 방향 (긴 가장자리 책넘김 vs 짧은 가장자리 위로넘김) */}
-          <div className="space-y-2 p-3 bg-slate-800/60 rounded-xl border border-slate-700/80 animate-in fade-in duration-150">
-            <div className="flex items-center justify-between">
+          {/* 2-2. 📖 양면 인쇄 넘김 방향 (책 넘김 180° 보정 / 원본 그대로 / 위로 넘김) */}
+          <div className="space-y-2.5 p-3 bg-slate-800/60 rounded-xl border border-slate-700/80 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between gap-1.5">
               <label className="text-[11px] font-black text-slate-300 flex items-center gap-1.5">
                 <BookOpen size={13} className="text-violet-400" />
-                <span>양면 인쇄 넘김 방향</span>
+                <span>양면 인쇄 · 넘김 방향</span>
               </label>
-              <span className="text-[10px] text-violet-300 font-extrabold px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/30">
-                {duplexBinding === 'long' ? '책 넘김 (표준★)' : '위로 넘김'}
+              <span
+                className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border ${
+                  duplexBinding === 'long'
+                    ? 'text-emerald-300 bg-emerald-500/15 border-emerald-500/30'
+                    : duplexBinding === 'long_raw'
+                    ? 'text-violet-300 bg-violet-500/20 border-violet-500/30'
+                    : 'text-slate-300 bg-slate-700/60 border-slate-600'
+                }`}
+              >
+                {duplexBinding === 'long'
+                  ? '책 넘김 180° 보정 ON'
+                  : duplexBinding === 'long_raw'
+                  ? '책 넘김 (원본)'
+                  : '위로 넘김'}
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-1.5 bg-slate-900/90 p-1 rounded-lg border border-slate-700">
-              <button
-                type="button"
-                onClick={() => handleDuplexBindingChange('long')}
-                className={`py-2 rounded-md text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                  duplexBinding === 'long'
-                    ? 'bg-violet-600 text-white shadow-xs font-black'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-                title="책 넘기듯이 옆으로 넘겨 읽는 시험지 표준 방식 (뒷면 180° 자동 보정)"
-              >
-                <BookOpen size={12} />
-                <span>긴 가장자리★</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDuplexBindingChange('short')}
-                className={`py-2 rounded-md text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                  duplexBinding === 'short'
-                    ? 'bg-violet-600 text-white shadow-xs font-black'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-                title="달력이나 메모패드처럼 아래를 잡고 위로 넘기는 방식 (회전 없음)"
-              >
-                <FileText size={12} />
-                <span>짧은 가장자리</span>
-              </button>
+            <div className="space-y-1.5">
+              {[
+                {
+                  key: 'long' as DuplexBindingType,
+                  title: '책 넘김 (뒷면 180° 자동 보정)',
+                  badge: '추천★',
+                  desc: '상하 반전 프린터·수동 양면에서도 옆으로 책처럼 넘김',
+                  icon: <BookOpen size={12} />,
+                },
+                {
+                  key: 'long_raw' as DuplexBindingType,
+                  title: '책 넘김 (원본 그대로)',
+                  badge: null,
+                  desc: '프린터 드라이버가 이미 긴 가장자리 책넘김일 때',
+                  icon: <BookOpen size={12} />,
+                },
+                {
+                  key: 'short' as DuplexBindingType,
+                  title: '위로 넘김 (달력형)',
+                  badge: null,
+                  desc: '아래를 잡고 위로 넘겨 보는 시험지',
+                  icon: <FileText size={12} />,
+                },
+              ].map((opt) => {
+                const isActive = duplexBinding === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => handleDuplexBindingChange(opt.key)}
+                    className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all cursor-pointer flex items-start gap-2 ${
+                      isActive
+                        ? 'bg-violet-600/25 border-violet-500 text-white shadow-xs ring-1 ring-violet-400/50'
+                        : 'bg-slate-900/70 border-slate-700/80 text-slate-300 hover:bg-slate-800 hover:border-slate-600'
+                    }`}
+                  >
+                    <span className={`mt-0.5 shrink-0 ${isActive ? 'text-violet-300' : 'text-slate-400'}`}>
+                      {opt.icon}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={`text-[11px] truncate ${isActive ? 'font-black text-white' : 'font-bold text-slate-200'}`}>
+                          {opt.title}
+                        </span>
+                        {opt.badge && (
+                          <span className="text-[9px] font-black px-1.5 py-0.2 rounded bg-violet-500 text-white shrink-0">
+                            {opt.badge}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[9.5px] text-slate-400 leading-tight mt-0.5">{opt.desc}</p>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
-            <p className="text-[10px] text-slate-400 leading-tight">
-              {duplexBinding === 'long'
-                ? '✓ 책처럼 옆으로 넘겨 읽도록 뒷면(짝수 쪽)을 180° 자동 회전하여 인쇄합니다.'
-                : '✓ 달력처럼 아래를 잡고 위로 넘겨 읽도록 회전 없이 그대로 인쇄합니다.'}
-            </p>
-
-            {/* 긴 가장자리 모드일 때 화면 미리보기 회전 확인 토글 */}
+            {/* 종전 강제/미리보기 회전 확인 체크박스 유지 + localStorage 영구 저장 */}
             {duplexBinding === 'long' && (
-              <div className="pt-1.5 border-t border-slate-700/60 flex items-center justify-between">
-                <label className="text-[10px] text-slate-300 flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={previewRotateEven}
-                    onChange={e => setPreviewRotateEven(e.target.checked)}
-                    className="w-3.5 h-3.5 rounded text-violet-600 accent-violet-600 bg-slate-900 border-slate-700 cursor-pointer"
-                  />
-                  <span>미리보기 화면에서도 뒷면 회전 보기</span>
-                </label>
-                <span className="text-[9px] text-slate-500 font-medium">
-                  {previewRotateEven ? '회전 표시 중' : '정방향 표시 중'}
-                </span>
+              <div className="pt-2 border-t border-slate-700/60 space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] text-slate-200 font-bold flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={previewRotateEven}
+                      onChange={(e) => handleTogglePreviewRotateEven(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded text-violet-600 accent-violet-600 bg-slate-900 border-slate-700 cursor-pointer"
+                    />
+                    <span>미리보기에서도 뒷면 강제 회전 보기</span>
+                  </label>
+                  <span className={`text-[9px] font-bold ${previewRotateEven ? 'text-violet-300' : 'text-emerald-400'}`}>
+                    {previewRotateEven ? '회전 표시 중' : '정방향 검수 중'}
+                  </span>
+                </div>
+                <p className="text-[9px] text-slate-500 leading-tight pl-5">
+                  체크 여부와 관계없이 인쇄·PDF 저장에는 180° 보정이 적용되며, 체크 상태도 브라우저에 저장됩니다.
+                </p>
               </div>
             )}
+
+            <div className="pt-1 text-[9.5px] font-bold text-emerald-400/90 flex items-center gap-1">
+              <Check size={11} strokeWidth={3} />
+              <span>인쇄하기 · PDF 저장 모두 동일 적용됨</span>
+            </div>
           </div>
 
           {/* 🌟 2-3. 제목 크기 & 헤더 레이아웃 (공간 최적화) */}
@@ -2848,10 +2921,10 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
               <span>인쇄 & PDF 저장 안내</span>
             </div>
             <p className="text-[11px] text-violet-300/80 leading-normal">
-              • 인쇄 창에서 <strong>[대상: PDF로 저장]</strong>을 선택하시면 깨짐 없는 고화질 벡터 PDF로 바로 저장됩니다.
+              • 인쇄 창에서 <strong>[대상: PDF로 저장]</strong> 또는 상단 <strong>[PDF 저장]</strong> 모두 선택한 양면 넘김 방향(180° 보정 포함)이 동일하게 적용됩니다.
             </p>
             <p className="text-[11px] text-violet-300/80 leading-normal">
-              • <strong>양면 인쇄(책넘김)</strong> 시 프린터가 상하 반전으로 인쇄하더라도, 뒷면이 자동 180° 보정되어 책처럼 편하게 넘겨 읽을 수 있습니다.
+              • 화면에서는 정방향(0°)으로 오타를 편하게 검수하고, 실제 인쇄·PDF 시 뒷면(짝수 쪽)만 자동 회전됩니다.
             </p>
           </div>
         </aside>
@@ -2911,13 +2984,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                     <span>{pageNumber}쪽 {isPageIncluded ? '인쇄 포함' : '인쇄 제외'}</span>
                   </button>
 
-                  {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
-                  {shouldRotate && (
-                    <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
-                      <BookOpen size={11} />
-                      <span>뒷면 (책넘김 180° 보정 인쇄)</span>
-                    </div>
-                  )}
+                  {/* 짝수 페이지(뒷면) 책넘김 안내 배지 & 책등 점선 (화면 전용 no-print) */}
+                  {renderDuplexSheetOverlay(isEvenPage, shouldRotate)}
 
                   {/* 상단 헤더 영역 */}
                   <div className={`shrink-0 ${headerDensity === 'compact' ? 'mb-2' : 'mb-4'}`}>
@@ -3298,13 +3366,8 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                       <span>{currentGlobalPage}쪽 (정답표) {isPageIncluded ? '인쇄 포함' : '인쇄 제외'}</span>
                     </button>
 
-                    {/* 짝수 페이지(뒷면) 긴 가장자리 보정 표시 뱃지 (화면 전용 no-print) */}
-                    {shouldRotate && (
-                      <div className="no-print absolute top-3 right-3 z-10 px-2.5 py-1 rounded-full bg-violet-600/90 text-white text-[10px] font-bold shadow-md flex items-center gap-1 backdrop-blur-xs select-none">
-                        <BookOpen size={11} />
-                        <span>뒷면 (책넘김 180° 보정 인쇄)</span>
-                      </div>
-                    )}
+                    {/* 짝수 페이지(뒷면) 책넘김 안내 배지 & 책등 점선 (화면 전용 no-print) */}
+                    {renderDuplexSheetOverlay(isEvenPage, shouldRotate)}
 
                     <div>
                       {/* 정답표 상단 헤더 영역 */}

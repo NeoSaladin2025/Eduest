@@ -15,6 +15,8 @@ export interface PdfProgressInfo {
   message: string;
 }
 
+export type DuplexBindingMode = 'long' | 'long_raw' | 'short';
+
 export interface ExamPdfOptions {
   academyName?: string;
   questionsPerPage?: 1 | 2 | 4;
@@ -34,6 +36,7 @@ export interface ExamPdfOptions {
   titleFontSize?: 'small' | 'medium' | 'normal' | 'large';
   headerDensity?: 'normal' | 'compact';
   marginPreset?: 'ultracompact' | 'compact' | 'normal' | 'custom';
+  duplexBinding?: DuplexBindingMode;
   onProgress?: (progress: PdfProgressInfo) => void;
 }
 
@@ -85,6 +88,15 @@ export async function downloadExamAsPdf(
   const showCenterDivider = options?.showCenterDivider !== false;
   const onProgress = options?.onProgress || (() => {});
   const marginPreset = options?.marginPreset || 'normal';
+  let savedDuplex: string | null = null;
+  try {
+    savedDuplex = typeof window !== 'undefined' ? window.localStorage.getItem('eduest_print_duplex_binding') : null;
+  } catch {
+    savedDuplex = null;
+  }
+  const duplexBinding: DuplexBindingMode =
+    options?.duplexBinding ||
+    (savedDuplex === 'long' || savedDuplex === 'long_raw' || savedDuplex === 'short' ? savedDuplex : 'long');
 
   // 1. 시험지 타이틀 및 회차, 수험자 메타데이터 정밀 파싱
   const parsed = parseExamRoundAndBaseTitle(exam.title);
@@ -625,7 +637,22 @@ export async function downloadExamAsPdf(
         windowHeight: 1123,
       });
 
-      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      // 책 넘김(180° 자동 보정) 모드일 때 짝수 쪽(뒷면) 180도 회전 적용
+      let outputCanvas = canvas;
+      if (duplexBinding === 'long' && task.pageNumber % 2 === 0) {
+        const rotated = document.createElement('canvas');
+        rotated.width = canvas.width;
+        rotated.height = canvas.height;
+        const rCtx = rotated.getContext('2d');
+        if (rCtx) {
+          rCtx.translate(rotated.width, rotated.height);
+          rCtx.rotate(Math.PI);
+          rCtx.drawImage(canvas, 0, 0);
+          outputCanvas = rotated;
+        }
+      }
+
+      const imgData = outputCanvas.toDataURL('image/jpeg', 0.95);
       if (taskIdx > 0) {
         pdf.addPage('a4', 'portrait');
       }
