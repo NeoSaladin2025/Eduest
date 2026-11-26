@@ -35,6 +35,7 @@ import {
   Send
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
 import { StudentAwayLog } from '@/app/api/monitoring/away-logs/route';
 import LiveExamMonitoringModal from '@/app/teacher/exammgr/LiveExamMonitoringModal';
 import DirectAlertModal from './DirectAlertModal';
@@ -88,6 +89,56 @@ interface DailyActivityMonitoringTabProps {
 
 const GRADES = ['ALL', '중1', '중2', '중3', '고1', '고2', '고3'];
 
+const STALE_ACTIVITY_MS = 15 * 60 * 1000;
+const TESTING_SIGNAL_WARN_MS = 2 * 60 * 1000;
+const TESTING_ABANDONED_MS = 3 * 60 * 60 * 1000;
+
+function classifyStudentActivity(act: StudentActivity | undefined, nowMs: number) {
+  if (!act) {
+    return {
+      isStale: true,
+      isAway: false,
+      isTesting: false,
+      isOnline: false,
+      isUnlimited: false,
+      isSignalLost: false,
+      inactiveMin: 0,
+    };
+  }
+
+  const lastUpdatedMs = act.updated_at ? new Date(act.updated_at).getTime() : 0;
+  const elapsedMs = Math.max(0, nowMs - lastUpdatedMs);
+  const inactiveMin = Math.floor(elapsedMs / 60000);
+  const isUnlimited =
+    (act.duration_min !== undefined && act.duration_min <= 0) ||
+    (act.test_duration_min !== undefined && act.test_duration_min <= 0);
+
+  const hasActiveTestStatus =
+    act.test_status === 'TESTING' ||
+    act.test_status === 'AWAY' ||
+    act.mode === 'test';
+
+  // 일반 학습/대기 활동은 15분 초과 시 오프라인 처리하되,
+  // DB상 미제출 TESTING/AWAY 세션은 3시간까지 카드를 숨기지 않고 '신호 멈춤' 경고를 함께 노출
+  const staleLimitMs = hasActiveTestStatus ? TESTING_ABANDONED_MS : STALE_ACTIVITY_MS;
+  const isStale = !lastUpdatedMs || elapsedMs > staleLimitMs;
+  const isSignalLost = !isStale && hasActiveTestStatus && elapsedMs > TESTING_SIGNAL_WARN_MS;
+
+  const isAway = Boolean((act.is_away || act.test_status === 'AWAY') && !isStale);
+  const isTesting = Boolean(hasActiveTestStatus && !isAway && !isStale);
+  const isOnline = Boolean(!isAway && !isTesting && !isStale);
+
+  return {
+    isStale,
+    isAway,
+    isTesting,
+    isOnline,
+    isUnlimited,
+    isSignalLost,
+    inactiveMin,
+  };
+}
+
 export default function DailyActivityMonitoringTab({
   allStudents,
   onSwitchToExamProctor,
@@ -127,16 +178,34 @@ export default function DailyActivityMonitoringTab({
     }
   }, [selectedStudentIds]);
 
-  // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상 학생들에게 실시간 강제 유지 동기화 브로드캐스트
+  const selectedStudentIdsRef = useRef<string[]>(selectedStudentIds);
+  selectedStudentIdsRef.current = selectedStudentIds;
+
+  // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상 학생들에게 실시간 강제 유지 동기화 + 즉시 상태 핑 요청
   useEffect(() => {
-    if (channelRef.current && initializedSelectionRef.current) {
-      channelRef.current.send({
+    const chan = channelRef.current || getProctoringChannel();
+    if (chan && initializedSelectionRef.current) {
+      chan.send({
         type: 'broadcast',
         event: 'sync_monitored_targets',
         payload: {
           target_student_ids: selectedStudentIds,
           enforce_wake_lock: true,
         },
+      });
+      chan.send({
+        type: 'broadcast',
+        event: 'ping_students',
+        payload: {
+          timestamp: Date.now(),
+          target_student_ids: selectedStudentIds,
+          enforce_wake_lock: true,
+        },
+      });
+      chan.send({
+        type: 'broadcast',
+        event: 'ping_proctor',
+        payload: { timestamp: Date.now() },
       });
     }
   }, [selectedStudentIds]);
@@ -438,42 +507,61 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
             const totalQ = pState.total_questions !== undefined ? pState.total_questions : 0;
 
             if (isTesting) {
+              const sUpdatedMs = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+              const pUpdatedMs = pState.updated_at ? new Date(pState.updated_at).getTime() : 0;
+              const existingUpdatedMs = next[s.id]?.updated_at ? new Date(next[s.id].updated_at).getTime() : 0;
+              const latestDbIso = pUpdatedMs >= sUpdatedMs ? pState.updated_at : s.updated_at;
+              const latestDbMs = Math.max(sUpdatedMs, pUpdatedMs);
+
+              // 이미 더 최신의 실시간 브로드캐스트 상태가 있으면 시험 진행 정보 덮어쓰기 방지
+              const prevEntry = next[s.id];
+              const keepPrevFresh = prevEntry && prevEntry.mode === 'test' && existingUpdatedMs > latestDbMs;
+
               const matchedExam = pState.exam_id ? examsByIdRef.current[pState.exam_id] : undefined;
               const instMeta = enrichInstallmentProctorMeta(pState, matchedExam);
               next[s.id] = {
-                ...(next[s.id] || {}),
+                ...(prevEntry || {}),
                 student_id: s.id,
                 student_name: s.name,
                 student_grade: s.grade,
                 mode: 'test',
-                location_title: `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
-                is_away: s.test_status === 'AWAY',
-                exam_id: pState.exam_id,
-                exam_title: examTitle,
-                bundle_title: bundleTitle,
-                round: round,
-                question_idx: qIdx,
-                total_questions: totalQ,
-                current_question_number: instMeta.current_question_number,
-                is_installment: instMeta.is_installment,
-                set_index: instMeta.set_index,
-                total_sets: instMeta.total_sets,
-                set_round: instMeta.set_round,
-                set_total_rounds: instMeta.set_total_rounds,
-                is_recall_question: instMeta.is_recall_question,
-                recall_origin_set: instMeta.recall_origin_set,
+                location_title: keepPrevFresh && prevEntry.exam_title
+                  ? prevEntry.location_title
+                  : `시험: ${bundleTitle ? `[${bundleTitle}] ` : ''}${examTitle || '테스트 진행 중'}`,
+                is_away: keepPrevFresh ? prevEntry.is_away : s.test_status === 'AWAY',
+                exam_id: (keepPrevFresh ? prevEntry.exam_id : undefined) || pState.exam_id,
+                exam_title: (keepPrevFresh ? prevEntry.exam_title : undefined) || examTitle,
+                bundle_title: (keepPrevFresh ? prevEntry.bundle_title : undefined) || bundleTitle,
+                round: keepPrevFresh ? prevEntry.round : round,
+                question_idx: keepPrevFresh ? prevEntry.question_idx : qIdx,
+                total_questions: keepPrevFresh ? prevEntry.total_questions : totalQ,
+                current_question_number: keepPrevFresh ? prevEntry.current_question_number : instMeta.current_question_number,
+                is_installment: keepPrevFresh ? prevEntry.is_installment : instMeta.is_installment,
+                set_index: keepPrevFresh ? prevEntry.set_index : instMeta.set_index,
+                total_sets: keepPrevFresh ? prevEntry.total_sets : instMeta.total_sets,
+                set_round: keepPrevFresh ? prevEntry.set_round : instMeta.set_round,
+                set_total_rounds: keepPrevFresh ? prevEntry.set_total_rounds : instMeta.set_total_rounds,
+                is_recall_question: keepPrevFresh ? prevEntry.is_recall_question : instMeta.is_recall_question,
+                recall_origin_set: keepPrevFresh ? prevEntry.recall_origin_set : instMeta.recall_origin_set,
                 test_status: s.test_status,
-                test_remaining_sec: pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec,
+                test_remaining_sec: keepPrevFresh
+                  ? prevEntry.test_remaining_sec
+                  : (pState.test_remaining_sec !== undefined ? pState.test_remaining_sec : s.test_remaining_sec),
                 duration_min: pState.duration_min !== undefined ? pState.duration_min : (s.test_duration_min !== undefined ? s.test_duration_min : pState.test_duration_min),
                 test_duration_min: pState.test_duration_min !== undefined ? pState.test_duration_min : s.test_duration_min,
-                entered_at: next[s.id]?.entered_at || Date.now(),
-                updated_at: s.updated_at || new Date().toISOString(),
+                entered_at: prevEntry?.entered_at || latestDbMs || Date.now(),
+                updated_at: keepPrevFresh ? prevEntry.updated_at : (latestDbIso || new Date().toISOString()),
               };
             } else {
               // 🌟 [치명적 결함 해결!] 시험이 종료된 학생(FINISHED 또는 IDLE)은 기존의 'mode: test' 상태를 즉각 해제하여 카드 정화!
-              if (next[s.id]?.mode === 'test') {
+              const sUpdatedMs = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+              const prevEntry = next[s.id];
+              const existingUpdatedMs = prevEntry?.updated_at ? new Date(prevEntry.updated_at).getTime() : 0;
+              const isRecentFinished = s.test_status === 'FINISHED' && sUpdatedMs > 0 && Date.now() - sUpdatedMs <= STALE_ACTIVITY_MS;
+
+              if (prevEntry?.mode === 'test' && existingUpdatedMs <= sUpdatedMs + 5000) {
                 next[s.id] = {
-                  ...(next[s.id] || {}),
+                  ...(prevEntry || {}),
                   student_id: s.id,
                   student_name: s.name,
                   student_grade: s.grade,
@@ -499,6 +587,19 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                   test_status: s.test_status,
                   updated_at: s.updated_at || new Date().toISOString(),
                 };
+              } else if (!prevEntry && isRecentFinished) {
+                // 초기 로드 시에도 최근 15분 내 제출한 학생은 마지막 완료 상태 표시
+                next[s.id] = {
+                  student_id: s.id,
+                  student_name: s.name,
+                  student_grade: s.grade,
+                  mode: 'idle',
+                  location_title: '시험 제출 완료 (복귀 대기)',
+                  is_away: false,
+                  test_status: s.test_status,
+                  entered_at: sUpdatedMs || Date.now(),
+                  updated_at: s.updated_at,
+                };
               }
             }
           });
@@ -514,235 +615,315 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     fetchActiveTestingStudents();
   }, [fetchActiveTestingStudents]);
 
-  // 📡 Supabase Realtime 'proctoring_room' 채널 구독
+  // 📡 Supabase Realtime 'proctoring_room' 안전 구독 + 학생 DB 감시 + 30초 백그라운드 자동 동기화
   const channelRef = useRef<any>(null);
 
   useEffect(() => {
-    const channel = supabase.channel('proctoring_room');
+    const channel = getProctoringChannel();
     channelRef.current = channel;
 
-    // 1. 일상 활동 브로드캐스트 수신
-    channel.on('broadcast', { event: 'activity_sync' }, (payload: any) => {
-      const p: StudentActivity = payload.payload;
-      if (!p || !p.student_id) return;
-
-      const wasAway = prevAwayMapRef.current[p.student_id] || false;
-
-      // 새로 자리를 이탈한 경우 경보음 및 OS 알림
-      if (p.is_away && !wasAway) {
-        playAlertSound();
-        triggerOsNotification(
-          `🚨 [자리 이탈] ${p.student_name} 학생`,
-          '에듀이스트 화면을 벗어나 다른 사이트/앱으로 이동했습니다.'
-        );
-      }
-      prevAwayMapRef.current[p.student_id] = p.is_away;
-
-      setLiveMap((prev) => {
-        const existing = prev[p.student_id];
-        // 🌟 [핵심 방어벽] 학생이 시험 진행 중(test_status === 'TESTING' 또는 exam_id 존재)일 때,
-        // 부모 컴포넌트의 단순 activity_sync('응시 대기' or '시험지 목록 탐색 중')가
-        // 시험 제목, 회차, 문항 진행률, test_status를 덮어쓰지 못하도록 안전하게 보호!
-        const isCurrentTesting = existing && (existing.test_status === 'TESTING' || existing.exam_id) && existing.mode === 'test';
-
-        if (isCurrentTesting && p.mode === 'test') {
-          return {
-            ...prev,
-            [p.student_id]: {
-              ...existing,
-              is_away: p.is_away,
-              away_started_at: p.away_started_at,
-              updated_at: p.updated_at || new Date().toISOString(),
-            },
-          };
-        }
-
-        return {
-          ...prev,
-          [p.student_id]: {
-            ...(existing || {}),
-            ...p,
-          },
-        };
+    const sendMonitoringPings = () => {
+      const ch = getProctoringChannel();
+      ch?.send({
+        type: 'broadcast',
+        event: 'ping_students',
+        payload: {
+          timestamp: Date.now(),
+          target_student_ids: selectedStudentIdsRef.current,
+          enforce_wake_lock: true,
+        },
       });
-    });
-
-    // 2. 시험 활동 브로드캐스트 수신 (시험 중인 학생 자동 동기화)
-    channel.on('broadcast', { event: 'proctor_sync' }, (payload: any) => {
-      const p = payload.payload;
-      if (!p || !p.student_id) return;
-
-      const isAway = p.test_status === 'AWAY';
-      const wasAway = prevAwayMapRef.current[p.student_id] || false;
-
-      if (isAway && !wasAway) {
-        playAlertSound();
-      }
-      prevAwayMapRef.current[p.student_id] = isAway;
-
-      setLiveMap((prev) => {
-        const existing = prev[p.student_id] || {
-          student_id: p.student_id,
-          student_name: p.student_name,
-          student_grade: p.student_grade,
-          mode: 'test',
-          location_title: '시험 진행 중',
-          entered_at: Date.now(),
-          is_away: isAway,
-          updated_at: p.updated_at,
-        };
-
-        const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
-        const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
-
-        return {
-          ...prev,
-          [p.student_id]: {
-            ...existing,
-            student_name: p.student_name || existing.student_name,
-            student_grade: p.student_grade || existing.student_grade,
-            mode: 'test',
-            location_title: `시험: ${p.bundle_title ? `[${p.bundle_title}] ` : ''}${p.exam_title || '테스트 진행 중'}`,
-            is_away: isAway,
-            exam_id: p.exam_id,
-            exam_title: p.exam_title,
-            bundle_title: p.bundle_title,
-            round: p.round,
-            question_idx: p.question_idx,
-            total_questions: p.total_questions,
-            current_question_number: instMeta.current_question_number,
-            is_installment: instMeta.is_installment,
-            set_index: instMeta.set_index,
-            total_sets: instMeta.total_sets,
-            set_round: instMeta.set_round,
-            set_total_rounds: instMeta.set_total_rounds,
-            is_recall_question: instMeta.is_recall_question,
-            recall_origin_set: instMeta.recall_origin_set,
-            test_status: p.test_status,
-            test_remaining_sec: p.test_remaining_sec,
-            duration_min: p.duration_min !== undefined ? p.duration_min : p.test_duration_min,
-            test_duration_min: p.test_duration_min,
-            updated_at: p.updated_at || new Date().toISOString(),
-          },
-        };
+      ch?.send({
+        type: 'broadcast',
+        event: 'ping_proctor',
+        payload: { timestamp: Date.now() },
       });
+    };
 
-      if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
-        fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
-          .then((r) => r.json())
-          .then((res) => {
-            if (res?.success && res.exam?.id) {
-              examsByIdRef.current[res.exam.id] = res.exam;
-              const enriched = enrichInstallmentProctorMeta(p, res.exam);
-              if (enriched.is_installment) {
-                setLiveMap((prev) => {
-                  const cur = prev[p.student_id];
-                  if (!cur || cur.exam_id !== p.exam_id) return prev;
-                  return {
-                    ...prev,
-                    [p.student_id]: {
-                      ...cur,
-                      ...enriched,
-                    },
-                  };
-                });
-              }
+    const unsubscribeRoom = subscribeProctoringRoom(
+      {
+        // 1. 일상 활동 브로드캐스트 수신
+        activity_sync: (payload: any) => {
+          const p: StudentActivity = payload.payload;
+          if (!p || !p.student_id) return;
+
+          const wasAway = prevAwayMapRef.current[p.student_id] || false;
+
+          // 새로 자리를 이탈한 경우 경보음 및 OS 알림
+          if (p.is_away && !wasAway) {
+            playAlertSound();
+            triggerOsNotification(
+              `🚨 [자리 이탈] ${p.student_name} 학생`,
+              '에듀이스트 화면을 벗어나 다른 사이트/앱으로 이동했습니다.'
+            );
+          }
+          prevAwayMapRef.current[p.student_id] = p.is_away;
+
+          setLiveMap((prev) => {
+            const existing = prev[p.student_id];
+            // 🌟 [핵심 방어벽] 학생이 시험 진행 중(test_status === 'TESTING' 또는 exam_id 존재)일 때,
+            // 부모 컴포넌트의 단순 activity_sync('응시 대기' or '시험지 목록 탐색 중')가
+            // 시험 제목, 회차, 문항 진행률, test_status를 덮어쓰지 못하도록 안전하게 보호!
+            const isCurrentTesting = existing && (existing.test_status === 'TESTING' || existing.exam_id) && existing.mode === 'test';
+
+            if (isCurrentTesting && p.mode === 'test') {
+              return {
+                ...prev,
+                [p.student_id]: {
+                  ...existing,
+                  is_away: p.is_away,
+                  away_started_at: p.away_started_at,
+                  updated_at: p.updated_at || new Date().toISOString(),
+                },
+              };
             }
-          })
-          .catch(() => {});
-      }
-    });
 
-    // 3. Supabase DB 변경 실시간 감지 (시험 상태 동기화)
-    channel.on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
-      const student = payload.new;
-      if (!student || !student.id) return;
+            return {
+              ...prev,
+              [p.student_id]: {
+                ...(existing || {}),
+                ...p,
+              },
+            };
+          });
+        },
 
-      if (student.test_status === 'TESTING' || student.test_status === 'AWAY') {
-        const isAway = student.test_status === 'AWAY';
-        setLiveMap((prev) => {
-          const existing = prev[student.id];
-          return {
-            ...prev,
-            [student.id]: {
-              ...(existing || {}),
-              student_id: student.id,
-              student_name: student.name || existing?.student_name,
-              student_grade: student.grade || existing?.student_grade,
+        // 2. 시험 활동 브로드캐스트 수신 (시험 중인 학생 자동 동기화)
+        proctor_sync: (payload: any) => {
+          const p = payload.payload;
+          if (!p || !p.student_id) return;
+
+          if (p.test_status === 'FINISHED' || p.test_status === 'PAUSED') {
+            prevAwayMapRef.current[p.student_id] = false;
+            setLiveMap((prev) => ({
+              ...prev,
+              [p.student_id]: {
+                ...(prev[p.student_id] || {}),
+                student_id: p.student_id,
+                student_name: p.student_name || prev[p.student_id]?.student_name,
+                student_grade: p.student_grade || prev[p.student_id]?.student_grade,
+                mode: 'idle',
+                location_title: p.test_status === 'FINISHED' ? '시험 제출 완료 (복귀 대기)' : '시험 일시정지',
+                is_away: false,
+                exam_id: undefined,
+                exam_title: undefined,
+                bundle_title: undefined,
+                round: undefined,
+                question_idx: undefined,
+                total_questions: undefined,
+                current_question_number: undefined,
+                is_installment: undefined,
+                set_index: undefined,
+                total_sets: undefined,
+                set_round: undefined,
+                set_total_rounds: undefined,
+                is_recall_question: undefined,
+                recall_origin_set: undefined,
+                test_remaining_sec: undefined,
+                test_status: p.test_status,
+                entered_at: prev[p.student_id]?.entered_at || Date.now(),
+                updated_at: p.updated_at || new Date().toISOString(),
+              },
+            }));
+            return;
+          }
+
+          const isAway = p.test_status === 'AWAY';
+          const wasAway = prevAwayMapRef.current[p.student_id] || false;
+
+          if (isAway && !wasAway) {
+            playAlertSound();
+          }
+          prevAwayMapRef.current[p.student_id] = isAway;
+
+          setLiveMap((prev) => {
+            const existing = prev[p.student_id] || {
+              student_id: p.student_id,
+              student_name: p.student_name,
+              student_grade: p.student_grade,
               mode: 'test',
-              location_title: existing?.exam_title
-                ? `시험: ${existing?.bundle_title ? `[${existing.bundle_title}] ` : ''}${existing.exam_title}`
-                : existing?.location_title || '시험 진행 중',
+              location_title: '시험 진행 중',
+              entered_at: Date.now(),
               is_away: isAway,
-              test_status: student.test_status,
-              test_remaining_sec: student.test_remaining_sec ?? existing?.test_remaining_sec,
-              duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.duration_min,
-              test_duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.test_duration_min,
-              entered_at: existing?.entered_at || Date.now(),
-              updated_at: student.updated_at || new Date().toISOString(),
-            },
-          };
-        });
-      } else if (student.test_status === 'IDLE' || student.test_status === 'FINISHED') {
-        setLiveMap((prev) => {
-          if (!prev[student.id]) return prev;
-          return {
-            ...prev,
-            [student.id]: {
-              ...prev[student.id],
-              test_status: student.test_status,
-            },
-          };
-        });
-      }
-    });
+              updated_at: p.updated_at,
+            };
 
-    // 4. 자리 이탈(딴짓) 로그 발생 실시간 감지
-    channel.on('broadcast', { event: 'away_log_created' }, (payload: any) => {
-      const newLog = payload?.payload;
-      if (newLog && newLog.id) {
-        setAwayLogs((prev) => {
-          if (prev.some((l) => l.id === newLog.id)) return prev;
-          return [newLog, ...prev];
-        });
-      }
-    });
+            const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
+            const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
 
-    // 5. 🚨 무음 다이렉트 경고 학생 확인/챌린지 전환 실시간 수신
-    channel.on('broadcast', { event: 'direct_alert_ack' }, (payload: any) => {
-      const p = payload?.payload;
-      if (p?.student_id && p?.alert) {
-        setDirectAlertsMap((prev) => ({
-          ...prev,
-          [p.student_id]: p.alert,
-        }));
-      }
-    });
+            return {
+              ...prev,
+              [p.student_id]: {
+                ...existing,
+                student_name: p.student_name || existing.student_name,
+                student_grade: p.student_grade || existing.student_grade,
+                mode: 'test',
+                location_title: `시험: ${p.bundle_title ? `[${p.bundle_title}] ` : ''}${p.exam_title || '테스트 진행 중'}`,
+                is_away: isAway,
+                exam_id: p.exam_id,
+                exam_title: p.exam_title,
+                bundle_title: p.bundle_title,
+                round: p.round,
+                question_idx: p.question_idx,
+                total_questions: p.total_questions,
+                current_question_number: instMeta.current_question_number,
+                is_installment: instMeta.is_installment,
+                set_index: instMeta.set_index,
+                total_sets: instMeta.total_sets,
+                set_round: instMeta.set_round,
+                set_total_rounds: instMeta.set_total_rounds,
+                is_recall_question: instMeta.is_recall_question,
+                recall_origin_set: instMeta.recall_origin_set,
+                test_status: p.test_status,
+                test_remaining_sec: p.test_remaining_sec,
+                duration_min: p.duration_min !== undefined ? p.duration_min : p.test_duration_min,
+                test_duration_min: p.test_duration_min,
+                updated_at: p.updated_at || new Date().toISOString(),
+              },
+            };
+          });
 
-    channel.subscribe((status: string) => {
-      if (status === 'SUBSCRIBED') {
-        // 접속 시 학생들에게 현재 위치 및 시험 상태 핑 요청 (모니터링 대상자 화면 꺼짐 방지 동기화)
-        channel.send({
-          type: 'broadcast',
-          event: 'ping_students',
-          payload: { 
-            timestamp: Date.now(),
-            target_student_ids: selectedStudentIds,
-            enforce_wake_lock: true,
-          },
-        });
-        channel.send({
-          type: 'broadcast',
-          event: 'ping_proctor',
-          payload: { timestamp: Date.now() },
-        });
-      }
-    });
+          if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
+            fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
+              .then((r) => r.json())
+              .then((res) => {
+                if (res?.success && res.exam?.id) {
+                  examsByIdRef.current[res.exam.id] = res.exam;
+                  const enriched = enrichInstallmentProctorMeta(p, res.exam);
+                  if (enriched.is_installment) {
+                    setLiveMap((prev) => {
+                      const cur = prev[p.student_id];
+                      if (!cur || cur.exam_id !== p.exam_id) return prev;
+                      return {
+                        ...prev,
+                        [p.student_id]: {
+                          ...cur,
+                          ...enriched,
+                        },
+                      };
+                    });
+                  }
+                }
+              })
+              .catch(() => {});
+          }
+        },
+
+        // 4. 자리 이탈(딴짓) 로그 발생 실시간 감지
+        away_log_created: (payload: any) => {
+          const newLog = payload?.payload;
+          if (newLog && newLog.id) {
+            setAwayLogs((prev) => {
+              if (prev.some((l) => l.id === newLog.id)) return prev;
+              return [newLog, ...prev];
+            });
+          }
+        },
+
+        // 5. 🚨 무음 다이렉트 경고 학생 확인/챌린지 전환 실시간 수신
+        direct_alert_ack: (payload: any) => {
+          const p = payload?.payload;
+          if (p?.student_id && p?.alert) {
+            setDirectAlertsMap((prev) => ({
+              ...prev,
+              [p.student_id]: p.alert,
+            }));
+          }
+        },
+      },
+      sendMonitoringPings
+    );
+
+    // 3. Supabase DB 변경 실시간 감지 (전용 채널 분리로 브로드캐스트 채널과 충돌 방지)
+    const dbWatchChannel = supabase
+      .channel('daily_monitoring_students_db')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
+        const student = payload.new;
+        if (!student || !student.id) return;
+
+        if (student.test_status === 'TESTING' || student.test_status === 'AWAY') {
+          const isAway = student.test_status === 'AWAY';
+          setLiveMap((prev) => {
+            const existing = prev[student.id];
+            return {
+              ...prev,
+              [student.id]: {
+                ...(existing || {}),
+                student_id: student.id,
+                student_name: student.name || existing?.student_name,
+                student_grade: student.grade || existing?.student_grade,
+                mode: 'test',
+                location_title: existing?.exam_title
+                  ? `시험: ${existing?.bundle_title ? `[${existing.bundle_title}] ` : ''}${existing.exam_title}`
+                  : existing?.location_title || '시험 진행 중',
+                is_away: isAway,
+                test_status: student.test_status,
+                test_remaining_sec: student.test_remaining_sec ?? existing?.test_remaining_sec,
+                duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.duration_min,
+                test_duration_min: student.test_duration_min !== undefined ? student.test_duration_min : existing?.test_duration_min,
+                entered_at: existing?.entered_at || Date.now(),
+                updated_at: student.updated_at || new Date().toISOString(),
+              },
+            };
+          });
+        } else if (student.test_status === 'IDLE' || student.test_status === 'FINISHED') {
+          setLiveMap((prev) => {
+            const existing = prev[student.id];
+            if (!existing) return prev;
+            if (existing.mode === 'test') {
+              return {
+                ...prev,
+                [student.id]: {
+                  ...existing,
+                  mode: 'idle',
+                  sub_detail: undefined,
+                  location_title: student.test_status === 'FINISHED' ? '시험 제출 완료 (복귀 대기)' : '학습 대기 중',
+                  is_away: false,
+                  exam_id: undefined,
+                  exam_title: undefined,
+                  bundle_title: undefined,
+                  round: undefined,
+                  question_idx: undefined,
+                  total_questions: undefined,
+                  current_question_number: undefined,
+                  is_installment: undefined,
+                  set_index: undefined,
+                  total_sets: undefined,
+                  set_round: undefined,
+                  set_total_rounds: undefined,
+                  is_recall_question: undefined,
+                  recall_origin_set: undefined,
+                  test_remaining_sec: undefined,
+                  test_status: student.test_status,
+                  updated_at: student.updated_at || new Date().toISOString(),
+                },
+              };
+            }
+            return {
+              ...prev,
+              [student.id]: {
+                ...existing,
+                test_status: student.test_status,
+                updated_at: student.updated_at || existing.updated_at,
+              },
+            };
+          });
+        }
+      })
+      .subscribe();
+
+    // 30초마다 학생 핑 + DB 상태 백업 동기화 (웹소켓 일시 유실 자동 복구)
+    const periodicSyncTimer = setInterval(() => {
+      sendMonitoringPings();
+      fetchActiveTestingStudents();
+    }, 30000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(periodicSyncTimer);
+      unsubscribeRoom();
+      supabase.removeChannel(dbWatchChannel);
     };
-  }, [playAlertSound, triggerOsNotification]);
+  }, [playAlertSound, triggerOsNotification, fetchActiveTestingStudents]);
 
   // 전체 학생 상태 새로고침 핑 전송 (비동기 및 실시간 피드백 보장)
   const handleRequestPing = async () => {
@@ -864,10 +1045,11 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     setIsSelectModalOpen(true);
   };
 
-  // 모달 적용 핸들러
+  // 모달 적용 핸들러 (즉시 DB 상태 동기화 포함)
   const handleApplySelection = () => {
     setSelectedStudentIds([...modalSelectedIds]);
     setIsSelectModalOpen(false);
+    fetchActiveTestingStudents();
   };
 
   // 개별 학생 모니터링 제외 (빼기)
@@ -875,9 +1057,10 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     setSelectedStudentIds((prev) => prev.filter((id) => id !== studentId));
   };
 
-  // 전체 인원 모니터링 추가
+  // 전체 인원 모니터링 추가 (즉시 DB 상태 동기화 포함)
   const handleSelectAllStudents = () => {
     setSelectedStudentIds(allStudents.map((s) => s.id));
+    fetchActiveTestingStudents();
   };
 
   // 전체 인원 모니터링 해제 (초기화)
@@ -977,7 +1160,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     return allStudents.filter((st) => selectedStudentIds.includes(st.id));
   }, [allStudents, selectedStudentIds]);
 
-  // 통계 계산 (모니터링 대상 학생 기준)
+  // 통계 계산 (모니터링 대상 학생 기준 - 카드 분류 로직과 완전 일치)
   const stats = useMemo(() => {
     let onlineCount = 0;
     let awayCount = 0;
@@ -985,23 +1168,13 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     let offlineCount = 0;
 
     targetStudents.forEach((st) => {
-      const act = liveMap[st.id];
-      if (!act) {
-        offlineCount++;
-        return;
-      }
-
-      const lastUpdatedMs = act.updated_at ? new Date(act.updated_at).getTime() : 0;
-      const isStale = currentTime - lastUpdatedMs > 15 * 60 * 1000;
-      const isUnlimited =
-        (act.duration_min !== undefined && act.duration_min <= 0) ||
-        (act.test_duration_min !== undefined && act.test_duration_min <= 0);
+      const { isStale, isAway, isTesting } = classifyStudentActivity(liveMap[st.id], currentTime);
 
       if (isStale) {
         offlineCount++;
-      } else if (act.is_away) {
+      } else if (isAway) {
         awayCount++;
-      } else if (act.mode === 'test' || act.test_status === 'TESTING') {
+      } else if (isTesting) {
         testingCount++;
       } else {
         onlineCount++;
@@ -1024,16 +1197,9 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       if (gradeFilter !== 'ALL' && st.grade !== gradeFilter) return false;
       if (searchName && !st.name.toLowerCase().includes(searchName.toLowerCase())) return false;
 
-      const act = liveMap[st.id];
-      const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
-      const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
-      const isUnlimited =
-        (act?.duration_min !== undefined && act.duration_min <= 0) ||
-        (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
-      const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale && !act?.is_away;
-      const isOnline = act && !act.is_away && !isTesting && !isStale;
+      const { isStale, isAway, isTesting, isOnline } = classifyStudentActivity(liveMap[st.id], currentTime);
 
-      if (statusFilter === 'AWAY') return act?.is_away && !isStale;
+      if (statusFilter === 'AWAY') return isAway;
       if (statusFilter === 'TESTING') return isTesting;
       if (statusFilter === 'ONLINE') return isOnline;
       if (statusFilter === 'OFFLINE') return isStale;
@@ -1342,14 +1508,8 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 pb-20">
           {filteredStudents.map((st) => {
             const act = liveMap[st.id];
-            const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
-            const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
-            const isAway = act?.is_away && !isStale;
-            const isUnlimited =
-              (act?.duration_min !== undefined && act.duration_min <= 0) ||
-              (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
-            const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isStale;
-            const isOnline = act && !isAway && !isTesting && !isStale;
+            const { isAway, isUnlimited, isTesting, isOnline, isSignalLost, inactiveMin } =
+              classifyStudentActivity(act, currentTime);
 
             // 머문 시간 (로컬 타이머 연산: ms)
             const stayDurationMs = act?.entered_at ? Math.max(0, currentTime - act.entered_at) : 0;
@@ -1455,10 +1615,20 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
                           자리 이탈 (딴짓)
                         </span>
                       ) : isTesting ? (
-                        <span className="flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-full bg-violet-600 text-white shadow-xs">
-                          <FileCheck size={12} />
-                          시험 응시 중
-                        </span>
+                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                          <span className="flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-full bg-violet-600 text-white shadow-xs">
+                            <FileCheck size={12} />
+                            시험 응시 중
+                          </span>
+                          {isSignalLost && (
+                            <span
+                              className="flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300"
+                              title={`학생 기기에서 ${inactiveMin}분째 실시간 신호가 수신되지 않고 있습니다 (창 닫힘/절전/화면 멈춤 가능)`}
+                            >
+                              📡 {inactiveMin}분 전 멈춤
+                            </span>
+                          )}
+                        </div>
                       ) : isOnline ? (
                         <span className="flex items-center gap-1 text-[11px] font-black px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">
                           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
@@ -1896,14 +2066,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
               {modalFilteredStudents.map((student) => {
                 const isSelected = modalSelectedIds.includes(student.id);
                 const act = liveMap[student.id];
-                const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
-                const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
-                const isAway = act?.is_away && !isStale;
-                const isUnlimited =
-                  (act?.duration_min !== undefined && act.duration_min <= 0) ||
-                  (act?.test_duration_min !== undefined && act.test_duration_min <= 0);
-                const isTesting = (act?.mode === 'test' || act?.test_status === 'TESTING') && !isUnlimited && !isStale;
-                const isOnline = act && !isAway && !isTesting && !isStale;
+                const { isAway, isTesting, isOnline } = classifyStudentActivity(act, currentTime);
 
                 return (
                   <div
@@ -2276,9 +2439,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
           .filter((s): s is Student => Boolean(s))
           .map((st) => {
             const act = liveMap[st.id];
-            const lastUpdatedMs = act?.updated_at ? new Date(act.updated_at).getTime() : 0;
-            const isStale = !act || currentTime - lastUpdatedMs > 15 * 60 * 1000;
-            const isAway = Boolean(act?.is_away && !isStale);
+            const { isAway } = classifyStudentActivity(act, currentTime);
             const stayDurationMs = act?.entered_at ? Math.max(0, currentTime - act.entered_at) : 0;
             const studentTodayLogs = awayLogs.filter(
               (l) => l.student_id === st.id && l.started_at.startsWith(todayPrefix)

@@ -27,6 +27,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
 import { enrichInstallmentProctorMeta } from './treasureTypes';
 
 interface Student {
@@ -238,82 +239,103 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
     return () => clearInterval(clock);
   }, [fetchStudentsData]);
 
-  // 📡 Supabase Realtime 채널 구독
+  // 📡 Supabase Realtime 채널 구독 (공유 proctoring_room 안전 구독 + DB 변경 채널 분리)
   const channelRef = useRef<any>(null);
   useEffect(() => {
-    const channel = supabase.channel('proctoring_room');
+    const channel = getProctoringChannel();
     channelRef.current = channel;
 
-    channel
-      .on('broadcast', { event: 'proctor_sync' }, (payload: any) => {
-        const p = payload.payload;
-        if (!p || !p.student_id) return;
+    const sendProctorPings = () => {
+      const ch = getProctoringChannel();
+      ch?.send({
+        type: 'broadcast',
+        event: 'ping_students',
+        payload: { timestamp: Date.now() },
+      });
+      ch?.send({
+        type: 'broadcast',
+        event: 'ping_proctor',
+        payload: { timestamp: Date.now() },
+      });
+    };
 
-        setLiveStudentsMap(prev => {
-          const existing = prev[p.student_id] || { id: p.student_id, name: p.student_name, grade: p.student_grade };
-          const prevStatus = prevStatusesRef.current[p.student_id];
+    const unsubscribeRoom = subscribeProctoringRoom(
+      {
+        proctor_sync: (payload: any) => {
+          const p = payload.payload;
+          if (!p || !p.student_id) return;
 
-          if (p.test_status === 'AWAY' && prevStatus !== 'AWAY') {
-            playAlertSound('AWAY');
-            setRecentAwayStudentName(p.student_name || existing.name);
-            triggerOsNotification(`🚨 [자리 이탈] ${p.student_name || existing.name} 학생`, '시험 화면을 이탈하여 화면이 잠겼습니다.');
-          }
+          setLiveStudentsMap(prev => {
+            const existing = prev[p.student_id] || { id: p.student_id, name: p.student_name, grade: p.student_grade };
+            const prevStatus = prevStatusesRef.current[p.student_id];
 
-          prevStatusesRef.current[p.student_id] = p.test_status;
+            if (p.test_status === 'AWAY' && prevStatus !== 'AWAY') {
+              playAlertSound('AWAY');
+              setRecentAwayStudentName(p.student_name || existing.name);
+              triggerOsNotification(`🚨 [자리 이탈] ${p.student_name || existing.name} 학생`, '시험 화면을 이탈하여 화면이 잠겼습니다.');
+            }
 
-          const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
-          const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
+            prevStatusesRef.current[p.student_id] = p.test_status;
 
-          return {
-            ...prev,
-            [p.student_id]: {
-              ...existing,
-              test_status: p.test_status,
-              test_remaining_sec: p.test_remaining_sec,
-              current_exam_title: p.exam_title || existing.current_exam_title,
-              current_bundle_title: p.bundle_title || existing.current_bundle_title,
-              current_round: p.round || existing.current_round,
-              current_question_idx: p.question_idx,
-              total_questions: p.total_questions,
-              current_question_number: instMeta.current_question_number,
-              is_installment: instMeta.is_installment,
-              set_index: instMeta.set_index,
-              total_sets: instMeta.total_sets,
-              set_round: instMeta.set_round,
-              set_total_rounds: instMeta.set_total_rounds,
-              is_recall_question: instMeta.is_recall_question,
-              recall_origin_set: instMeta.recall_origin_set,
-              enable_lockdown: p.enable_lockdown !== undefined ? p.enable_lockdown : existing.enable_lockdown,
-              updated_at: p.updated_at,
-            },
-          };
-        });
+            const matchedExam = p.exam_id ? examsByIdRef.current[p.exam_id] : undefined;
+            const instMeta = enrichInstallmentProctorMeta(p, matchedExam);
 
-        if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
-          fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
-            .then(r => r.json())
-            .then(res => {
-              if (res?.success && res.exam?.id) {
-                examsByIdRef.current[res.exam.id] = res.exam;
-                const enriched = enrichInstallmentProctorMeta(p, res.exam);
-                if (enriched.is_installment) {
-                  setLiveStudentsMap(prev => {
-                    const cur = prev[p.student_id];
-                    if (!cur) return prev;
-                    return {
-                      ...prev,
-                      [p.student_id]: {
-                        ...cur,
-                        ...enriched,
-                      },
-                    };
-                  });
+            return {
+              ...prev,
+              [p.student_id]: {
+                ...existing,
+                test_status: p.test_status,
+                test_remaining_sec: p.test_remaining_sec,
+                current_exam_title: p.exam_title || existing.current_exam_title,
+                current_bundle_title: p.bundle_title || existing.current_bundle_title,
+                current_round: p.round || existing.current_round,
+                current_question_idx: p.question_idx,
+                total_questions: p.total_questions,
+                current_question_number: instMeta.current_question_number,
+                is_installment: instMeta.is_installment,
+                set_index: instMeta.set_index,
+                total_sets: instMeta.total_sets,
+                set_round: instMeta.set_round,
+                set_total_rounds: instMeta.set_total_rounds,
+                is_recall_question: instMeta.is_recall_question,
+                recall_origin_set: instMeta.recall_origin_set,
+                enable_lockdown: p.enable_lockdown !== undefined ? p.enable_lockdown : existing.enable_lockdown,
+                updated_at: p.updated_at,
+              },
+            };
+          });
+
+          if (p.exam_id && !p.is_installment && !examsByIdRef.current[p.exam_id]) {
+            fetch(`/api/test2/exam?examId=${encodeURIComponent(p.exam_id)}`)
+              .then(r => r.json())
+              .then(res => {
+                if (res?.success && res.exam?.id) {
+                  examsByIdRef.current[res.exam.id] = res.exam;
+                  const enriched = enrichInstallmentProctorMeta(p, res.exam);
+                  if (enriched.is_installment) {
+                    setLiveStudentsMap(prev => {
+                      const cur = prev[p.student_id];
+                      if (!cur) return prev;
+                      return {
+                        ...prev,
+                        [p.student_id]: {
+                          ...cur,
+                          ...enriched,
+                        },
+                      };
+                    });
+                  }
                 }
-              }
-            })
-            .catch(() => {});
-        }
-      })
+              })
+              .catch(() => {});
+          }
+        },
+      },
+      sendProctorPings
+    );
+
+    const dbWatchChannel = supabase
+      .channel('realtime_proctor_tab_students_db')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'students' }, (payload: any) => {
         const student = payload.new;
         if (!student || !student.id) return;
@@ -345,23 +367,11 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
           };
         });
       })
-      .subscribe((status: string) => {
-        if (status === 'SUBSCRIBED') {
-          channel.send({
-            type: 'broadcast',
-            event: 'ping_students',
-            payload: { timestamp: Date.now() },
-          });
-          channel.send({
-            type: 'broadcast',
-            event: 'ping_proctor',
-            payload: { timestamp: Date.now() },
-          });
-        }
-      });
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribeRoom();
+      supabase.removeChannel(dbWatchChannel);
     };
   }, [playAlertSound, triggerOsNotification]);
 
@@ -412,7 +422,7 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
         })
         .eq('id', studentId);
 
-      const channel = supabase.channel('proctoring_room');
+      const channel = getProctoringChannel();
       await channel.send({
         type: 'broadcast',
         event: 'unlock_student',

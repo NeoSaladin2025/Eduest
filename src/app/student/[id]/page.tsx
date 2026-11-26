@@ -11,6 +11,7 @@ import StudentTest2View from './StudentTest2View';
 import StudentVideoView from './StudentVideoView';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
+import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
 import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
 import StudentDirectAlertOverlay, { DirectAlertSignal } from '@/components/StudentDirectAlertOverlay';
 import { DirectAlertPayload } from '@/lib/directAlertTypes';
@@ -489,8 +490,22 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
   }, [mode, showReviewer, currentActiveFolder, currentPath, selectedRecord, selectedTab, testActivity]);
 
+  const sendActivityBroadcastRef = useRef<((forceImmediate?: boolean, overrideAway?: boolean) => void) | null>(null);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const computeCurrentLocationRef = useRef(computeCurrentLocation);
+  computeCurrentLocationRef.current = computeCurrentLocation;
+  const studentMetaRef = useRef(student);
+  studentMetaRef.current = student;
+  const testActivityRef = useRef(testActivity);
+  testActivityRef.current = testActivity;
+
   const sendActivityBroadcast = useCallback((forceImmediate = false, overrideAway?: boolean) => {
-    if (!student?.id || !proctorChannelRef.current) return;
+    const channel = proctorChannelRef.current || getProctoringChannel();
+    if (channel && !proctorChannelRef.current) {
+      proctorChannelRef.current = channel;
+    }
+    if (!student?.id || !channel) return;
 
     const currentLoc = computeCurrentLocation();
     const currentIsAway = overrideAway !== undefined ? overrideAway : isAwayRef.current;
@@ -515,7 +530,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
       }
-      proctorChannelRef.current.send({
+      channel.send({
         type: 'broadcast',
         event: 'activity_sync',
         payload,
@@ -531,94 +546,101 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     debounceTimerRef.current = setTimeout(() => {
       enteredAtRef.current = Date.now();
       payload.entered_at = enteredAtRef.current;
-      if (proctorChannelRef.current) {
-        proctorChannelRef.current.send({
+      const targetChan = proctorChannelRef.current || getProctoringChannel();
+      if (targetChan) {
+        targetChan.send({
           type: 'broadcast',
           event: 'activity_sync',
           payload,
         });
       }
     }, 5000);
-  }, [student, mode, computeCurrentLocation]);
+  }, [student, mode, computeCurrentLocation, isWakeLockActive]);
 
-  // 실시간 채널 연결 및 딴짓/이탈 감지 이벤트
+  sendActivityBroadcastRef.current = sendActivityBroadcast;
+
+  // 실시간 채널 연결 및 딴짓/이탈 감지 이벤트 (student.id 단위로 1회만 영구 구독해 탭/문항 이동 시 채널 파기 방지)
   useEffect(() => {
     if (!student?.id) return;
+    const currentStudentId = student.id;
 
-    const channel = supabase.channel('proctoring_room');
-    proctorChannelRef.current = channel;
+    proctorChannelRef.current = getProctoringChannel();
 
-    // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신 및 모니터링 대상 상태 동기화
-    channel.on('broadcast', { event: 'ping_students' }, (payload: any) => {
-      const p = payload?.payload;
-      if (p && Array.isArray(p.target_student_ids)) {
-        const isTarget = p.target_student_ids.includes(student?.id);
-        setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+    const unsubscribeRoom = subscribeProctoringRoom(
+      {
+        // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신 및 모니터링 대상 상태 동기화
+        ping_students: (payload: any) => {
+          const p = payload?.payload;
+          if (p && Array.isArray(p.target_student_ids)) {
+            const isTarget = p.target_student_ids.includes(currentStudentId);
+            setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+          }
+          sendActivityBroadcastRef.current?.(true);
+        },
+        // 💡 [실시간 모니터링 연동] 선생님의 모니터링 대상자 실시간 지정 및 화면 꺼짐 강제 방지 수신
+        sync_monitored_targets: (payload: any) => {
+          const p = payload?.payload;
+          if (p && Array.isArray(p.target_student_ids)) {
+            const isTarget = p.target_student_ids.includes(currentStudentId);
+            setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+          }
+        },
+        // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 실시간 토글 브로드캐스트 수신
+        toggle_student_session_guard: (payload: any) => {
+          const p = payload?.payload;
+          if (!p) return;
+          if (p.action === 'DISABLE_ALL') {
+            setIsAutoLogoutDisabled(true);
+          } else if (p.action === 'ENABLE_ALL') {
+            setIsAutoLogoutDisabled(false);
+          } else if (p.student_id === currentStudentId) {
+            setIsAutoLogoutDisabled(Boolean(p.disabled));
+          }
+        },
+        // 🚨 [무음 다이렉트 경고] 선생님 실시간 경고 발송/해제 수신
+        direct_alert_send: (payload: any) => {
+          const p = payload?.payload;
+          if (!p) return;
+          const list: DirectAlertPayload[] = Array.isArray(p.alerts) ? p.alerts : p.alert ? [p.alert] : [];
+          const mine = list.find((item) => item.student_id === currentStudentId);
+          if (mine) {
+            setDirectAlertSignal((prev) => ({
+              type: 'send',
+              alert: mine,
+              seq: (prev?.seq || 0) + 1,
+            }));
+          }
+        },
+        direct_alert_clear: (payload: any) => {
+          const p = payload?.payload;
+          if (!p) return;
+          const ids: string[] = Array.isArray(p.student_ids)
+            ? p.student_ids
+            : p.student_id
+            ? [p.student_id]
+            : [];
+          if (ids.includes(currentStudentId)) {
+            setDirectAlertSignal((prev) => ({
+              type: 'clear',
+              seq: (prev?.seq || 0) + 1,
+            }));
+          }
+        },
+      },
+      () => {
+        sendActivityBroadcastRef.current?.(true);
       }
-      sendActivityBroadcast(true);
-    });
+    );
 
-    // 💡 [실시간 모니터링 연동] 선생님의 모니터링 대상자 실시간 지정 및 화면 꺼짐 강제 방지 수신
-    channel.on('broadcast', { event: 'sync_monitored_targets' }, (payload: any) => {
-      const p = payload?.payload;
-      if (p && Array.isArray(p.target_student_ids)) {
-        const isTarget = p.target_student_ids.includes(student?.id);
-        setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
-      }
-    });
-
-    // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 실시간 토글 브로드캐스트 수신
-    channel.on('broadcast', { event: 'toggle_student_session_guard' }, (payload: any) => {
-      const p = payload?.payload;
-      if (!p) return;
-      if (p.action === 'DISABLE_ALL') {
-        setIsAutoLogoutDisabled(true);
-      } else if (p.action === 'ENABLE_ALL') {
-        setIsAutoLogoutDisabled(false);
-      } else if (p.student_id === student?.id) {
-        setIsAutoLogoutDisabled(Boolean(p.disabled));
-      }
-    });
-
-    // 🚨 [무음 다이렉트 경고] 선생님 실시간 경고 발송/해제 수신
-    channel.on('broadcast', { event: 'direct_alert_send' }, (payload: any) => {
-      const p = payload?.payload;
-      if (!p || !student?.id) return;
-      const list: DirectAlertPayload[] = Array.isArray(p.alerts) ? p.alerts : p.alert ? [p.alert] : [];
-      const mine = list.find((item) => item.student_id === student.id);
-      if (mine) {
-        setDirectAlertSignal((prev) => ({
-          type: 'send',
-          alert: mine,
-          seq: (prev?.seq || 0) + 1,
-        }));
-      }
-    });
-
-    channel.on('broadcast', { event: 'direct_alert_clear' }, (payload: any) => {
-      const p = payload?.payload;
-      if (!p || !student?.id) return;
-      const ids: string[] = Array.isArray(p.student_ids)
-        ? p.student_ids
-        : p.student_id
-        ? [p.student_id]
-        : [];
-      if (ids.includes(student.id)) {
-        setDirectAlertSignal((prev) => ({
-          type: 'clear',
-          seq: (prev?.seq || 0) + 1,
-        }));
-      }
-    });
-
-    channel.subscribe((status: string) => {
-      if (status === 'SUBSCRIBED') {
-        sendActivityBroadcast(true);
-      }
-    });
+    // 시험 외 대기/결과/복습/라이브러리 화면에서도 25초 주기 heartbeat로 오프라인(stale) 오분류 방지
+    const activityHeartbeat = setInterval(() => {
+      if (modeRef.current === 'test' && testActivityRef.current?.isTaking) return;
+      sendActivityBroadcastRef.current?.(true);
+    }, 25000);
 
     const handleReturnFromAway = () => {
-      if (awayStartedAtRef.current && student?.id) {
+      const curStudent = studentMetaRef.current;
+      if (awayStartedAtRef.current && curStudent?.id) {
         const durationSec = Math.round((Date.now() - awayStartedAtRef.current) / 1000);
         const startedIso = new Date(awayStartedAtRef.current).toISOString();
         const endedIso = new Date().toISOString();
@@ -631,28 +653,29 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         }));
 
         if (durationSec >= 3) {
-          const loc = computeCurrentLocation();
+          const loc = computeCurrentLocationRef.current();
           fetch('/api/monitoring/away-logs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'create',
               log: {
-                student_id: student.id,
-                student_name: student.name,
-                student_grade: student.grade,
+                student_id: curStudent.id,
+                student_name: curStudent.name,
+                student_grade: curStudent.grade,
                 started_at: startedIso,
                 ended_at: endedIso,
                 duration_sec: durationSec,
-                context: mode,
+                context: modeRef.current,
                 location_title: loc.title,
               },
             }),
           })
             .then((r) => r.json())
             .then((res) => {
-              if (res.success && res.log && proctorChannelRef.current) {
-                proctorChannelRef.current.send({
+              const targetChan = proctorChannelRef.current || getProctoringChannel();
+              if (res.success && res.log && targetChan) {
+                targetChan.send({
                   type: 'broadcast',
                   event: 'away_log_created',
                   payload: res.log,
@@ -666,23 +689,23 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
     // 딴짓 / 외부 사이트 이탈 감지 (mode !== 'test' 일 때)
     const handleVisibilityChange = () => {
-      if (mode === 'test') return;
+      if (modeRef.current === 'test') return;
 
       if (document.hidden) {
         if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
         isAwayRef.current = true;
         awayStartedAtRef.current = Date.now();
-        sendActivityBroadcast(true, true);
+        sendActivityBroadcastRef.current?.(true, true);
       } else {
         if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
         handleReturnFromAway();
         isAwayRef.current = false;
-        sendActivityBroadcast(true, false);
+        sendActivityBroadcastRef.current?.(true, false);
       }
     };
 
     const handleBlur = () => {
-      if (mode === 'test') return;
+      if (modeRef.current === 'test') return;
       
       // 🌟 [중요] 동영상(YouTube iframe / 내장 플레이어) 클릭 시 발생하는 window.blur 방어
       // iframe으로 포커스가 넘어가더라도 학생은 동영상을 학습 중인 정상 상태임!
@@ -693,35 +716,37 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           return;
         }
         // 2) 영상 모드(video)이면서 탭이 여전히 보이는(visible) 경우
-        if (typeof document !== 'undefined' && !document.hidden && mode === 'video') {
+        if (typeof document !== 'undefined' && !document.hidden && modeRef.current === 'video') {
           return;
         }
         // 3) 실제 브라우저 탭/창을 벗어난 경우에만 자리 이탈로 판정
         if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
           isAwayRef.current = true;
           if (!awayStartedAtRef.current) awayStartedAtRef.current = Date.now();
-          sendActivityBroadcast(true, true);
+          sendActivityBroadcastRef.current?.(true, true);
         }
       }, 150);
     };
 
     const handleFocus = () => {
-      if (mode === 'test') return;
+      if (modeRef.current === 'test') return;
       if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
       handleReturnFromAway();
       isAwayRef.current = false;
-      sendActivityBroadcast(true, false);
+      sendActivityBroadcastRef.current?.(true, false);
     };
 
     const handleBeforeUnload = () => {
-      if (proctorChannelRef.current && student?.id) {
-        proctorChannelRef.current.send({
+      const targetChan = proctorChannelRef.current || getProctoringChannel();
+      const curStudent = studentMetaRef.current;
+      if (targetChan && curStudent?.id) {
+        targetChan.send({
           type: 'broadcast',
           event: 'activity_sync',
           payload: {
-            student_id: student.id,
-            student_name: student.name,
-            student_grade: student.grade,
+            student_id: curStudent.id,
+            student_name: curStudent.name,
+            student_grade: curStudent.grade,
             mode: 'idle',
             location_title: '오프라인 (종료)',
             is_away: true,
@@ -739,29 +764,30 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      clearInterval(activityHeartbeat);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('beforeunload', handleBeforeUnload);
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
-      supabase.removeChannel(channel);
+      unsubscribeRoom();
     };
-  }, [student?.id, mode, sendActivityBroadcast]);
+  }, [student?.id]);
 
-  // 🌟 [실시간 메뉴 이동 동기화] 모드(Review -> Test -> Video 등) 변경 시 선생님 화면에 즉시 알림
+  // 🌟 [실시간 메뉴 이동 동기화] 모드(Review -> Test -> Video 등) 또는 시험 시작/종료 전환 시 선생님 화면에 즉시 알림
   useEffect(() => {
     if (student?.id) {
       sendActivityBroadcast(true);
     }
-  }, [student?.id, mode, sendActivityBroadcast]);
+  }, [student?.id, mode, testActivity.isTaking, testActivity.examTitle, testActivity.round, sendActivityBroadcast]);
 
   // 위치/세부문항 변경 시 5초 디바운스 트리거 (mode === 'test' 시에는 시험 뷰 자체의 실시간 브로드캐스트가 담당)
   useEffect(() => {
     if (student?.id && mode !== 'test') {
       sendActivityBroadcast(false);
     }
-  }, [student?.id, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
+  }, [student?.id, mode, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
 
   // =========================================================================
   // 🏡 [가정·자기주도 학습 분석] 학원 수업 제외 필터 및 가정 체류시간 누적기 (트랙 2)

@@ -48,6 +48,7 @@ import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { supabase } from '@/lib/supabase';
+import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
 import ZoomableImageViewer from './ZoomableImageViewer';
@@ -786,8 +787,10 @@ export default function StudentTest2View({
       };
 
       // 1) Realtime Broadcast 발송 (즉각 반응)
-      if (channelRef.current) {
-        channelRef.current.send({
+      const broadcastChannel = channelRef.current || getProctoringChannel();
+      if (broadcastChannel) {
+        channelRef.current = broadcastChannel;
+        broadcastChannel.send({
           type: 'broadcast',
           event: 'proctor_sync',
           payload,
@@ -837,55 +840,60 @@ export default function StudentTest2View({
     broadcastProctorStatus,
   };
 
-  // 📡 Supabase Realtime 채널 연결 (선생님의 원격 잠금 해제 승인 수신 & 브로드캐스트)
+  // 📡 Supabase Realtime 채널 연결 (공유 proctoring_room 안전 구독 + 학생별 DB 변경 전용 채널 분리)
   useEffect(() => {
     if (!studentId) return;
 
-    const channel = supabase.channel('proctoring_room');
-    channelRef.current = channel;
+    channelRef.current = getProctoringChannel();
 
-    // 선생님의 잠금 해제 승인 이벤트 수신
-    channel
-      .on('broadcast', { event: 'unlock_student' }, (eventPayload: any) => {
-        if (eventPayload?.payload?.studentId === studentId) {
-          recordTestAwayReturnLog();
-          setIsLocked(false);
-          setIsPaused(false);
+    const replyCurrentTestState = () => {
+      const cur = proctorSyncStateRef.current;
+      if (cur.viewMode === 'taking' && cur.currentExam) {
+        cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
+      }
+    };
+
+    const unsubscribeRoom = subscribeProctoringRoom(
+      {
+        unlock_student: (eventPayload: any) => {
+          if (eventPayload?.payload?.studentId === studentId) {
+            recordTestAwayReturnLog();
+            setIsLocked(false);
+            setIsPaused(false);
+          }
+        },
+        ping_students: replyCurrentTestState,
+        ping_proctor: replyCurrentTestState,
+      },
+      replyCurrentTestState
+    );
+
+    const dbWatchChannel = supabase
+      .channel(`student_test_db_watch_${studentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'students',
+          filter: `id=eq.${studentId}`,
+        },
+        (payload: any) => {
+          const newStatus = payload.new?.test_status;
+          if (newStatus === 'TESTING') {
+            recordTestAwayReturnLog();
+            setIsLocked(false);
+            setIsPaused(false);
+          } else if (newStatus === 'PAUSED') {
+            setIsPaused(true);
+          }
         }
-      })
-      .on('broadcast', { event: 'ping_students' }, () => {
-        // 선생님 모니터링 화면에서 핑 요청 시 현재 시험 응시 상태 즉시 회신
-        const cur = proctorSyncStateRef.current;
-        if (cur.viewMode === 'taking' && cur.currentExam) {
-          cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
-        }
-      })
-      .on('broadcast', { event: 'ping_proctor' }, () => {
-        // 시험 감독 동기화 핑 요청 시 즉시 회신
-        const cur = proctorSyncStateRef.current;
-        if (cur.viewMode === 'taking' && cur.currentExam) {
-          cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
-        }
-      })
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'students',
-        filter: `id=eq.${studentId}`,
-      }, (payload: any) => {
-        const newStatus = payload.new?.test_status;
-        if (newStatus === 'TESTING') {
-          recordTestAwayReturnLog();
-          setIsLocked(false);
-          setIsPaused(false);
-        } else if (newStatus === 'PAUSED') {
-          setIsPaused(true);
-        }
-      })
+      )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubscribeRoom();
+      supabase.removeChannel(dbWatchChannel);
     };
   }, [studentId]);
 
