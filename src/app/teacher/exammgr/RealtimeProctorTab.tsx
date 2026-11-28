@@ -101,14 +101,98 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
 
   const prevStatusesRef = useRef<Record<string, string>>({});
   const isInitializedRef = useRef(false);
+  const allMonitoredIdsRef = useRef<string[]>(selectedStudentIds);
+  const hasLoadedProctorTargetsRef = useRef(false);
 
-  // 🌟 상태 변경 시 localStorage 동기화
+  const broadcastProctorTargets = useCallback((unionIds: string[]) => {
+    allMonitoredIdsRef.current = unionIds;
+    const ch = getProctoringChannel();
+    if (!ch) return;
+    ch.send({
+      type: 'broadcast',
+      event: 'sync_monitored_targets',
+      payload: {
+        target_student_ids: unionIds,
+        enforce_wake_lock: true,
+      },
+    });
+    ch.send({
+      type: 'broadcast',
+      event: 'ping_students',
+      payload: {
+        timestamp: Date.now(),
+        target_student_ids: unionIds,
+        enforce_wake_lock: true,
+      },
+    });
+    ch.send({
+      type: 'broadcast',
+      event: 'ping_proctor',
+      payload: {
+        timestamp: Date.now(),
+        target_student_ids: unionIds,
+      },
+    });
+  }, []);
+
+  const persistProctorTargets = useCallback(
+    async (nextIds: string[], seedIfEmpty = false) => {
+      try {
+        const res = await fetch('/api/monitoring/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope: 'proctor',
+            studentIds: nextIds,
+            seedIfEmpty,
+          }),
+        });
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.allTargetIds)) {
+          broadcastProctorTargets(data.allTargetIds);
+          return data;
+        }
+      } catch (e) {
+        console.error('Failed to persist proctor targets:', e);
+      }
+      return null;
+    },
+    [broadcastProctorTargets]
+  );
+
+  // 초기 마운트 시 공용 DB 감시 대상 목록 로드
+  useEffect(() => {
+    fetch('/api/monitoring/targets')
+      .then(r => r.json())
+      .then(data => {
+        hasLoadedProctorTargetsRef.current = true;
+        if (!data?.success) return;
+        const dbProctor: string[] = Array.isArray(data.proctorStudentIds) ? data.proctorStudentIds : [];
+        const dbUnion: string[] = Array.isArray(data.allTargetIds) ? data.allTargetIds : [];
+        allMonitoredIdsRef.current = dbUnion;
+
+        if (dbProctor.length > 0 && !initialStudentId) {
+          setSelectedStudentIds(dbProctor);
+          setIsMonitoring(true);
+        } else if (isMonitoring && selectedStudentIds.length > 0) {
+          persistProctorTargets(selectedStudentIds, true);
+        }
+      })
+      .catch(() => {
+        hasLoadedProctorTargetsRef.current = true;
+      });
+  }, []);
+
+  // 🌟 상태 변경 시 localStorage + DB 감시 대상 동기화
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('eduest_proctor_is_active', String(isMonitoring));
       localStorage.setItem('eduest_proctor_selected_ids', JSON.stringify(selectedStudentIds));
     }
-  }, [isMonitoring, selectedStudentIds]);
+    if (hasLoadedProctorTargetsRef.current) {
+      persistProctorTargets(isMonitoring ? selectedStudentIds : []);
+    }
+  }, [isMonitoring, selectedStudentIds, persistProctorTargets]);
 
   // 🔊 경보음 재생 (Web Audio API)
   const playAlertSound = useCallback((type: 'AWAY' | 'FINISHED') => {
@@ -247,15 +331,23 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
 
     const sendProctorPings = () => {
       const ch = getProctoringChannel();
+      const targetIds = allMonitoredIdsRef.current;
       ch?.send({
         type: 'broadcast',
         event: 'ping_students',
-        payload: { timestamp: Date.now() },
+        payload: {
+          timestamp: Date.now(),
+          target_student_ids: targetIds,
+          enforce_wake_lock: true,
+        },
       });
       ch?.send({
         type: 'broadcast',
         event: 'ping_proctor',
-        payload: { timestamp: Date.now() },
+        payload: {
+          timestamp: Date.now(),
+          target_student_ids: targetIds,
+        },
       });
     };
 
@@ -382,15 +474,23 @@ export default function RealtimeProctorTab({ allStudents, initialStudentId }: Re
     try {
       await fetchStudentsData();
       if (channelRef.current) {
+        const targetIds = allMonitoredIdsRef.current;
         channelRef.current.send({
           type: 'broadcast',
           event: 'ping_students',
-          payload: { timestamp: Date.now() },
+          payload: {
+            timestamp: Date.now(),
+            target_student_ids: targetIds,
+            enforce_wake_lock: true,
+          },
         });
         channelRef.current.send({
           type: 'broadcast',
           event: 'ping_proctor',
-          payload: { timestamp: Date.now() },
+          payload: {
+            timestamp: Date.now(),
+            target_student_ids: targetIds,
+          },
         });
       }
     } catch (e) {

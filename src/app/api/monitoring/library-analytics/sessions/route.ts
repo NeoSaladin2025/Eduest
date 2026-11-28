@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { 
-  StudentLibrarySessionRecord, 
+import {
+  StudentLibrarySessionRecord,
   LibrarySessionActivityItem,
-  getKSTDateString 
+  getKSTDateString,
 } from '@/lib/libraryAnalyticsTypes';
 
-const SESSIONS_DRIVE_ID = 'library_analytics_sessions';
+export const dynamic = 'force-dynamic';
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -14,62 +14,9 @@ function getSupabase() {
   return createClient(url, key);
 }
 
-interface StoredLibraryAnalyticsData {
-  records: Record<string, StudentLibrarySessionRecord>;
-  updated_at: string;
-}
-
-async function getStoredRecords(): Promise<Record<string, StudentLibrarySessionRecord>> {
-  const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('exam_library')
-    .select('file_data')
-    .eq('drive_id', SESSIONS_DRIVE_ID)
-    .maybeSingle();
-
-  if (error || !data?.file_data) return {};
-  try {
-    const parsed: StoredLibraryAnalyticsData = JSON.parse(data.file_data);
-    return parsed.records || {};
-  } catch {
-    return {};
-  }
-}
-
-async function saveStoredRecords(records: Record<string, StudentLibrarySessionRecord>) {
-  const supabase = getSupabase();
-
-  // 성능 최적화: 최근 90일치 레코드만 유지
-  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const pruned: Record<string, StudentLibrarySessionRecord> = {};
-  
-  Object.keys(records).forEach(key => {
-    const rec = records[key];
-    if (rec && rec.date >= cutoff) {
-      pruned[key] = rec;
-    }
-  });
-
-  const jsonString = JSON.stringify({
-    records: pruned,
-    updated_at: new Date().toISOString(),
-  });
-
-  await supabase.from('exam_library').upsert(
-    {
-      drive_id: SESSIONS_DRIVE_ID,
-      name: 'library_analytics_sessions.json',
-      type: 'file',
-      grade: '공통',
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'drive_id' }
-  );
-}
-
 export async function GET(req: NextRequest) {
   try {
+    const supabase = getSupabase();
     const { searchParams } = new URL(req.url);
     const startDateParam = searchParams.get('startDate'); // YYYY-MM-DD
     const endDateParam = searchParams.get('endDate');     // YYYY-MM-DD
@@ -77,30 +24,47 @@ export async function GET(req: NextRequest) {
     const gradeParam = searchParams.get('grade');
     const studentIdParam = searchParams.get('studentId');
 
-    const recordsMap = await getStoredRecords();
-    let records = Object.values(recordsMap);
+    let query = supabase
+      .from('student_library_daily')
+      .select('*')
+      .order('date', { ascending: false })
+      .order('total_duration_sec', { ascending: false })
+      .limit(1000);
 
     if (studentIdParam) {
-      records = records.filter(r => r.student_id === studentIdParam);
+      query = query.eq('student_id', studentIdParam);
     }
 
     if (gradeParam && gradeParam !== 'ALL' && gradeParam !== '전체') {
-      records = records.filter(r => r.student_grade && r.student_grade.startsWith(gradeParam));
+      query = query.ilike('student_grade', `${gradeParam}%`);
     }
 
-    // 날짜 범위 필터링 (시작일 ~ 종료일 달력 지원)
     if (startDateParam && endDateParam) {
-      records = records.filter(r => r.date >= startDateParam && r.date <= endDateParam);
+      query = query.gte('date', startDateParam).lte('date', endDateParam);
     } else if (startDateParam) {
-      records = records.filter(r => r.date >= startDateParam);
+      query = query.gte('date', startDateParam);
     } else if (daysParam) {
       const numDays = parseInt(daysParam, 10) || 30;
       const cutoffDate = new Date(Date.now() - numDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      records = records.filter(r => r.date >= cutoffDate);
+      query = query.gte('date', cutoffDate);
     }
 
-    // 최신 날짜 및 총 체류시간 내림차순 정렬
-    records.sort((a, b) => b.date.localeCompare(a.date) || b.total_duration_sec - a.total_duration_sec);
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const records: StudentLibrarySessionRecord[] = (data || []).map((row: any) => ({
+      id: row.id,
+      student_id: row.student_id,
+      student_name: row.student_name || '학생',
+      student_grade: row.student_grade || '공통',
+      date: row.date,
+      total_duration_sec: row.total_duration_sec || 0,
+      first_access_at: row.first_access_at,
+      last_access_at: row.last_access_at,
+      sessions: Array.isArray(row.sessions) ? row.sessions : [],
+      items_summary: row.items_summary || {},
+      updated_at: row.updated_at,
+    }));
 
     return NextResponse.json({ success: true, records });
   } catch (err: any) {
@@ -125,7 +89,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'studentId and valid session with items required' }, { status: 400 });
     }
 
-    // 1초 이상의 실질적 열람이 있는 아이템들만 필터링
     const validItems: LibrarySessionActivityItem[] = session.items.filter(
       (item: any) => (item.durationSec || 0) > 0 || (item.openCount || 0) > 0
     );
@@ -134,34 +97,53 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, message: 'No valid duration items to record' });
     }
 
-    const sessionStartDate = session.started_at 
+    const sessionStartDate = session.started_at
       ? getKSTDateString(new Date(session.started_at))
       : getKSTDateString();
 
     const recordKey = `${studentId}_${sessionStartDate}`;
-    const recordsMap = await getStoredRecords();
+    const supabase = getSupabase();
 
-    let record = recordsMap[recordKey];
-    if (!record) {
-      record = {
-        id: recordKey,
-        student_id: studentId,
-        student_name: studentName || '학생',
-        student_grade: studentGrade || '공통',
-        date: sessionStartDate,
-        total_duration_sec: 0,
-        first_access_at: session.started_at || new Date().toISOString(),
-        last_access_at: session.ended_at || new Date().toISOString(),
-        sessions: [],
-        items_summary: {},
-        updated_at: new Date().toISOString(),
-      };
-    }
+    // 해당 학생 + 날짜 단일 행만 조회 (기존 752KB 전체 JSON 왕복 제거)
+    const { data: existingRow, error: readErr } = await supabase
+      .from('student_library_daily')
+      .select('*')
+      .eq('id', recordKey)
+      .maybeSingle();
 
-    // 세션 총 체류시간 계산
+    if (readErr) throw readErr;
+
+    const record: StudentLibrarySessionRecord = existingRow
+      ? {
+          id: existingRow.id,
+          student_id: existingRow.student_id,
+          student_name: studentName || existingRow.student_name || '학생',
+          student_grade: studentGrade || existingRow.student_grade || '공통',
+          date: existingRow.date,
+          total_duration_sec: existingRow.total_duration_sec || 0,
+          first_access_at: existingRow.first_access_at || session.started_at || new Date().toISOString(),
+          last_access_at: existingRow.last_access_at || session.ended_at || new Date().toISOString(),
+          sessions: Array.isArray(existingRow.sessions) ? [...existingRow.sessions] : [],
+          items_summary: existingRow.items_summary ? { ...existingRow.items_summary } : {},
+          updated_at: existingRow.updated_at || new Date().toISOString(),
+        }
+      : {
+          id: recordKey,
+          student_id: studentId,
+          student_name: studentName || '학생',
+          student_grade: studentGrade || '공통',
+          date: sessionStartDate,
+          total_duration_sec: 0,
+          first_access_at: session.started_at || new Date().toISOString(),
+          last_access_at: session.ended_at || new Date().toISOString(),
+          sessions: [],
+          items_summary: {},
+          updated_at: new Date().toISOString(),
+        };
+
     const sessionDuration = validItems.reduce((acc, cur) => acc + (cur.durationSec || 0), 0);
-
     const sessionId = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
     record.sessions.push({
       id: sessionId,
       started_at: session.started_at || new Date().toISOString(),
@@ -174,8 +156,7 @@ export async function POST(req: NextRequest) {
     record.last_access_at = session.ended_at || new Date().toISOString();
     record.updated_at = new Date().toISOString();
 
-    // 문항별/폴더별 누적 요약(items_summary) 갱신
-    validItems.forEach(item => {
+    validItems.forEach((item) => {
       const summaryKey = `${item.folderDriveId}___${item.fileName}`;
       if (!record.items_summary[summaryKey]) {
         record.items_summary[summaryKey] = {
@@ -188,13 +169,16 @@ export async function POST(req: NextRequest) {
         };
       }
       const sum = record.items_summary[summaryKey];
-      sum.totalDurationSec += (item.durationSec || 0);
-      sum.totalOpenCount += (item.openCount || 0);
-      sum.totalSolutionViews += (item.solutionViews || 0);
+      sum.totalDurationSec += item.durationSec || 0;
+      sum.totalOpenCount += item.openCount || 0;
+      sum.totalSolutionViews += item.solutionViews || 0;
     });
 
-    recordsMap[recordKey] = record;
-    await saveStoredRecords(recordsMap);
+    const { error: upsertErr } = await supabase
+      .from('student_library_daily')
+      .upsert(record, { onConflict: 'id' });
+
+    if (upsertErr) throw upsertErr;
 
     return NextResponse.json({ success: true, recordId: recordKey });
   } catch (err: any) {

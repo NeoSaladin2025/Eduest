@@ -355,6 +355,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   const [isWakeLockActive, setIsWakeLockActive] = useState<boolean>(false);
   const [isWakeLockEnforced, setIsWakeLockEnforced] = useState<boolean>(false);
 
+  // 🎯 [실시간 감시 대상자 전용 가드] 감시 리스트에 등록된 학생만 핑/이탈/감시 교신 ON
+  const [isMonitored, setIsMonitored] = useState<boolean>(false);
+  const isMonitoredRef = useRef<boolean>(false);
+  isMonitoredRef.current = isMonitored;
+  const loadHomeStudyRulesRef = useRef<(() => void) | null>(null);
+
   const requestScreenWakeLock = useCallback(async () => {
     if (typeof window === 'undefined' || !('wakeLock' in navigator)) return;
     try {
@@ -501,11 +507,12 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   testActivityRef.current = testActivity;
 
   const sendActivityBroadcast = useCallback((forceImmediate = false, overrideAway?: boolean) => {
+    if (!student?.id || !isMonitoredRef.current) return;
     const channel = proctorChannelRef.current || getProctoringChannel();
     if (channel && !proctorChannelRef.current) {
       proctorChannelRef.current = channel;
     }
-    if (!student?.id || !channel) return;
+    if (!channel) return;
 
     const currentLoc = computeCurrentLocation();
     const currentIsAway = overrideAway !== undefined ? overrideAway : isAwayRef.current;
@@ -544,6 +551,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     }
 
     debounceTimerRef.current = setTimeout(() => {
+      if (!isMonitoredRef.current) return;
       enteredAtRef.current = Date.now();
       payload.entered_at = enteredAtRef.current;
       const targetChan = proctorChannelRef.current || getProctoringChannel();
@@ -559,31 +567,73 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
   sendActivityBroadcastRef.current = sendActivityBroadcast;
 
-  // 실시간 채널 연결 및 딴짓/이탈 감지 이벤트 (student.id 단위로 1회만 영구 구독해 탭/문항 이동 시 채널 파기 방지)
+  // 실시간 채널 연결 및 감시 대상자 전용 딴짓/이탈 감지 이벤트
   useEffect(() => {
     if (!student?.id) return;
     const currentStudentId = student.id;
+    let isCancelled = false;
 
     proctorChannelRef.current = getProctoringChannel();
 
+    // 최초 진입 시 DB 공용 감시 명단에서 현재 학생이 실시간 감시 대상인지 1회 확인
+    fetch(`/api/monitoring/targets?studentId=${encodeURIComponent(currentStudentId)}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => {
+        if (isCancelled || !data?.success) return;
+        const monitored = Boolean(data.isMonitored);
+        isMonitoredRef.current = monitored;
+        setIsMonitored(monitored);
+        setIsWakeLockEnforced(monitored);
+        if (monitored) {
+          sendActivityBroadcastRef.current?.(true);
+        }
+      })
+      .catch(() => {});
+
+    const applyMonitoringState = (isTarget: boolean, enforceWakeLock = true) => {
+      const wasMonitored = isMonitoredRef.current;
+      isMonitoredRef.current = isTarget;
+      setIsMonitored(isTarget);
+      setIsWakeLockEnforced(isTarget && enforceWakeLock);
+
+      if (!isTarget) {
+        isAwayRef.current = false;
+        awayStartedAtRef.current = undefined;
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
+      } else if (!wasMonitored) {
+        sendActivityBroadcastRef.current?.(true);
+      }
+    };
+
     const unsubscribeRoom = subscribeProctoringRoom(
       {
-        // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시 즉각 회신 및 모니터링 대상 상태 동기화
+        // 선생님 화면에서 전체 상태 동기화 요청(Ping) 시: 대상 목록에 포함된 학생만 회신!
         ping_students: (payload: any) => {
           const p = payload?.payload;
           if (p && Array.isArray(p.target_student_ids)) {
             const isTarget = p.target_student_ids.includes(currentStudentId);
-            setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+            applyMonitoringState(isTarget, Boolean(p.enforce_wake_lock ?? true));
+            if (isTarget) {
+              sendActivityBroadcastRef.current?.(true);
+            }
+          } else if (isMonitoredRef.current) {
+            sendActivityBroadcastRef.current?.(true);
           }
-          sendActivityBroadcastRef.current?.(true);
         },
-        // 💡 [실시간 모니터링 연동] 선생님의 모니터링 대상자 실시간 지정 및 화면 꺼짐 강제 방지 수신
+        // 💡 [실시간 모니터링 연동] 선생님의 감시 리스트 추가/제거 즉시 ON/OFF 전환
         sync_monitored_targets: (payload: any) => {
           const p = payload?.payload;
           if (p && Array.isArray(p.target_student_ids)) {
             const isTarget = p.target_student_ids.includes(currentStudentId);
-            setIsWakeLockEnforced(isTarget && Boolean(p.enforce_wake_lock));
+            applyMonitoringState(isTarget, Boolean(p.enforce_wake_lock ?? true));
           }
+        },
+        // 🏡 가정학습 제외 규칙 변경 시 즉시 재조회 (60초 폴링 대체)
+        home_study_rules_updated: () => {
+          loadHomeStudyRulesRef.current?.();
         },
         // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 실시간 토글 브로드캐스트 수신
         toggle_student_session_guard: (payload: any) => {
@@ -628,17 +678,24 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         },
       },
       () => {
-        sendActivityBroadcastRef.current?.(true);
+        if (isMonitoredRef.current) {
+          sendActivityBroadcastRef.current?.(true);
+        }
       }
     );
 
-    // 시험 외 대기/결과/복습/라이브러리 화면에서도 25초 주기 heartbeat로 오프라인(stale) 오분류 방지
+    // 감시 대상자인 경우에만 25초 주기 heartbeat 송신 (비대상자는 네트워크 0)
     const activityHeartbeat = setInterval(() => {
+      if (!isMonitoredRef.current) return;
       if (modeRef.current === 'test' && testActivityRef.current?.isTaking) return;
       sendActivityBroadcastRef.current?.(true);
     }, 25000);
 
     const handleReturnFromAway = () => {
+      if (!isMonitoredRef.current) {
+        awayStartedAtRef.current = undefined;
+        return;
+      }
       const curStudent = studentMetaRef.current;
       if (awayStartedAtRef.current && curStudent?.id) {
         const durationSec = Math.round((Date.now() - awayStartedAtRef.current) / 1000);
@@ -687,9 +744,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       }
     };
 
-    // 딴짓 / 외부 사이트 이탈 감지 (mode !== 'test' 일 때)
+    // 딴짓 / 외부 사이트 이탈 감지 (감시 대상자 & mode !== 'test' 일 때만)
     const handleVisibilityChange = () => {
-      if (modeRef.current === 'test') return;
+      if (!isMonitoredRef.current || modeRef.current === 'test') return;
 
       if (document.hidden) {
         if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
@@ -705,21 +762,18 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
 
     const handleBlur = () => {
-      if (modeRef.current === 'test') return;
+      if (!isMonitoredRef.current || modeRef.current === 'test') return;
       
       // 🌟 [중요] 동영상(YouTube iframe / 내장 플레이어) 클릭 시 발생하는 window.blur 방어
-      // iframe으로 포커스가 넘어가더라도 학생은 동영상을 학습 중인 정상 상태임!
       if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
       blurCheckTimerRef.current = setTimeout(() => {
-        // 1) activeElement가 IFRAME인 경우 (유튜브/강의 플레이어 조작 중)
+        if (!isMonitoredRef.current) return;
         if (typeof document !== 'undefined' && document.activeElement && document.activeElement.tagName === 'IFRAME') {
           return;
         }
-        // 2) 영상 모드(video)이면서 탭이 여전히 보이는(visible) 경우
         if (typeof document !== 'undefined' && !document.hidden && modeRef.current === 'video') {
           return;
         }
-        // 3) 실제 브라우저 탭/창을 벗어난 경우에만 자리 이탈로 판정
         if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
           isAwayRef.current = true;
           if (!awayStartedAtRef.current) awayStartedAtRef.current = Date.now();
@@ -729,7 +783,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
 
     const handleFocus = () => {
-      if (modeRef.current === 'test') return;
+      if (!isMonitoredRef.current || modeRef.current === 'test') return;
       if (blurCheckTimerRef.current) clearTimeout(blurCheckTimerRef.current);
       handleReturnFromAway();
       isAwayRef.current = false;
@@ -737,6 +791,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
 
     const handleBeforeUnload = () => {
+      if (!isMonitoredRef.current) return;
       const targetChan = proctorChannelRef.current || getProctoringChannel();
       const curStudent = studentMetaRef.current;
       if (targetChan && curStudent?.id) {
@@ -764,6 +819,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      isCancelled = true;
       clearInterval(activityHeartbeat);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
@@ -775,19 +831,19 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
   }, [student?.id]);
 
-  // 🌟 [실시간 메뉴 이동 동기화] 모드(Review -> Test -> Video 등) 또는 시험 시작/종료 전환 시 선생님 화면에 즉시 알림
+  // 🌟 [실시간 메뉴 이동 동기화] 감시 대상자인 경우에만 모드/시험 전환 즉시 알림
   useEffect(() => {
-    if (student?.id) {
+    if (student?.id && isMonitored) {
       sendActivityBroadcast(true);
     }
-  }, [student?.id, mode, testActivity.isTaking, testActivity.examTitle, testActivity.round, sendActivityBroadcast]);
+  }, [student?.id, isMonitored, mode, testActivity.isTaking, testActivity.examTitle, testActivity.round, sendActivityBroadcast]);
 
-  // 위치/세부문항 변경 시 5초 디바운스 트리거 (mode === 'test' 시에는 시험 뷰 자체의 실시간 브로드캐스트가 담당)
+  // 위치/세부문항 변경 시 5초 디바운스 트리거 (감시 대상자 & mode !== 'test' 한정)
   useEffect(() => {
-    if (student?.id && mode !== 'test') {
+    if (student?.id && isMonitored && mode !== 'test') {
       sendActivityBroadcast(false);
     }
-  }, [student?.id, mode, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
+  }, [student?.id, isMonitored, mode, currentPath, showReviewer, selectedRecord?.id, selectedTab, sendActivityBroadcast]);
 
   // =========================================================================
   // 🏡 [가정·자기주도 학습 분석] 학원 수업 제외 필터 및 가정 체류시간 누적기 (트랙 2)
@@ -803,7 +859,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     total_sec: 0,
   });
 
-  // 제외 규칙 실시간 로드 및 주기적 동기화 (선생님이 시간표 수정 시 즉시 자동 반영)
+  // 제외 규칙 초기 1회 로드 + 교사 저장 시 실시간 브로드캐스트로만 갱신 (60초 폴링 제거!)
   useEffect(() => {
     const loadRules = () => {
       fetch('/api/monitoring/home-study/rules')
@@ -820,23 +876,11 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         });
     };
 
-    // 1. 초기 1회 로드
+    loadHomeStudyRulesRef.current = loadRules;
     loadRules();
 
-    // 2. 60초마다 백그라운드 자동 갱신
-    const interval = setInterval(loadRules, 60000);
-
-    // 3. 학생이 태블릿 창을 다시 열거나 포커스할 때 즉시 갱신
-    const handleVisibility = () => {
-      if (!document.hidden) loadRules();
-    };
-    window.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('focus', loadRules);
-
     return () => {
-      clearInterval(interval);
-      window.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('focus', loadRules);
+      loadHomeStudyRulesRef.current = null;
     };
   }, []);
 
@@ -1856,6 +1900,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 onUpdateReviewData={saveReviewData}
                 onToggleTopMenu={() => setIsTopMenuOpen((prev) => !prev)}
                 onTestActivityChange={setTestActivity}
+                isMonitored={isMonitored}
               />
             ) : mode === 'homework' ? (
               /* 🌟 [1번 스샷 반영] 부여받은 숙제 확인 화면 (최근 숙제 및 히스토리) */

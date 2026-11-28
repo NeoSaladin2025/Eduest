@@ -154,59 +154,101 @@ export default function DailyActivityMonitoringTab({
     return [];
   });
 
-  // 최초 로드 시 저장된 학생 목록이 없으면 전체 학생을 기본 선택할지 여부 플래그
+  // DB와 localStorage 양방향 동기화: 다른 교사 브라우저와도 동일한 감시 대상 목록 유지
   const initializedSelectionRef = useRef(false);
-  useEffect(() => {
-    if (!initializedSelectionRef.current && allStudents.length > 0) {
-      initializedSelectionRef.current = true;
-      if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem('eduest_daily_selected_ids');
-        if (!saved && selectedStudentIds.length === 0) {
-          // 최초 진입 시에는 기본적으로 모든 학생을 모니터링에 등록
-          const allIds = allStudents.map(s => s.id);
-          setSelectedStudentIds(allIds);
-          localStorage.setItem('eduest_daily_selected_ids', JSON.stringify(allIds));
+  const allMonitoredIdsRef = useRef<string[]>(selectedStudentIds);
+  const selectedStudentIdsRef = useRef<string[]>(selectedStudentIds);
+  selectedStudentIdsRef.current = selectedStudentIds;
+
+  const broadcastTargetUnion = useCallback((unionIds: string[]) => {
+    allMonitoredIdsRef.current = unionIds;
+    const chan = channelRef.current || getProctoringChannel();
+    if (!chan) return;
+    chan.send({
+      type: 'broadcast',
+      event: 'sync_monitored_targets',
+      payload: {
+        target_student_ids: unionIds,
+        enforce_wake_lock: true,
+      },
+    });
+    chan.send({
+      type: 'broadcast',
+      event: 'ping_students',
+      payload: {
+        timestamp: Date.now(),
+        target_student_ids: unionIds,
+        enforce_wake_lock: true,
+      },
+    });
+    chan.send({
+      type: 'broadcast',
+      event: 'ping_proctor',
+      payload: {
+        timestamp: Date.now(),
+        target_student_ids: unionIds,
+      },
+    });
+  }, []);
+
+  const persistDailyTargetsToServer = useCallback(
+    async (nextIds: string[], seedIfEmpty = false) => {
+      try {
+        const res = await fetch('/api/monitoring/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope: 'daily',
+            studentIds: nextIds,
+            seedIfEmpty,
+          }),
+        });
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.allTargetIds)) {
+          broadcastTargetUnion(data.allTargetIds);
+          return data;
         }
+      } catch (e) {
+        console.error('Failed to persist monitoring targets:', e);
       }
-    }
-  }, [allStudents, selectedStudentIds.length]);
+      broadcastTargetUnion(nextIds);
+      return null;
+    },
+    [broadcastTargetUnion]
+  );
+
+  useEffect(() => {
+    if (initializedSelectionRef.current) return;
+    initializedSelectionRef.current = true;
+
+    fetch('/api/monitoring/targets')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data?.success) return;
+        const dbDaily: string[] = Array.isArray(data.dailyStudentIds) ? data.dailyStudentIds : [];
+        const dbUnion: string[] = Array.isArray(data.allTargetIds) ? data.allTargetIds : [];
+
+        if (dbDaily.length > 0) {
+          setSelectedStudentIds(dbDaily);
+          allMonitoredIdsRef.current = dbUnion;
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('eduest_daily_selected_ids', JSON.stringify(dbDaily));
+          }
+          broadcastTargetUnion(dbUnion);
+        } else if (selectedStudentIdsRef.current.length > 0) {
+          // 기존 선생님 localStorage 목록이 있으면 DB에 최초 1회 안전 이관
+          persistDailyTargetsToServer(selectedStudentIdsRef.current, true);
+        } else {
+          allMonitoredIdsRef.current = dbUnion;
+        }
+      })
+      .catch(() => {});
+  }, [broadcastTargetUnion, persistDailyTargetsToServer]);
 
   // 상태 변경 시 localStorage 동기화
   useEffect(() => {
     if (typeof window !== 'undefined' && initializedSelectionRef.current) {
       localStorage.setItem('eduest_daily_selected_ids', JSON.stringify(selectedStudentIds));
-    }
-  }, [selectedStudentIds]);
-
-  const selectedStudentIdsRef = useRef<string[]>(selectedStudentIds);
-  selectedStudentIdsRef.current = selectedStudentIds;
-
-  // 💡 [화면 꺼짐 강제 방지 (Screen Wake Lock)] 모니터링 대상 학생들에게 실시간 강제 유지 동기화 + 즉시 상태 핑 요청
-  useEffect(() => {
-    const chan = channelRef.current || getProctoringChannel();
-    if (chan && initializedSelectionRef.current) {
-      chan.send({
-        type: 'broadcast',
-        event: 'sync_monitored_targets',
-        payload: {
-          target_student_ids: selectedStudentIds,
-          enforce_wake_lock: true,
-        },
-      });
-      chan.send({
-        type: 'broadcast',
-        event: 'ping_students',
-        payload: {
-          timestamp: Date.now(),
-          target_student_ids: selectedStudentIds,
-          enforce_wake_lock: true,
-        },
-      });
-      chan.send({
-        type: 'broadcast',
-        event: 'ping_proctor',
-        payload: { timestamp: Date.now() },
-      });
     }
   }, [selectedStudentIds]);
 
@@ -624,19 +666,25 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
 
     const sendMonitoringPings = () => {
       const ch = getProctoringChannel();
+      const targetUnion = allMonitoredIdsRef.current.length > 0
+        ? allMonitoredIdsRef.current
+        : selectedStudentIdsRef.current;
       ch?.send({
         type: 'broadcast',
         event: 'ping_students',
         payload: {
           timestamp: Date.now(),
-          target_student_ids: selectedStudentIdsRef.current,
+          target_student_ids: targetUnion,
           enforce_wake_lock: true,
         },
       });
       ch?.send({
         type: 'broadcast',
         event: 'ping_proctor',
-        payload: { timestamp: Date.now() },
+        payload: {
+          timestamp: Date.now(),
+          target_student_ids: targetUnion,
+        },
       });
     };
 
@@ -932,20 +980,23 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     setSyncToastMessage('학생 실시간 상태를 동기화하고 있습니다...');
 
     try {
+      const targetUnion = allMonitoredIdsRef.current.length > 0
+        ? allMonitoredIdsRef.current
+        : selectedStudentIdsRef.current;
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
           event: 'ping_students',
           payload: { 
             timestamp: Date.now(),
-            target_student_ids: selectedStudentIds,
+            target_student_ids: targetUnion,
             enforce_wake_lock: true,
           },
         });
         channelRef.current.send({
           type: 'broadcast',
           event: 'ping_proctor',
-          payload: { timestamp: Date.now() },
+          payload: { timestamp: Date.now(), target_student_ids: targetUnion },
         });
       }
       await fetchActiveTestingStudents();
@@ -1045,21 +1096,29 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
     setIsSelectModalOpen(true);
   };
 
-  // 모달 적용 핸들러 (즉시 DB 상태 동기화 포함)
+  // 모달 적용 핸들러 (즉시 DB + 실시간 대상자 전파)
   const handleApplySelection = () => {
-    setSelectedStudentIds([...modalSelectedIds]);
+    const nextIds = [...modalSelectedIds];
+    setSelectedStudentIds(nextIds);
     setIsSelectModalOpen(false);
+    persistDailyTargetsToServer(nextIds);
     fetchActiveTestingStudents();
   };
 
   // 개별 학생 모니터링 제외 (빼기)
   const handleRemoveStudent = (studentId: string) => {
-    setSelectedStudentIds((prev) => prev.filter((id) => id !== studentId));
+    setSelectedStudentIds((prev) => {
+      const next = prev.filter((id) => id !== studentId);
+      persistDailyTargetsToServer(next);
+      return next;
+    });
   };
 
-  // 전체 인원 모니터링 추가 (즉시 DB 상태 동기화 포함)
+  // 전체 인원 모니터링 추가 (즉시 DB + 실시간 대상자 전파)
   const handleSelectAllStudents = () => {
-    setSelectedStudentIds(allStudents.map((s) => s.id));
+    const nextIds = allStudents.map((s) => s.id);
+    setSelectedStudentIds(nextIds);
+    persistDailyTargetsToServer(nextIds);
     fetchActiveTestingStudents();
   };
 
@@ -1067,6 +1126,7 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
   const handleResetSelection = () => {
     if (confirm('현재 일상 모니터링 중인 모든 학생을 목록에서 제외하시겠습니까?')) {
       setSelectedStudentIds([]);
+      persistDailyTargetsToServer([]);
     }
   };
 

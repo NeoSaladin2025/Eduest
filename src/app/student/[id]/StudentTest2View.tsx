@@ -83,6 +83,7 @@ interface StudentTest2ViewProps {
     saveProgressToDb?: () => Promise<boolean>;
     exitToExamList?: () => void;
   }) => void;
+  isMonitored?: boolean;
 }
 
 // ⚡ 브라우저 초고속 이미지 리사이징 & 압축 (가로/세로 최대 1200px, JPEG 0.70 퀄리티)
@@ -206,7 +207,10 @@ export default function StudentTest2View({
   onUpdateReviewData,
   onToggleTopMenu,
   onTestActivityChange,
+  isMonitored = false,
 }: StudentTest2ViewProps) {
+  const isMonitoredRef = useRef<boolean>(Boolean(isMonitored));
+  isMonitoredRef.current = Boolean(isMonitored);
   // 모드: 목록('list') | 응시 중('taking') | 결과/채점 보기('result')
   const [viewMode, setViewMode] = useState<'list' | 'taking' | 'result'>('list');
   const [listTab, setListTab] = useState<'single' | 'bundle' | 'special' | 'wrong' | 'treasure'>('single');
@@ -671,9 +675,14 @@ export default function StudentTest2View({
     }
   }, [viewMode, loadTempProgressMap]);
 
-  // 🚨 [신규] 시험 중 이탈(딴짓) 종료 로그 기록 및 브로드캐스트
+  // 🚨 [신규] 시험 중 이탈(딴짓) 종료 로그 기록 및 브로드캐스트 (감시 대상자 또는 잠금 시험지 한정)
   const recordTestAwayReturnLog = useCallback(() => {
     if (!testAwayStartRef.current || !studentId || !currentExam) return;
+    const isLockdown = getExamLockdownActive(currentExam);
+    if (!isMonitoredRef.current && !isLockdown) {
+      testAwayStartRef.current = undefined;
+      return;
+    }
     const durationSec = Math.round((Date.now() - testAwayStartRef.current) / 1000);
     const startedIso = new Date(testAwayStartRef.current).toISOString();
     const endedIso = new Date().toISOString();
@@ -725,6 +734,8 @@ export default function StudentTest2View({
       if (!activeExam) return;
       const curTime = overrideTime !== undefined ? overrideTime : timeLeft;
       const isLockdownActive = getExamLockdownActive(activeExam);
+      // 🎯 실시간 감시 비대상자 && 비잠금 시험지: 서버/Realtime 감시 교신 완전 차단 (TEST 임시저장은 별도 보존)
+      if (!isMonitoredRef.current && !isLockdownActive) return;
       const activeRound = overrideRound !== undefined ? overrideRound : currentRound;
       const qIdx = Math.max(0, currentQuestionIndexRef.current ?? currentQuestionIndex);
       const activeQuestions = Array.isArray(activeExam.questions) ? activeExam.questions : [];
@@ -846,11 +857,16 @@ export default function StudentTest2View({
 
     channelRef.current = getProctoringChannel();
 
-    const replyCurrentTestState = () => {
+    const replyCurrentTestState = (payload?: any) => {
       const cur = proctorSyncStateRef.current;
-      if (cur.viewMode === 'taking' && cur.currentExam) {
-        cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
+      if (cur.viewMode !== 'taking' || !cur.currentExam) return;
+      const targetIds = payload?.payload?.target_student_ids;
+      const isTarget = Array.isArray(targetIds) ? targetIds.includes(studentId) : isMonitoredRef.current;
+      if (isTarget) {
+        isMonitoredRef.current = true;
       }
+      if (!isTarget && !getExamLockdownActive(cur.currentExam)) return;
+      cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
     };
 
     const unsubscribeRoom = subscribeProctoringRoom(
@@ -862,10 +878,23 @@ export default function StudentTest2View({
             setIsPaused(false);
           }
         },
+        sync_monitored_targets: (eventPayload: any) => {
+          const targetIds = eventPayload?.payload?.target_student_ids;
+          if (!Array.isArray(targetIds)) return;
+          const isTarget = targetIds.includes(studentId);
+          const wasMonitored = isMonitoredRef.current;
+          isMonitoredRef.current = isTarget;
+          if (!wasMonitored && isTarget) {
+            const cur = proctorSyncStateRef.current;
+            if (cur.viewMode === 'taking' && cur.currentExam) {
+              cur.broadcastProctorStatus(cur.isLocked ? 'AWAY' : 'TESTING');
+            }
+          }
+        },
         ping_students: replyCurrentTestState,
         ping_proctor: replyCurrentTestState,
       },
-      replyCurrentTestState
+      () => replyCurrentTestState()
     );
 
     const dbWatchChannel = supabase
@@ -977,6 +1006,13 @@ export default function StudentTest2View({
             if (savedCoords && typeof savedCoords.setIndex === 'number' && typeof savedCoords.setRound === 'number') {
               resolvedSetIdx = savedCoords.setIndex;
               resolvedSetRound = savedCoords.setRound;
+            } else if (
+              !forceNewRound &&
+              typeof serverProgress?.installment_set_index === 'number' &&
+              typeof serverProgress?.installment_set_round === 'number'
+            ) {
+              resolvedSetIdx = serverProgress.installment_set_index;
+              resolvedSetRound = serverProgress.installment_set_round;
             } else {
               resolvedSetIdx = instProg.activeSetIndex;
               resolvedSetRound = instProg.activeSetRound;
@@ -1193,19 +1229,21 @@ export default function StudentTest2View({
           broadcastProctorStatus('TESTING', initialTime, effectiveRoundNum, data.exam);
 
           setTimeout(() => {
-            supabase
-              .from('students')
-              .update({
-                test_status: 'TESTING',
-                test_remaining_sec: initialTime,
-                test_duration_min: data.exam.duration_min ?? 0,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', studentId)
-              .then();
+            if (isMonitoredRef.current || getExamLockdownActive(data.exam)) {
+              supabase
+                .from('students')
+                .update({
+                  test_status: 'TESTING',
+                  test_remaining_sec: initialTime,
+                  test_duration_min: data.exam.duration_min ?? 0,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', studentId)
+                .then();
 
-            // 타이머 안정화 후 한 번 더 보증 발송
-            broadcastProctorStatus('TESTING', initialTime, effectiveRoundNum, data.exam);
+              // 타이머 안정화 후 한 번 더 보증 발송
+              broadcastProctorStatus('TESTING', initialTime, effectiveRoundNum, data.exam);
+            }
           }, 150);
         }
       } else {
@@ -1223,6 +1261,12 @@ export default function StudentTest2View({
   const saveProgressToDb = useCallback(async (): Promise<boolean> => {
     if (!currentExam || !studentId) return true;
     try {
+      if (tempSyncDebounceRef.current) {
+        clearTimeout(tempSyncDebounceRef.current);
+        tempSyncDebounceRef.current = null;
+      }
+      pendingTempPayloadRef.current = null;
+
       const unknownQuestions = currentExam.questions
         ?.map((q: any, idx: number) => (userAnswers[q.id] === '모름' ? idx + 1 : null))
         ?.filter((num: any): num is number => num !== null) || [];
@@ -1239,6 +1283,8 @@ export default function StudentTest2View({
           currentQuestionIndex,
           totalQuestions: currentExam.questions?.length || 0,
           timeLeft,
+          installmentSetIndex: currentSetIndex,
+          installmentSetRound: currentSetRound,
           updatedBy: 'student',
         }),
       });
@@ -1248,7 +1294,7 @@ export default function StudentTest2View({
       console.error('Failed to save progress to DB:', e);
       return false;
     }
-  }, [currentExam, studentId, studentName, userAnswers, currentQuestionIndex, timeLeft]);
+  }, [currentExam, studentId, studentName, userAnswers, currentQuestionIndex, timeLeft, currentSetIndex, currentSetRound]);
 
   // 🔒 현재 시험의 이탈 방지 잠금(Lockdown) 활성화 여부
   const studentOverride = currentExam ? (currentExam as any).student_overrides?.[studentId] : undefined;
@@ -1356,38 +1402,90 @@ export default function StudentTest2View({
     return () => clearInterval(timer);
   }, [viewMode, currentExam, isLocked, isPaused, studentId]);
 
-  // 주기적(20초마다) DB 동기화 (timeLeft 변경으로 인터벌이 리셋되지 않도록 Ref 사용)
+  // 주기적(20초마다) 감시 상태 동기화 (감시 대상자 또는 잠금 시험지 한정)
   useEffect(() => {
     if (viewMode !== 'taking' || !currentExam || isLocked || isPaused) return;
 
     const syncInterval = setInterval(() => {
       const cur = proctorSyncStateRef.current;
+      if (!cur.currentExam) return;
+      if (!isMonitoredRef.current && !getExamLockdownActive(cur.currentExam)) return;
       cur.broadcastProctorStatus('TESTING', cur.timeLeft);
     }, 20000);
 
     return () => clearInterval(syncInterval);
   }, [viewMode, currentExam, isLocked, isPaused]);
 
-  // 💾 서버 임시 답안 실시간 동기화 (선생님이 실시간 모니터링할 수 있도록 백그라운드 전송)
-  const syncTempProgressToServer = useCallback((answersToSync: Record<string, any>) => {
-    if (!currentExam || !studentId) return;
+  // 💾 서버 임시 답안 디바운스 동기화 (1초 디바운스 + 이탈/종료 시 즉시 flush, 모든 학생 TEST 보존)
+  const tempSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTempPayloadRef = useRef<any>(null);
+
+  const flushPendingTempProgress = useCallback((useKeepalive = true) => {
+    if (tempSyncDebounceRef.current) {
+      clearTimeout(tempSyncDebounceRef.current);
+      tempSyncDebounceRef.current = null;
+    }
+    const payload = pendingTempPayloadRef.current;
+    if (!payload) return;
+    pendingTempPayloadRef.current = null;
     try {
       fetch('/api/test2/temp-progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          examId: currentExam.id,
-          studentId,
-          studentName: studentName || '',
-          answers: answersToSync,
-          currentQuestionIndex,
-          totalQuestions: currentExam.questions?.length || 0,
-          timeLeft,
-          updatedBy: 'student',
-        }),
+        body: JSON.stringify(payload),
+        keepalive: useKeepalive,
       }).catch(() => {});
-    } catch (e) {}
-  }, [currentExam, studentId, studentName, currentQuestionIndex, timeLeft]);
+    } catch {}
+  }, []);
+
+  const syncTempProgressToServer = useCallback((answersToSync: Record<string, any>) => {
+    if (!currentExam || !studentId) return;
+    pendingTempPayloadRef.current = {
+      examId: currentExam.id,
+      studentId,
+      studentName: studentName || '',
+      answers: answersToSync,
+      currentQuestionIndex,
+      totalQuestions: currentExam.questions?.length || 0,
+      timeLeft,
+      installmentSetIndex: currentSetIndex,
+      installmentSetRound: currentSetRound,
+      updatedBy: 'student',
+    };
+    if (tempSyncDebounceRef.current) {
+      clearTimeout(tempSyncDebounceRef.current);
+    }
+    tempSyncDebounceRef.current = setTimeout(() => {
+      flushPendingTempProgress(false);
+    }, 1000);
+  }, [currentExam, studentId, studentName, currentQuestionIndex, timeLeft, currentSetIndex, currentSetRound, flushPendingTempProgress]);
+
+  // ⏱️ 60초마다 남은 시간 + 문항 위치 + 세트 좌표 경량 보존 + 창 종료 시 pending 즉시 flush (전 학생 적용)
+  const saveProgressToDbRef = useRef(saveProgressToDb);
+  saveProgressToDbRef.current = saveProgressToDb;
+
+  useEffect(() => {
+    if (viewMode !== 'taking' || !currentExam) return;
+
+    const handleBeforeExit = () => {
+      flushPendingTempProgress(true);
+    };
+    window.addEventListener('beforeunload', handleBeforeExit);
+    window.addEventListener('pagehide', handleBeforeExit);
+
+    const backupTimer = setInterval(() => {
+      if (!isLocked && !isPaused) {
+        saveProgressToDbRef.current?.();
+      }
+    }, 60000);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeExit);
+      window.removeEventListener('pagehide', handleBeforeExit);
+      clearInterval(backupTimer);
+      flushPendingTempProgress(true);
+    };
+  }, [viewMode, currentExam, isLocked, isPaused, flushPendingTempProgress]);
 
   // 4. 답안 변경 처리 및 문항 소요시간 자동 체크 (정답 입력 기준)
   const handleAnswerSelect = (questionId: string, answerValue: string) => {
@@ -1664,6 +1762,7 @@ export default function StudentTest2View({
       : Boolean((currentExam as any).enable_lockdown);
 
     const handleLeaving = () => {
+      if (!isMonitoredRef.current && !isLockdownActive) return;
       if (!testAwayStartRef.current) testAwayStartRef.current = Date.now();
       broadcastProctorStatus('AWAY', timeLeft);
       if (isLockdownActive && !isLocked) {
@@ -1672,6 +1771,7 @@ export default function StudentTest2View({
     };
 
     const handleReturning = () => {
+      if (!isMonitoredRef.current && !isLockdownActive) return;
       if (!isLockdownActive) {
         recordTestAwayReturnLog();
         broadcastProctorStatus('TESTING', timeLeft);
@@ -1859,7 +1959,12 @@ export default function StudentTest2View({
         }
         setShowSubmitConfirm(false);
 
-        // 로컬 임시 데이터 정리
+        // 로컬 및 서버 임시 데이터 정리 (보류 중인 디바운스 sync 취소 후 삭제)
+        if (tempSyncDebounceRef.current) {
+          clearTimeout(tempSyncDebounceRef.current);
+          tempSyncDebounceRef.current = null;
+        }
+        pendingTempPayloadRef.current = null;
         localStorage.removeItem(`test2_answers_${studentId}_${currentExam.id}`);
         localStorage.removeItem(`test2_qtimes_${studentId}_${currentExam.id}`);
         localStorage.removeItem(`test2_installment_${studentId}_${currentExam.id}`);

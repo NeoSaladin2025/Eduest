@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { cookies } from "next/headers";
-import { verifyAdminToken } from "@/lib/authUtils";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +7,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-const RECORD_DRIVE_ID = "test2_temp_progress_data";
 
 export interface StudentTempProgress {
   exam_id: string;
@@ -22,49 +18,13 @@ export interface StudentTempProgress {
   total_questions?: number;
   answered_count?: number;
   time_left?: number;
+  installment_set_index?: number | null;
+  installment_set_round?: number | null;
   updated_at: string;
   updated_by?: "student" | "teacher";
 }
 
-// 헬퍼: DB에서 전체 임시 진행 상태 맵 로드
-async function getAllTempProgress(): Promise<Record<string, StudentTempProgress>> {
-  const { data, error } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (error || !data?.file_data) return {};
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return typeof parsed === "object" && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-// 헬퍼: DB에 전체 임시 진행 상태 맵 저장
-async function saveAllTempProgress(map: Record<string, StudentTempProgress>) {
-  const jsonString = JSON.stringify(map);
-  const { error } = await supabase.from("exam_library").upsert(
-    {
-      drive_id: RECORD_DRIVE_ID,
-      name: "test2_temp_progress.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
-
-  if (error) {
-    console.error("Failed to save temp progress:", error);
-    throw new Error(`임시 저장 실패: ${error.message}`);
-  }
-}
-
-// GET: 특정 시험지의 모든 학생 임시 진행 상태 또는 특정 학생 상태 조회
+// GET: 특정 시험지의 모든 학생 임시 진행 상태 또는 특정 학생 상태 조회 (단일 행 / 인덱스 조회)
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -75,20 +35,30 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: false, error: "examId 또는 studentId가 필요합니다." }, { status: 400 });
     }
 
-    const allMap = await getAllTempProgress();
-    
     // 1) 특정 시험지 + 특정 학생 단건 조회
     if (examId && studentId) {
-      const key = `${examId}_${studentId}`;
-      const single = allMap[key] || null;
-      return NextResponse.json({ success: true, progress: single });
+      const id = `${examId}_${studentId}`;
+      const { data, error } = await supabase
+        .from("student_temp_progress")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error) throw error;
+      return NextResponse.json({ success: true, progress: data || null });
     }
 
     // 2) 특정 시험지의 학생별 맵 추출 (응시 현황 모달용, key: student_id)
     if (examId) {
+      const { data, error } = await supabase
+        .from("student_temp_progress")
+        .select("*")
+        .eq("exam_id", examId);
+
+      if (error) throw error;
       const examProgressMap: Record<string, StudentTempProgress> = {};
-      Object.entries(allMap).forEach(([key, val]) => {
-        if (val && val.exam_id === examId) {
+      (data || []).forEach((val: any) => {
+        if (val?.student_id) {
           examProgressMap[val.student_id] = val;
         }
       });
@@ -97,9 +67,15 @@ export async function GET(req: NextRequest) {
 
     // 3) 특정 학생의 시험지별 맵 추출 (학생 필터 카드 목록용, key: exam_id)
     if (studentId) {
+      const { data, error } = await supabase
+        .from("student_temp_progress")
+        .select("*")
+        .eq("student_id", studentId);
+
+      if (error) throw error;
       const studentProgressMap: Record<string, StudentTempProgress> = {};
-      Object.entries(allMap).forEach(([key, val]) => {
-        if (val && val.student_id === studentId) {
+      (data || []).forEach((val: any) => {
+        if (val?.exam_id) {
           studentProgressMap[val.exam_id] = val;
         }
       });
@@ -113,7 +89,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST: 임시 답안 저장 (학생 실시간 전송 or 선생님 수동 입력)
+// POST: 임시 답안 저장 (단일 행 upsert -> 동시성 덮어쓰기 원천 차단)
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -127,6 +103,8 @@ export async function POST(req: NextRequest) {
       currentQuestionIndex,
       totalQuestions,
       timeLeft,
+      installmentSetIndex,
+      installmentSetRound,
       updatedBy = "student",
     } = body;
 
@@ -134,8 +112,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "examId와 studentId는 필수입니다." }, { status: 400 });
     }
 
-    // 답안 작성 개수 계산
-    const cleanAnswers = typeof answers === "object" && answers !== null ? answers : {};
+    const id = `${examId}_${studentId}`;
+    const { data: existing } = await supabase
+      .from("student_temp_progress")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+
+    const cleanAnswers = typeof answers === "object" && answers !== null
+      ? answers
+      : (existing?.answers || {});
+
     let answeredCount = 0;
     Object.values(cleanAnswers).forEach((ans: any) => {
       if (ans === undefined || ans === null || ans === "") return;
@@ -148,31 +135,51 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    const key = `${examId}_${studentId}`;
-    const allMap = await getAllTempProgress();
-
     const resolvedUnknowns = Array.isArray(unknownQuestions)
       ? unknownQuestions
       : Array.isArray(unknown_questions)
       ? unknown_questions
-      : allMap[key]?.unknown_questions || [];
+      : existing?.unknown_questions || [];
 
-    const progressItem: StudentTempProgress = {
+    const progressItem = {
+      id,
       exam_id: examId,
       student_id: studentId,
-      student_name: studentName || allMap[key]?.student_name || "",
+      student_name: studentName || existing?.student_name || "",
       answers: cleanAnswers,
       unknown_questions: resolvedUnknowns,
-      current_question_idx: typeof currentQuestionIndex === "number" ? currentQuestionIndex : allMap[key]?.current_question_idx || 0,
-      total_questions: typeof totalQuestions === "number" ? totalQuestions : allMap[key]?.total_questions || 0,
+      current_question_idx:
+        typeof currentQuestionIndex === "number"
+          ? currentQuestionIndex
+          : existing?.current_question_idx || 0,
+      total_questions:
+        typeof totalQuestions === "number"
+          ? totalQuestions
+          : existing?.total_questions || 0,
       answered_count: answeredCount,
-      time_left: typeof timeLeft === "number" ? timeLeft : allMap[key]?.time_left,
+      time_left:
+        typeof timeLeft === "number"
+          ? Math.round(timeLeft)
+          : existing?.time_left ?? null,
+      installment_set_index:
+        typeof installmentSetIndex === "number"
+          ? installmentSetIndex
+          : existing?.installment_set_index ?? null,
+      installment_set_round:
+        typeof installmentSetRound === "number"
+          ? installmentSetRound
+          : existing?.installment_set_round ?? null,
       updated_at: new Date().toISOString(),
       updated_by: updatedBy,
     };
 
-    allMap[key] = progressItem;
-    await saveAllTempProgress(allMap);
+    const { error: upsertErr } = await supabase
+      .from("student_temp_progress")
+      .upsert(progressItem, { onConflict: "id" });
+
+    if (upsertErr) {
+      throw new Error(`임시 저장 실패: ${upsertErr.message}`);
+    }
 
     return NextResponse.json({ success: true, data: progressItem });
   } catch (error: any) {
@@ -181,23 +188,32 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE: 제출 완료 시 임시 저장 레코드 정리
+// DELETE: 제출 완료/새 회차 시작 시 임시 저장 레코드 정리 (쿼리 파라미터 & JSON 바디 둘 다 지원)
 export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const examId = searchParams.get("examId");
-    const studentId = searchParams.get("studentId");
+    let examId = searchParams.get("examId");
+    let studentId = searchParams.get("studentId");
+
+    if (!examId || !studentId) {
+      try {
+        const body = await req.json();
+        examId = examId || body?.examId || null;
+        studentId = studentId || body?.studentId || null;
+      } catch {}
+    }
 
     if (!examId || !studentId) {
       return NextResponse.json({ success: false, error: "examId와 studentId가 필요합니다." }, { status: 400 });
     }
 
-    const key = `${examId}_${studentId}`;
-    const allMap = await getAllTempProgress();
-    if (allMap[key]) {
-      delete allMap[key];
-      await saveAllTempProgress(allMap);
-    }
+    const id = `${examId}_${studentId}`;
+    const { error } = await supabase
+      .from("student_temp_progress")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
 
     return NextResponse.json({ success: true });
   } catch (error: any) {

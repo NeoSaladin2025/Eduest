@@ -23,6 +23,7 @@ import {
   WEEKDAY_ORDER,
   DEFAULT_HOME_STUDY_RULES 
 } from '@/lib/homeStudyTypes';
+import { getProctoringChannel } from '@/lib/proctoringRoom';
 
 interface Student {
   id: string;
@@ -172,6 +173,11 @@ export default function HomeStudyExclusionModal({
       }
 
       setToastMsg('🎉 학원 수업 제외 시간대 설정이 성공적으로 저장되었습니다!');
+      getProctoringChannel()?.send({
+        type: 'broadcast',
+        event: 'home_study_rules_updated',
+        payload: { timestamp: Date.now() },
+      });
       if (onRulesUpdated) onRulesUpdated(rulesConfig);
       setTimeout(() => {
         setToastMsg(null);
