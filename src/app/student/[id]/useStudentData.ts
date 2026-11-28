@@ -182,7 +182,8 @@ export function useStudentData(studentId: string) {
         for (;;) {
           const { data: page, error: libErr } = await supabase
             .from('exam_library')
-            .select('*')
+            .select('id, drive_id, parent_id, name, type, grade, path_tags, question_image_drive_id')
+            .is('file_data', null)
             .order('drive_id', { ascending: true })
             .range(from, from + pageSize - 1);
           if (libErr) throw libErr;

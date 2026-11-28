@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   try {
     const { data, error } = await supabase
       .from('exam_library')
-      .select('*')
+      .select('id, drive_id, parent_id, name, type, grade, path_tags, question_image_drive_id')
       .eq('grade', grade)
       .eq('type', 'folder');
 
