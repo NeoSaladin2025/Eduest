@@ -62,7 +62,7 @@ namespace EduestPrinterBridge
     internal sealed class TrayBridgeContext : ApplicationContext
     {
         private const int BridgePort = 48921;
-        private const string BridgeVersion = "1.0.0";
+        private const string BridgeVersion = "1.0.1";
         private const string RunRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunRegistryKey = "EduestPrinterBridge";
 
@@ -453,69 +453,117 @@ namespace EduestPrinterBridge
             return def;
         }
 
-        private static string FindHeadlessBrowserPath()
+        private static List<string> FindHeadlessBrowserPaths()
         {
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string[] candidates = new[]
             {
-                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
                 @"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe"),
                 Path.Combine(localAppData, @"Google\Chrome\Application\chrome.exe"),
+                @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                @"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe"),
             };
+            var found = new List<string>();
             foreach (string c in candidates)
             {
-                if (!string.IsNullOrEmpty(c) && File.Exists(c)) return c;
+                if (!string.IsNullOrEmpty(c) && File.Exists(c) && !found.Contains(c))
+                {
+                    found.Add(c);
+                }
             }
-            return null;
+            return found;
+        }
+
+        private static bool RunHeadlessPdfAttempt(string browserPath, string profileDir, string pdfPath, string fileUri, bool useShellHidden, out string diag)
+        {
+            diag = "";
+            try { if (File.Exists(pdfPath)) File.Delete(pdfPath); } catch { }
+            try
+            {
+                if (Directory.Exists(profileDir)) Directory.Delete(profileDir, true);
+                Directory.CreateDirectory(profileDir);
+            }
+            catch { }
+
+            string args = string.Format(
+                "--headless=new --disable-gpu --no-first-run --no-default-browser-check --no-pdf-header-footer --user-data-dir=\"{0}\" --print-to-pdf=\"{1}\" \"{2}\"",
+                profileDir, pdfPath, fileUri
+            );
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = browserPath,
+                Arguments = args,
+                UseShellExecute = useShellHidden,
+                CreateNoWindow = !useShellHidden,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+
+            using (var proc = Process.Start(psi))
+            {
+                if (proc == null)
+                {
+                    diag = Path.GetFileName(browserPath) + ": 프로세스 시작 실패";
+                    return false;
+                }
+                if (!proc.WaitForExit(45000))
+                {
+                    try { proc.Kill(); } catch { }
+                    diag = Path.GetFileName(browserPath) + ": 시간 초과";
+                    return false;
+                }
+                if (File.Exists(pdfPath) && new FileInfo(pdfPath).Length > 0)
+                {
+                    return true;
+                }
+                diag = string.Format("{0}: exit={1}, pdf미생성", Path.GetFileName(browserPath), proc.ExitCode);
+                return false;
+            }
         }
 
         private int PrintHtmlSilently(string html, string printerName, string jobTitle, int copies, string duplex)
         {
-            string browserPath = FindHeadlessBrowserPath();
-            if (string.IsNullOrEmpty(browserPath))
-                throw new InvalidOperationException("HTML을 인쇄용 PDF로 변환할 Edge 또는 Chrome 브라우저를 찾을 수 없습니다.");
+            var browserPaths = FindHeadlessBrowserPaths();
+            if (browserPaths.Count == 0)
+                throw new InvalidOperationException("HTML을 인쇄용 PDF로 변환할 Chrome 또는 Edge 브라우저를 찾을 수 없습니다.");
 
             string workDir = Path.Combine(Path.GetTempPath(), "eduest_print_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(workDir);
             string htmlPath = Path.Combine(workDir, "exam.html");
             string pdfPath = Path.Combine(workDir, "exam.pdf");
             string profileDir = Path.Combine(workDir, "profile");
-            Directory.CreateDirectory(profileDir);
 
             try
             {
                 File.WriteAllText(htmlPath, html, new UTF8Encoding(false));
                 string fileUri = new Uri(htmlPath).AbsoluteUri;
 
-                var psi = new ProcessStartInfo
-                {
-                    FileName = browserPath,
-                    Arguments = string.Format(
-                        "--headless=new --no-first-run --no-default-browser-check --no-pdf-header-footer --user-data-dir=\"{0}\" --print-to-pdf=\"{1}\" \"{2}\"",
-                        profileDir, pdfPath, fileUri
-                    ),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
+                var diags = new List<string>();
+                bool generated = false;
 
-                using (var proc = Process.Start(psi))
+                foreach (string browserPath in browserPaths)
                 {
-                    if (proc == null)
-                        throw new InvalidOperationException("헤드리스 인쇄 변환 프로세스를 시작하지 못했습니다.");
-                    if (!proc.WaitForExit(45000))
+                    string diag;
+                    if (RunHeadlessPdfAttempt(browserPath, profileDir, pdfPath, fileUri, false, out diag))
                     {
-                        try { proc.Kill(); } catch { }
-                        throw new TimeoutException("시험지 PDF 변환 시간이 초과되었습니다.");
+                        generated = true;
+                        break;
                     }
+                    diags.Add(diag);
+
+                    // 일부 Edge 환경에서는 CreateNoWindow 대신 Hidden Shell 실행이 필요함
+                    if (RunHeadlessPdfAttempt(browserPath, profileDir, pdfPath, fileUri, true, out diag))
+                    {
+                        generated = true;
+                        break;
+                    }
+                    diags.Add(diag + "(shell)");
                 }
 
-                if (!File.Exists(pdfPath) || new FileInfo(pdfPath).Length == 0)
-                    throw new InvalidOperationException("인쇄용 PDF 생성에 실패했습니다.");
+                if (!generated || !File.Exists(pdfPath) || new FileInfo(pdfPath).Length == 0)
+                    throw new InvalidOperationException("인쇄용 PDF 생성에 실패했습니다. (" + string.Join("; ", diags.ToArray()) + ")");
 
                 byte[] pdfBytes = File.ReadAllBytes(pdfPath);
                 return PrintPdfBytesSilently(pdfBytes, printerName, jobTitle, copies, duplex);
