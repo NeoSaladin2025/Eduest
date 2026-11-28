@@ -13,6 +13,7 @@ import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import { supabase } from '@/lib/supabase';
 import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
 import { useStudentSessionGuard } from '@/hooks/useStudentSessionGuard';
+import DriveHtmlIframe from '@/components/DriveHtmlIframe';
 import StudentDirectAlertOverlay, { DirectAlertSignal } from '@/components/StudentDirectAlertOverlay';
 import { DirectAlertPayload } from '@/lib/directAlertTypes';
 import { 
@@ -1416,21 +1417,28 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     scanStrategyForItems(mappedList);
   };
 
-  // 라이브러리 초기 진입 및 학년별 필터링
+  // 라이브러리 초기 진입 (student 객체 실시간 갱신 시 탐색 위치가 초기화되지 않도록 grade 단위 1회 초기화)
+  const initializedLibraryGradeRef = useRef<string | null>(null);
+  const gradeRootFolder = useMemo(() => {
+    if (!examLibrary.length || !student?.grade) return null;
+    return examLibrary.find(f => f.name.includes(student.grade)) || null;
+  }, [examLibrary, student?.grade]);
+
+  const canGoBackFolder = gradeRootFolder ? currentPath.length > 1 : currentPath.length > 0;
+
   useEffect(() => {
-    if (examLibrary.length > 0 && student) {
-      const gradeFolder = examLibrary.find(f => f.name.includes(student.grade));
-      
-      if (gradeFolder) {
-        setDisplayLibrary(sortLibraryDisplayFolders(gradeFolder.subFolders || []));
-        setCurrentPath([gradeFolder]);
+    if (examLibrary.length > 0 && student?.grade && initializedLibraryGradeRef.current !== student.grade) {
+      initializedLibraryGradeRef.current = student.grade;
+      if (gradeRootFolder) {
+        setDisplayLibrary(sortLibraryDisplayFolders(gradeRootFolder.subFolders || []));
+        setCurrentPath([gradeRootFolder]);
       } else {
         const fallbackList = examLibrary.filter(f => f.grade === student.grade);
         setDisplayLibrary(sortLibraryDisplayFolders(fallbackList));
         setCurrentPath([]);
       }
     }
-  }, [examLibrary, student]);
+  }, [examLibrary, student?.grade, gradeRootFolder]);
 
   const changeMode = (newMode: typeof mode) => {
     if (isTesting) {
@@ -1440,8 +1448,16 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     if (mode === 'library' && newMode !== 'library') {
       flushLibraryAnalyticsSession('manual');
     }
+    if (newMode === 'library' && displayLibrary.length === 0 && examLibrary.length > 0 && student?.grade) {
+      if (gradeRootFolder) {
+        setDisplayLibrary(sortLibraryDisplayFolders(gradeRootFolder.subFolders || []));
+        setCurrentPath([gradeRootFolder]);
+      } else {
+        setDisplayLibrary(sortLibraryDisplayFolders(examLibrary.filter(f => f.grade === student.grade)));
+        setCurrentPath([]);
+      }
+    }
     setMode(newMode);
-    setCurrentPath([]);
   };
 
   // 🌟 [오라버니 기획] 이탈 잠금 체크 & 자율 학습 시 클라우드 DB 자동 저장 안전 전환
@@ -1479,7 +1495,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
 
       setTimeout(() => {
         setMode(newMode);
-        setCurrentPath([]);
         setIsSavingModalOpen(false);
       }, 1200);
       return;
@@ -1489,7 +1504,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       flushLibraryAnalyticsSession('manual');
     }
     setMode(newMode);
-    setCurrentPath([]);
     setIsTopMenuOpen(false);
   };
 
@@ -1503,7 +1517,10 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     }
 
     if (folder.subFolders && folder.subFolders.length > 0) {
-      setCurrentPath(prev => [...prev, folder]);
+      setCurrentPath(prev => {
+        const base = prev.length === 0 && gradeRootFolder ? [gradeRootFolder] : prev;
+        return [...base, folder];
+      });
       setDisplayLibrary(sortLibraryDisplayFolders(folder.subFolders));
       return;
     }
@@ -1524,24 +1541,21 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
   };
 
   const handleFolderBack = () => {
-    setCurrentPath(prev => {
-      const newPath = [...prev];
-      newPath.pop();
-      if (newPath.length === 0) {
-        const gradeFolder = examLibrary.find((f: any) => f.name.includes(student?.grade));
-        if (gradeFolder) {
-          setDisplayLibrary(sortLibraryDisplayFolders(gradeFolder.subFolders || []));
-          return [gradeFolder];
-        } else {
-          setDisplayLibrary(sortLibraryDisplayFolders(examLibrary.filter((f: any) => f.grade === student?.grade)));
-          return [];
-        }
+    const nextPath = [...currentPath];
+    nextPath.pop();
+    if (nextPath.length === 0) {
+      if (gradeRootFolder) {
+        setDisplayLibrary(sortLibraryDisplayFolders(gradeRootFolder.subFolders || []));
+        setCurrentPath([gradeRootFolder]);
       } else {
-        const lastFolder = newPath[newPath.length - 1];
-        setDisplayLibrary(sortLibraryDisplayFolders(lastFolder.subFolders || []));
-        return newPath;
+        setDisplayLibrary(sortLibraryDisplayFolders(examLibrary.filter((f: any) => f.grade === student?.grade)));
+        setCurrentPath([]);
       }
-    });
+    } else {
+      const lastFolder = nextPath[nextPath.length - 1];
+      setDisplayLibrary(sortLibraryDisplayFolders(lastFolder.subFolders || []));
+      setCurrentPath(nextPath);
+    }
   };
 
   useEffect(() => {
@@ -1935,7 +1949,29 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   </div>
                 ) : (
                   <>
-                    {currentPath.length > 0 && (
+                    {canGoBackFolder && (
+                      <div className="col-span-full flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md">
+                        <button
+                          type="button"
+                          onClick={handleFolderBack}
+                          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-indigo-600 text-white text-xs font-black transition-all cursor-pointer shrink-0"
+                        >
+                          <ArrowLeft size={16} />
+                          <span>상위 폴더로</span>
+                        </button>
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 overflow-x-auto whitespace-nowrap scrollbar-hide">
+                          {currentPath.map((p, idx) => (
+                            <React.Fragment key={p.drive_id || p.id || idx}>
+                              {idx > 0 && <ChevronRight size={14} className="text-slate-600 shrink-0" />}
+                              <span className={idx === currentPath.length - 1 ? 'text-white font-black' : ''}>
+                                {p.name}
+                              </span>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {canGoBackFolder && (
                       <div onClick={handleFolderBack} className="bg-white/5 p-12 rounded-[56px] border border-dashed border-white/10 hover:border-white/30 transition-all cursor-pointer flex flex-col items-center justify-center group">
                         <ArrowLeft size={40} className="text-slate-600 group-hover:text-white mb-4 transition-transform group-hover:-translate-x-2"/>
                         <div className="text-xl font-black text-slate-600 group-hover:text-white uppercase">GO BACK</div>
@@ -2189,7 +2225,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                   </div>
                 )}
                 {contentData ? (
-                  selectedTab === 'solution' ? <iframe srcDoc={contentData} className="w-full h-full min-h-[700px] border-0 rounded-[32px] bg-white shadow-3xl animate-in fade-in duration-1000" /> 
+                  selectedTab === 'solution' ? <DriveHtmlIframe srcDoc={contentData} title="문제 해설" className="w-full h-full min-h-[700px] border-0 rounded-[32px] bg-white shadow-3xl animate-in fade-in duration-1000" /> 
                   : <img src={contentData} alt="content" className="max-w-full max-h-[75vh] object-contain rounded-2xl shadow-3xl animate-in zoom-in-95 duration-700" />
                 ) : !isContentLoading && <div className="text-slate-800 font-black text-6xl md:text-8xl italic opacity-10 select-none tracking-tighter text-center uppercase">Eduest OS System</div>}
               </div>

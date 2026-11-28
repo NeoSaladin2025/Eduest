@@ -31,18 +31,22 @@ const memoryCache = new Map<string, string>();
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const fileId = searchParams.get("fileId");
-  const type = searchParams.get("type") || "html"; // 'html' | 'image'
+  const requestedType = searchParams.get("type") || "html"; // 'html' | 'image' | 'auto'
   const raw = searchParams.get("raw") === "true";
 
   if (!fileId) {
     return NextResponse.json({ success: false, error: "fileId is required" }, { status: 400 });
   }
 
-  const cacheKey = `${fileId}_${type}`;
+  let resolvedType: "html" | "image" = requestedType === "image" ? "image" : "html";
+  let fileName: string | undefined;
+
+  const cacheKey = `${fileId}_${requestedType}`;
   if (memoryCache.has(cacheKey)) {
     const cached = memoryCache.get(cacheKey)!;
+    const isCachedImg = cached.startsWith("data:image/");
     if (raw) {
-      if (type === "image") {
+      if (isCachedImg || resolvedType === "image") {
         const base64Data = cached.replace(/^data:image\/\w+;base64,/, "");
         const buf = Buffer.from(base64Data, "base64");
         return new NextResponse(buf, {
@@ -51,7 +55,7 @@ export async function GET(req: NextRequest) {
             "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
           },
         });
-      } else if (type === "html") {
+      } else {
         return new NextResponse(cached, {
           headers: {
             "Content-Type": "text/html; charset=utf-8",
@@ -61,7 +65,12 @@ export async function GET(req: NextRequest) {
       }
     }
     return NextResponse.json(
-      { success: true, data: cached, from: "memory-cache" },
+      {
+        success: true,
+        data: cached,
+        contentType: isCachedImg ? "image" : "html",
+        from: "memory-cache",
+      },
       {
         headers: {
           "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
@@ -74,7 +83,22 @@ export async function GET(req: NextRequest) {
   const drive = getDriveClient();
   if (drive) {
     try {
-      if (type === "html") {
+      if (requestedType === "auto") {
+        const meta = await drive.files.get({
+          fileId,
+          fields: "id, name, mimeType",
+          supportsAllDrives: true,
+        });
+        fileName = meta?.data?.name || undefined;
+        const mime = String(meta?.data?.mimeType || "").toLowerCase();
+        if (mime.startsWith("image/")) {
+          resolvedType = "image";
+        } else {
+          resolvedType = "html";
+        }
+      }
+
+      if (resolvedType === "html") {
         const res = await drive.files.get(
           { fileId, alt: "media", supportsAllDrives: true },
           { responseType: "text" }
@@ -82,6 +106,7 @@ export async function GET(req: NextRequest) {
         let content = typeof res.data === "string" ? res.data : JSON.stringify(res.data);
         if (content) {
           content = content.replace(/[₩¥]/g, "\\");
+          memoryCache.set(`${fileId}_html`, content);
           memoryCache.set(cacheKey, content);
           if (raw) {
             return new NextResponse(content, {
@@ -92,7 +117,7 @@ export async function GET(req: NextRequest) {
             });
           }
           return NextResponse.json(
-            { success: true, data: content, from: "drive-v3" },
+            { success: true, data: content, contentType: "html", fileName, from: "drive-v3" },
             {
               headers: {
                 "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
@@ -108,6 +133,7 @@ export async function GET(req: NextRequest) {
         );
         const buffer = Buffer.from(res.data);
         const dataUrl = `data:image/png;base64,${buffer.toString("base64")}`;
+        memoryCache.set(`${fileId}_image`, dataUrl);
         memoryCache.set(cacheKey, dataUrl);
         if (raw) {
           return new NextResponse(buffer, {
@@ -118,7 +144,7 @@ export async function GET(req: NextRequest) {
           });
         }
         return NextResponse.json(
-          { success: true, data: dataUrl, from: "drive-v3" },
+          { success: true, data: dataUrl, contentType: "image", fileName, from: "drive-v3" },
           {
             headers: {
               "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
@@ -134,13 +160,14 @@ export async function GET(req: NextRequest) {
 
   // 🛡️ 2순위 폴백: 기존 GAS WebApp 호출 (Drive 권한 없거나 실패 시 자동 백업)
   try {
+    const gasType = resolvedType;
     const gasRes = await fetch(DEFAULT_GAS_LIBRARY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "get_file_data",
         fileId,
-        type,
+        type: gasType,
         apiKey: "eduest_super_secret_key_1234",
       }),
       redirect: "follow",
@@ -148,10 +175,10 @@ export async function GET(req: NextRequest) {
     const result = await gasRes.json();
     if (result.success && result.data) {
       let d = result.data;
-      if (type === "html") d = d.replace(/[₩¥]/g, "\\");
+      if (gasType === "html") d = d.replace(/[₩¥]/g, "\\");
       memoryCache.set(cacheKey, d);
       if (raw) {
-        if (type === "image") {
+        if (gasType === "image") {
           const base64Data = d.replace(/^data:image\/\w+;base64,/, "");
           const buf = Buffer.from(base64Data, "base64");
           return new NextResponse(buf, {
@@ -160,7 +187,7 @@ export async function GET(req: NextRequest) {
               "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",
             },
           });
-        } else if (type === "html") {
+        } else {
           return new NextResponse(d, {
             headers: {
               "Content-Type": "text/html; charset=utf-8",
@@ -170,7 +197,13 @@ export async function GET(req: NextRequest) {
         }
       }
       return NextResponse.json(
-        { success: true, data: d, from: "gas-fallback" },
+        {
+          success: true,
+          data: d,
+          contentType: d.startsWith("data:image/") ? "image" : gasType,
+          fileName,
+          from: "gas-fallback",
+        },
         {
           headers: {
             "Cache-Control": "public, max-age=86400, s-maxage=31536000, stale-while-revalidate=604800",

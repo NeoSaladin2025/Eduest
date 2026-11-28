@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { ReviewItem } from './types';
 import { parseQuestionFromHtmlClient } from '@/lib/clientQuestionParser';
+import DriveHtmlIframe from '@/components/DriveHtmlIframe';
 
 interface ReviewSolutionModalProps {
   items: ReviewItem[];
@@ -257,7 +258,7 @@ export default function ReviewSolutionModal({
                   <p className="text-xs font-bold text-slate-300">상세 해설을 불러오는 중입니다...</p>
                 </div>
               ) : htmlContent ? (
-                <iframe
+                <DriveHtmlIframe
                   srcDoc={htmlContent}
                   title="문제 해설"
                   className="w-full h-full border-0 bg-white"
@@ -318,7 +319,7 @@ export default function ReviewSolutionModal({
                 if (extractedData?.questionHtml) {
                   return (
                     <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-5 overflow-hidden">
-                      <iframe
+                      <DriveHtmlIframe
                         srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>

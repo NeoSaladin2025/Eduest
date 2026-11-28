@@ -39,6 +39,7 @@ import ReviewArcadeLeaderboard from './ReviewArcadeLeaderboard';
 import { parseQuestionFromHtmlClient, ExtractedQuestionResult } from '@/lib/clientQuestionParser';
 import MathKeypad, { MathFormulaPreview } from '@/components/MathKeypad';
 import { areMathAnswersEquivalent } from '@/lib/mathFormulaUtils';
+import DriveHtmlIframe from '@/components/DriveHtmlIframe';
 
 interface ReviewTestModalProps {
   studentId: string;
@@ -1278,7 +1279,7 @@ export default function ReviewTestModal({
                           />
                         ) : resolvedQuestionHtml ? (
                           <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-4 overflow-hidden my-auto">
-                            <iframe
+                            <DriveHtmlIframe
                               srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
@@ -1290,7 +1291,7 @@ export default function ReviewTestModal({
                           </div>
                         ) : fullHtml ? (
                           <div className="w-full h-full min-h-[460px] bg-white rounded-2xl shadow-2xl overflow-hidden">
-                            <iframe
+                            <DriveHtmlIframe
                               srcDoc={fullHtml}
                               className="w-full h-full min-h-[460px] border-0"
                               title="문제 본문"

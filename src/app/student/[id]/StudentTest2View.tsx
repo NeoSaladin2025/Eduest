@@ -49,6 +49,7 @@ import { ExamBundle, ExamBundleItem } from '@/app/api/test2/bundle/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { supabase } from '@/lib/supabase';
 import { getProctoringChannel, subscribeProctoringRoom } from '@/lib/proctoringRoom';
+import DriveHtmlIframe from '@/components/DriveHtmlIframe';
 import { StudentReviewData, ReviewItem, ReviewFolder } from './types';
 import BatchAnswerModal from './BatchAnswerModal';
 import ZoomableImageViewer from './ZoomableImageViewer';
@@ -3864,7 +3865,7 @@ export default function StudentTest2View({
                   ) : question.question_html ? (
                     <div className="w-full flex-1 flex justify-center items-center py-4">
                       <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl p-4 overflow-hidden">
-                        <iframe
+                        <DriveHtmlIframe
                           srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
@@ -5618,7 +5619,7 @@ export default function StudentTest2View({
                       </div>
                     ) : q.question_html ? (
                       <div className="bg-white p-2 rounded-xl mb-4 max-h-48 overflow-hidden">
-                        <iframe
+                        <DriveHtmlIframe
                           srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8">
 <script>window.MathJax={tex:{inlineMath:[['$','$'],['\\\\(','\\\\)']],displayMath:[['$$','$$'],['\\\\[','\\\\]']]},options:{processHtmlClass:'tex2jax_process'}};</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
@@ -5864,7 +5865,7 @@ export default function StudentTest2View({
                   <p className="text-xs font-bold text-slate-500">해설을 불러오는 중입니다...</p>
                 </div>
               ) : solutionHtml ? (
-                <iframe
+                <DriveHtmlIframe
                   srcDoc={solutionHtml}
                   title="해설"
                   className="w-full h-full border-0"
