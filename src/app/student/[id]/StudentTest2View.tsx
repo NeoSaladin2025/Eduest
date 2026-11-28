@@ -71,6 +71,8 @@ interface StudentTest2ViewProps {
   studentName?: string;
   studentGrade?: string;
   studentFolderId?: string;
+  studentTestStatus?: string;
+  studentTestUpdatedAt?: string;
   reviewData?: StudentReviewData;
   onUpdateReviewData?: (data: StudentReviewData) => void;
   onToggleTopMenu?: () => void;
@@ -204,6 +206,8 @@ export default function StudentTest2View({
   studentName,
   studentGrade,
   studentFolderId,
+  studentTestStatus,
+  studentTestUpdatedAt,
   reviewData,
   onUpdateReviewData,
   onToggleTopMenu,
@@ -898,34 +902,31 @@ export default function StudentTest2View({
       () => replyCurrentTestState()
     );
 
-    const dbWatchChannel = supabase
-      .channel(`student_test_db_watch_${studentId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'students',
-          filter: `id=eq.${studentId}`,
-        },
-        (payload: any) => {
-          const newStatus = payload.new?.test_status;
-          if (newStatus === 'TESTING') {
-            recordTestAwayReturnLog();
-            setIsLocked(false);
-            setIsPaused(false);
-          } else if (newStatus === 'PAUSED') {
-            setIsPaused(true);
-          }
-        }
-      )
-      .subscribe();
-
     return () => {
       unsubscribeRoom();
-      supabase.removeChannel(dbWatchChannel);
     };
   }, [studentId]);
+
+  // 부모 useStudentData의 단일 students 구독에서 전달된 test_status 변경 반영 (중복 Realtime 채널 제거)
+  const prevTestWatchStampRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!studentTestStatus && !studentTestUpdatedAt) return;
+    const stamp = `${studentTestStatus || ''}|${studentTestUpdatedAt || ''}`;
+    if (prevTestWatchStampRef.current === null) {
+      prevTestWatchStampRef.current = stamp;
+      return;
+    }
+    if (prevTestWatchStampRef.current === stamp) return;
+    prevTestWatchStampRef.current = stamp;
+
+    if (studentTestStatus === 'TESTING') {
+      recordTestAwayReturnLog();
+      setIsLocked(false);
+      setIsPaused(false);
+    } else if (studentTestStatus === 'PAUSED') {
+      setIsPaused(true);
+    }
+  }, [studentTestStatus, studentTestUpdatedAt]);
 
   // 시험지별 이탈 잠금 활성화 여부 계산 (학생 개별 오버라이드 우선)
   const getExamLockdownActive = (exam: any) => {

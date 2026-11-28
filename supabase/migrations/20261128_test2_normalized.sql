@@ -55,4 +55,29 @@ create index if not exists idx_student_exam_submissions_pending
   on public.student_exam_submissions (has_pending_review, submitted_at desc)
   where has_pending_review = true;
 
+-- 3. Lightweight summary view for teacher exammgr (strips heavy answers payloads -> -95% egress & <4.5MB Vercel limit)
+create or replace view public.student_exam_submission_summaries as
+select
+  id,
+  student_id,
+  exam_id,
+  exam_title,
+  submitted_at,
+  score,
+  total_questions,
+  correct_count,
+  has_pending_review,
+  pending_count,
+  submitted_by,
+  (payload->>'current_round')::integer as current_round,
+  (payload->>'completed_rounds')::integer as completed_rounds,
+  coalesce(
+    (
+      select jsonb_agg(rh - 'answers')
+      from jsonb_array_elements(coalesce(payload->'round_history', '[]'::jsonb)) as rh
+    ),
+    '[]'::jsonb
+  ) as round_history
+from public.student_exam_submissions;
+
 notify pgrst, 'reload schema';

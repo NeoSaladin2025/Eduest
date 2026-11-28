@@ -4,6 +4,7 @@ import { ExamPaper } from "../exam/route";
 import { areMathAnswersEquivalent } from "@/lib/mathFormulaUtils";
 import { canStudentAccessExam } from "@/lib/personalExamLock";
 import {
+  getAllSubmissionSummariesDb,
   getAllSubmissionsDb,
   getExamPaperByIdDb,
   getExamPapersByStudentDb,
@@ -193,6 +194,19 @@ export async function GET(req: NextRequest) {
     const mode = searchParams.get("mode");
     const studentId = searchParams.get("studentId");
     const examId = searchParams.get("examId");
+
+    if (mode === "all_submission_summaries") {
+      const submissions = await getAllSubmissionSummariesDb();
+      return NextResponse.json({ success: true, submissions });
+    }
+
+    if (mode === "submission_detail") {
+      if (!studentId || !examId) {
+        return NextResponse.json({ success: false, error: "studentId와 examId가 필요합니다." }, { status: 400 });
+      }
+      const submission = await getSubmissionByStudentAndExamDb(studentId, examId);
+      return NextResponse.json({ success: true, submission });
+    }
 
     if (mode === "all_submissions") {
       const submissions = await getAllSubmissionsDb();

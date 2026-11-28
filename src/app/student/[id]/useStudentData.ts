@@ -119,7 +119,7 @@ export function useStudentData(studentId: string) {
       try {
         const { data: studentData } = await supabase
           .from('students')
-          .select('id, name, grade, drive_folder_id, is_unlocked, unlocked_folders')
+          .select('id, name, grade, drive_folder_id, is_unlocked, unlocked_folders, test_status, updated_at')
           .eq('id', studentId)
           .single();
 

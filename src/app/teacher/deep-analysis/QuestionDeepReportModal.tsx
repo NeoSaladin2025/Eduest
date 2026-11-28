@@ -106,7 +106,7 @@ export default function QuestionDeepReportModal({
               {/* iframe 문제 뷰어 */}
               <div className="flex-1 min-h-[400px] bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs relative">
                 <iframe
-                  src={`/api/student/file-content?fileId=${question.fileDriveId}&raw=true`}
+                  src={`/api/drive/library/file?fileId=${question.fileDriveId}&raw=true`}
                   title={question.displayName}
                   className="w-full h-full border-0"
                 />

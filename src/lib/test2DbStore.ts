@@ -190,6 +190,26 @@ export async function getAllSubmissionsDb(): Promise<StudentSubmission[]> {
   return list;
 }
 
+export async function getAllSubmissionSummariesDb(): Promise<StudentSubmission[]> {
+  const sb = getServerSupabase();
+  const list: StudentSubmission[] = [];
+  const pageSize = 500;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await sb
+      .from('student_exam_submission_summaries')
+      .select('*')
+      .order('submitted_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`제출 요약 목록 조회 실패: ${error.message}`);
+    if (!data?.length) break;
+    for (const row of data) {
+      list.push(row as StudentSubmission);
+    }
+    if (data.length < pageSize) break;
+  }
+  return list;
+}
+
 export async function getSubmissionsByStudentDb(studentId: string): Promise<StudentSubmission[]> {
   const sb = getServerSupabase();
   const { data, error } = await sb

@@ -671,8 +671,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setStudents(studentList);
       }
 
-      // 3) 전체 학생 제출 기록 로드 (정규화 student_exam_submissions 테이블)
-      const subRes = await fetch('/api/test2/student-exams?mode=all_submissions', { cache: 'no-store' });
+      // 3) 전체 학생 제출 요약 목록 로드 (answers 제외 초경량 뷰 -> 95% 트래픽 절감 및 4.5MB 상한 예방)
+      const subRes = await fetch('/api/test2/student-exams?mode=all_submission_summaries', { cache: 'no-store' });
       const subData = await subRes.json();
       if (subData?.success && Array.isArray(subData.submissions)) {
         setAllSubmissions(subData.submissions);
@@ -768,8 +768,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           });
         }
       } else {
-        // 1) 전체 학생 제출 기록 최신화
-        const subRes = await fetch('/api/test2/student-exams?mode=all_submissions', { cache: 'no-store' });
+        // 1) 전체 학생 제출 요약 최신화
+        const subRes = await fetch('/api/test2/student-exams?mode=all_submission_summaries', { cache: 'no-store' });
         const subData = await subRes.json();
         if (subData?.success && Array.isArray(subData.submissions)) {
           setAllSubmissions(subData.submissions);
@@ -2184,8 +2184,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
-  // 🌟 학생 응시 상세 결과 보기
-  const handleOpenStudentDetail = (st: Student | undefined, sub: any, targetExam?: ExamPaper) => {
+  // 🌟 학생 응시 상세 결과 보기 (요약 상태인 경우 해당 학생 전체 답안 온디맨드 로드)
+  const handleOpenStudentDetail = async (st: Student | undefined, sub: any, targetExam?: ExamPaper) => {
     const examToUse = targetExam || resultsModalExam;
     let studentToUse = st;
     if (!studentToUse && sub?.student_id) {
@@ -2195,7 +2195,24 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       studentToUse = students.find(s => s.id === examToUse.target_student_id);
     }
     if (!studentToUse || !sub || !examToUse) return;
-    setDetailStudent({ student: studentToUse, submission: sub, exam: examToUse });
+
+    let resolvedSub = sub;
+    if (!resolvedSub.answers) {
+      try {
+        const res = await fetch(`/api/test2/student-exams?mode=submissions&studentId=${encodeURIComponent(studentToUse.id)}`, {
+          cache: 'no-store',
+        });
+        const data = await res.json();
+        if (data?.success && Array.isArray(data.submissions)) {
+          const fullMap = new Map<string, any>(data.submissions.map((s: any) => [s.exam_id, s]));
+          setAllSubmissions(prev => prev.map(s => (s.student_id === studentToUse!.id ? (fullMap.get(s.exam_id) || s) : s)));
+          resolvedSub = fullMap.get(examToUse.id) || resolvedSub;
+        }
+      } catch (err) {
+        console.error('Failed to load full submission detail:', err);
+      }
+    }
+    setDetailStudent({ student: studentToUse, submission: resolvedSub, exam: examToUse });
   };
 
   // 1-1. 쌍둥이 데이터 로드
@@ -2340,8 +2357,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     return availableTwins[availableTwins.length - 1];
   };
 
-  // 🌟 오답 맞춤 시험지 생성 모달 열기
-  const handleCreateWrongExam = (
+  // 🌟 오답 맞춤 시험지 생성 모달 열기 (요약 데이터인 경우 전체 답안 단건 로드)
+  const handleCreateWrongExam = async (
     st: Student | undefined,
     sub: any,
     targetExam?: ExamPaper,
@@ -2354,12 +2371,28 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     const hasCustomSelection = Boolean(options?.selectedQuestions && options.selectedQuestions.length > 0);
     if (!st || !examToUse || (!sub && !hasCustomSelection)) return;
 
+    let resolvedSub = sub;
+    if (!hasCustomSelection && resolvedSub && !resolvedSub.answers) {
+      try {
+        const res = await fetch(
+          `/api/test2/student-exams?mode=submission_detail&studentId=${encodeURIComponent(st.id)}&examId=${encodeURIComponent(examToUse.id)}`,
+          { cache: 'no-store' }
+        );
+        const data = await res.json();
+        if (data?.success && data.submission) {
+          resolvedSub = data.submission;
+        }
+      } catch (err) {
+        console.error('Failed to fetch submission detail for wrong exam:', err);
+      }
+    }
+
     let wrongQuestions: ExamQuestion[] = [];
     if (hasCustomSelection && options?.selectedQuestions) {
       wrongQuestions = options.selectedQuestions;
     } else {
       // 틀린 문항 필터링 (할부·누적 모드 시 미응시 세트 문항이 오답으로 오인되지 않도록 안전 필터)
-      const extracted = getEffectiveWrongQuestionsForExam(examToUse, sub);
+      const extracted = getEffectiveWrongQuestionsForExam(examToUse, resolvedSub);
       wrongQuestions = extracted.wrongQuestions;
 
       if (wrongQuestions.length === 0) {
@@ -2378,7 +2411,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
     setWrongExamModal({
       student: st,
-      submission: sub,
+      submission: resolvedSub,
       exam: examToUse,
       wrongQuestions,
     });

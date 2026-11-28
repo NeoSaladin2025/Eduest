@@ -254,9 +254,9 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
       })
       .catch(err => console.error('Menu config fetch error:', err));
 
-    // 3. Supabase 실시간 변경 감지 (선생님이 설정 변경 시 즉시 학생 화면에 실시간 반영)
+    // 3. Supabase 단일 통합 실시간 채널 (메뉴 설정 + 세션가드 설정을 1개 채널로 통합해 동접/메시지 절감)
     const channel = supabase
-      .channel('student_menu_config_realtime')
+      .channel('student_global_configs_realtime')
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
@@ -279,6 +279,22 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
           } catch (e) {}
         }
       })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'exam_library',
+        filter: 'drive_id=eq.student_session_guard_config_data',
+      }, (payload: any) => {
+        const curStudentId = studentMetaRef.current?.id;
+        if (payload?.new?.file_data && curStudentId) {
+          try {
+            const parsed = JSON.parse(payload.new.file_data);
+            if (Array.isArray(parsed.disabled_student_ids)) {
+              setIsAutoLogoutDisabled(parsed.disabled_student_ids.includes(curStudentId));
+            }
+          } catch (e) {}
+        }
+      })
       .subscribe();
 
     return () => {
@@ -286,7 +302,7 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
     };
   }, []);
 
-  // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 해제 여부 설정 동기화
+  // 🌟 [사용자 요청] 선생님의 9분 자동로그아웃 해제 여부 초기 조회
   useEffect(() => {
     if (!student?.id) return;
 
@@ -298,29 +314,6 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
         }
       })
       .catch(err => console.error('Session guard config fetch error:', err));
-
-    const channel = supabase
-      .channel('student_session_guard_realtime')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'exam_library',
-        filter: 'drive_id=eq.student_session_guard_config_data',
-      }, (payload: any) => {
-        if (payload?.new?.file_data && student?.id) {
-          try {
-            const parsed = JSON.parse(payload.new.file_data);
-            if (Array.isArray(parsed.disabled_student_ids)) {
-              setIsAutoLogoutDisabled(parsed.disabled_student_ids.includes(student.id));
-            }
-          } catch (e) {}
-        }
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
   }, [student?.id]);
 
   // 현재 모드가 관리자에 의해 비활성화된 경우, 남아있는 활성 메뉴 중 첫 번째로 자동 이동
@@ -1910,6 +1903,8 @@ export default function StudentPage({ params }: { params: Promise<{ id: string }
                 studentName={student?.name}
                 studentGrade={student?.grade}
                 studentFolderId={student?.drive_folder_id}
+                studentTestStatus={student?.test_status}
+                studentTestUpdatedAt={student?.updated_at}
                 reviewData={reviewData}
                 onUpdateReviewData={saveReviewData}
                 onToggleTopMenu={() => setIsTopMenuOpen((prev) => !prev)}
