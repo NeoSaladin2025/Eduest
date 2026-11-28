@@ -87,7 +87,7 @@ export async function getExamPapersByStudentDb(studentId: string): Promise<ExamP
   const { data, error } = await sb
     .from('exam_papers')
     .select('payload')
-    .contains('assigned_student_ids', [studentId])
+    .contains('assigned_student_ids', JSON.stringify([studentId]))
     .order('created_at', { ascending: false });
   if (error) throw new Error(`학생 시험지 목록 조회 실패: ${error.message}`);
   return (data || []).map((r: any) => r.payload as ExamPaper).filter(Boolean);
