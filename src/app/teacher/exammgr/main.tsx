@@ -73,6 +73,7 @@ import ExamChoicesEditModal from './ExamChoicesEditModal';
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, generateChoicesFromShortAnswer } from '@/lib/choiceGenerator';
 import { detectSubQuestions, detectQuestionType, normalizeCircledNumber, extractSourceFileName } from '@/lib/clientQuestionParser';
+import { isPersonalOnlyExam } from '@/lib/personalExamLock';
 import {
   TreasureConfig,
   TreasureTemplate,
@@ -252,6 +253,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
   const [modalAssignedIds, setModalAssignedIds] = useState<string[]>([]);
   const [modalStudentOverrides, setModalStudentOverrides] = useState<Record<string, StudentOverrideConfig>>({});
   const [modalSaving, setModalSaving] = useState(false);
+  const [allowMultiStudentOverride, setAllowMultiStudentOverride] = useState(false);
   const [assignModalGradeFilter, setAssignModalGradeFilter] = useState<string>('ALL');
   const [assignModalSearch, setAssignModalSearch] = useState<string>('');
 
@@ -1856,9 +1858,17 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         allCurrentExams = [...exams];
       }
 
+      let appliedCount = 0;
+      let skippedPersonalCount = 0;
+
       const updatedExams = allCurrentExams.map(ex => {
         if (!selectedExamIds.has(ex.id)) return ex;
+        if (isPersonalOnlyExam(ex)) {
+          skippedPersonalCount++;
+          return ex;
+        }
 
+        appliedCount++;
         let nextStudentIds: string[] = [];
         if (mode === 'add') {
           nextStudentIds = Array.from(new Set([...(ex.assigned_student_ids || []), ...targetStudentIds]));
@@ -1874,6 +1884,11 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           updated_at: new Date().toISOString(),
         };
       });
+
+      if (appliedCount === 0) {
+        alert('선택된 시험지가 모두 1인 전용(보물회수·오답) 시험지여서 일괄 배정이 적용되지 않았습니다.');
+        return;
+      }
 
       const { error } = await supabase.from('exam_library').upsert(
         {
@@ -1891,7 +1906,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
 
       setExams(updatedExams);
       setSelectedExamIds(new Set());
-      alert(`${targetIds.length}개 시험지에 학생 배정이 성공적으로 반영되었습니다.`);
+      const skippedNotice = skippedPersonalCount > 0 ? `\n(1인 전용 보물회수·오답 ${skippedPersonalCount}개는 보호를 위해 자동 제외됨)` : '';
+      alert(`${appliedCount}개 시험지에 학생 배정이 성공적으로 반영되었습니다.${skippedNotice}`);
     } catch (err: any) {
       console.error('Batch assign error:', err);
       alert(`일괄 배정 실패: ${err?.message || err}`);
@@ -2050,6 +2066,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     setAssignModalExam(exam);
     setModalAssignedIds(exam.assigned_student_ids || []);
     setModalStudentOverrides(exam.student_overrides || {});
+    setAllowMultiStudentOverride(false);
     setAssignModalGradeFilter('ALL');
     setAssignModalSearch('');
   };
@@ -2171,6 +2188,7 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
           examId: assignModalExam.id,
           assigned_student_ids: modalAssignedIds,
           student_overrides: modalStudentOverrides,
+          allow_multi_student: allowMultiStudentOverride,
         }),
       });
       const data = await res.json();
@@ -3852,8 +3870,9 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                                 )}
 
                                 {studentDisplay && (
-                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                                    수험자: {studentDisplay}
+                                  <span className="text-[10px] font-black text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-300 inline-flex items-center gap-1 shadow-2xs">
+                                    <Lock size={10} className="text-amber-600" />
+                                    <span>{studentDisplay} 전용</span>
                                   </span>
                                 )}
                               </div>
@@ -3863,7 +3882,10 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                               isWrong
                                 ? 'text-slate-800 group-hover:text-rose-600'
                                 : 'text-slate-800 group-hover:text-violet-700'
-                            }`} title={cleanDisplayTitle}>
+                            }`} title={studentDisplay ? `[${studentDisplay} 전용] ${cleanDisplayTitle}` : cleanDisplayTitle}>
+                              {studentDisplay && (
+                                <span className="text-amber-600 mr-1.5 font-black text-base">[{studentDisplay} 전용]</span>
+                              )}
                               {cleanDisplayTitle}
                             </h3>
                             <p className="text-xs text-slate-400 font-medium mt-1">
@@ -6037,13 +6059,24 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       )}
 
       {/* 4. 학생 배정 관리 모달 */}
-      {assignModalExam && (
+      {assignModalExam && (() => {
+        const isPersonalExam = isPersonalOnlyExam(assignModalExam);
+        const isPersonalLocked = isPersonalExam && !allowMultiStudentOverride;
+        const ownerName = assignModalExam.target_student_name || '해당 학생';
+
+        return (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-in zoom-in-95">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 space-y-5 shadow-2xl animate-in zoom-in-95">
             <div className="flex items-center justify-between border-b border-slate-200 pb-4">
               <div>
-                <h3 className="text-lg font-black text-slate-800">
-                  '{assignModalExam.title}' 학생 배정 관리
+                <h3 className="text-lg font-black text-slate-800 flex items-center gap-2 flex-wrap">
+                  {isPersonalExam && (
+                    <span className="text-xs px-2 py-0.5 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-black inline-flex items-center gap-1">
+                      <Lock size={11} />
+                      {ownerName} 전용
+                    </span>
+                  )}
+                  <span>'{assignModalExam.title}' 학생 배정 관리</span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   시험을 치를 학생을 체크하거나 해제하세요.
@@ -6056,6 +6089,39 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 ✕
               </button>
             </div>
+
+            {isPersonalExam && (
+              <div className={`p-3 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                isPersonalLocked
+                  ? 'bg-amber-50 border-amber-300 text-amber-950'
+                  : 'bg-rose-50 border-rose-300 text-rose-950'
+              }`}>
+                <div className="flex items-start gap-2">
+                  <Lock size={15} className={`${isPersonalLocked ? 'text-amber-600' : 'text-rose-600'} shrink-0 mt-0.5`} />
+                  <div>
+                    <p className="font-black">
+                      {isPersonalLocked
+                        ? `🔒 '${ownerName}' 1인 전용 보물회수/오답 시험지 보호 잠금 ON`
+                        : `⚠️ 전용 보호 잠금이 일시 해제되었습니다`}
+                    </p>
+                    <p className="text-[11px] opacity-85 mt-0.5">
+                      {isPersonalLocked
+                        ? '다른 학생이 실수로 추가 배정되지 않도록 차단되어 있습니다. (이미 잘못 들어간 학생 해제는 바로 가능)'
+                        : '예외적으로 다른 학생을 추가 배정할 수 있는 상태입니다.'}
+                    </p>
+                  </div>
+                </div>
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white border border-amber-300/80 text-[11px] font-black cursor-pointer shrink-0 select-none shadow-2xs">
+                  <input
+                    type="checkbox"
+                    checked={allowMultiStudentOverride}
+                    onChange={(e) => setAllowMultiStudentOverride(e.target.checked)}
+                    className="rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+                  />
+                  <span>전용 잠금 해제</span>
+                </label>
+              </div>
+            )}
 
             <div className="flex items-center justify-between text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-200">
               <span className="text-slate-500 font-bold">시험지 기본 설정:</span>
@@ -6141,17 +6207,21 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
 
                 <div className="flex items-center gap-2 font-bold">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const visibleIds = filteredModalStudents.map(st => st.id);
-                      setModalAssignedIds(prev => Array.from(new Set([...prev, ...visibleIds])));
-                    }}
-                    className="text-violet-600 hover:text-violet-800 hover:underline cursor-pointer"
-                  >
-                    현재 목록 전체 선택
-                  </button>
-                  <span className="text-slate-300">·</span>
+                  {!isPersonalLocked && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const visibleIds = filteredModalStudents.map(st => st.id);
+                          setModalAssignedIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+                        }}
+                        className="text-violet-600 hover:text-violet-800 hover:underline cursor-pointer"
+                      >
+                        현재 목록 전체 선택
+                      </button>
+                      <span className="text-slate-300">·</span>
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -6183,6 +6253,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                 </div>
               ) : filteredModalStudents.map(st => {
                 const isChecked = modalAssignedIds.includes(st.id);
+                const isOwnerStudent = assignModalExam.target_student_id ? st.id === assignModalExam.target_student_id : false;
+                const canToggleStudent = !isPersonalLocked || isOwnerStudent || isChecked;
                 const stOverride = modalStudentOverrides[st.id] || {};
                 const stLockdown = stOverride.enable_lockdown !== undefined ? stOverride.enable_lockdown : !!assignModalExam.enable_lockdown;
                 const stProof = stOverride.require_proof_image !== undefined ? stOverride.require_proof_image : !!assignModalExam.require_proof_image;
@@ -6191,12 +6263,20 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
                   <div
                     key={st.id}
                     onClick={() => {
+                      if (!canToggleStudent) return;
                       setModalAssignedIds(prev =>
                         prev.includes(st.id) ? prev.filter(id => id !== st.id) : [...prev, st.id]
                       );
                     }}
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between text-xs ${
-                      isChecked ? 'bg-violet-50/80 border-violet-500 font-bold shadow-2xs' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                    title={!canToggleStudent ? `1인 전용 시험지입니다 ('전용 잠금 해제' 시에만 추가 가능)` : undefined}
+                    className={`p-2.5 rounded-xl border transition-all flex items-center justify-between text-xs ${
+                      !canToggleStudent
+                        ? 'bg-slate-100/70 border-slate-200/70 opacity-50 cursor-not-allowed'
+                        : isChecked
+                        ? isPersonalLocked && !isOwnerStudent && assignModalExam.target_student_id
+                          ? 'bg-rose-50/80 border-rose-400 font-bold shadow-2xs cursor-pointer'
+                          : 'bg-violet-50/80 border-violet-500 font-bold shadow-2xs cursor-pointer'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100 cursor-pointer'
                     }`}
                   >
                     <div className="min-w-0 flex-1">
@@ -6281,7 +6361,8 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* 5. 응시 결과 현황 모달 */}
       {resultsModalExam && (

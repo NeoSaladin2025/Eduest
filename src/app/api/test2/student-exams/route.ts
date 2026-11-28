@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
 import { areMathAnswersEquivalent } from "@/lib/mathFormulaUtils";
+import { canStudentAccessExam } from "@/lib/personalExamLock";
 import {
   getInstallmentActiveQuestions,
   getInstallmentGlobalRound,
@@ -248,10 +249,8 @@ export async function GET(req: NextRequest) {
     const allExams = await getExamPapers();
     const allSubmissions = await getSubmissions();
 
-    // 이 학생에게 배정된 시험지만 필터링
-    const assignedExams = allExams.filter(
-      (e) => e.assigned_student_ids && e.assigned_student_ids.includes(studentId)
-    );
+    // 이 학생에게 배정된 시험지만 필터링 (1인 전용 target_student_id 2중 검증 포함)
+    const assignedExams = allExams.filter((e) => canStudentAccessExam(e, studentId));
 
     const submissionsMap = new Map<string, StudentSubmission>();
     allSubmissions

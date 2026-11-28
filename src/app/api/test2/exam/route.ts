@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import type { TreasureConfig } from "@/app/teacher/exammgr/treasureTypes";
+import { getDisallowedExtraStudentsForPersonalExam, isPersonalOnlyExam } from "@/lib/personalExamLock";
 
 export type { TreasureConfig };
 
@@ -319,6 +320,7 @@ export async function PUT(req: NextRequest) {
       duration_min, 
       questions, 
       assigned_student_ids,
+      allow_multi_student,
       require_proof_image,
       enable_lockdown,
       remind_popup,
@@ -338,6 +340,25 @@ export async function PUT(req: NextRequest) {
     }
 
     const current = existingExams[idx];
+
+    if (
+      assigned_student_ids !== undefined &&
+      Array.isArray(assigned_student_ids) &&
+      !allow_multi_student &&
+      isPersonalOnlyExam(current)
+    ) {
+      const disallowed = getDisallowedExtraStudentsForPersonalExam(current, assigned_student_ids);
+      if (disallowed.length > 0) {
+        const ownerLabel = current.target_student_name ? `'${current.target_student_name}' 학생 ` : "";
+        return NextResponse.json(
+          {
+            success: false,
+            error: `${ownerLabel}1인 전용 보물회수/오답 시험지에는 다른 학생을 임의로 추가 배정할 수 없습니다. (정말 필요한 경우 배정 관리의 '전용 잠금 해제'를 사용해주세요.)`,
+          },
+          { status: 400 }
+        );
+      }
+    }
     const nextDurationMin =
       duration_min !== undefined ? Math.max(0, Number(duration_min) || 0) : current.duration_min;
     const syncedTreasureConfig =

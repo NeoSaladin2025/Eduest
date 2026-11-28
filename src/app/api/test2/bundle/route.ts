@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
+import { isPersonalOnlyExam } from "@/lib/personalExamLock";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -192,7 +193,7 @@ export async function POST(req: NextRequest) {
       const studentIdsToAdd = updatedBundle.assigned_student_ids;
       for (const item of formattedItems) {
         const targetExam = allExams.find((e) => e.id === item.exam_id);
-        if (targetExam) {
+        if (targetExam && !isPersonalOnlyExam(targetExam)) {
           const currentAssigned = new Set(targetExam.assigned_student_ids || []);
           let added = false;
           for (const sId of studentIdsToAdd) {
@@ -282,7 +283,7 @@ export async function PUT(req: NextRequest) {
     let examsModified = false;
     for (const item of targetBundle.items) {
       const exam = allExams.find((e) => e.id === item.exam_id);
-      if (exam) {
+      if (exam && !isPersonalOnlyExam(exam)) {
         const currentSet = new Set(exam.assigned_student_ids || []);
         for (const sId of studentIds) {
           currentSet.add(sId);

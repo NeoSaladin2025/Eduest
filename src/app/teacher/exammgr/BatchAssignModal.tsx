@@ -10,9 +10,11 @@ import {
   UserCheck, 
   AlertCircle,
   Sparkles,
-  Info
+  Info,
+  Lock
 } from 'lucide-react';
 import { ExamPaper } from '@/app/api/test2/exam/route';
+import { isPersonalOnlyExam } from '@/lib/personalExamLock';
 
 interface Student {
   id: string;
@@ -43,10 +45,18 @@ export default function BatchAssignModal({
   const [searchKeyword, setSearchKeyword] = useState<string>('');
   const [isApplying, setIsApplying] = useState(false);
 
-  // 대상 시험지 제목들
+  // 대상 시험지 제목들 (일반 배정 가능 vs 1인 전용 자동 보호 제외)
   const selectedExams = useMemo(() => {
     return exams.filter(e => selectedExamIds.includes(e.id));
   }, [exams, selectedExamIds]);
+
+  const protectedPersonalExams = useMemo(() => {
+    return selectedExams.filter(e => isPersonalOnlyExam(e));
+  }, [selectedExams]);
+
+  const eligibleExams = useMemo(() => {
+    return selectedExams.filter(e => !isPersonalOnlyExam(e));
+  }, [selectedExams]);
 
   // 필터된 학생 목록
   const filteredStudents = useMemo(() => {
@@ -88,6 +98,10 @@ export default function BatchAssignModal({
 
   // 실행
   const handleConfirm = async () => {
+    if (eligibleExams.length === 0) {
+      alert('일괄 배정할 수 있는 일반 시험지가 없습니다. (1인 전용 보물회수/오답 시험지는 자동 보호됩니다)');
+      return;
+    }
     if (assignMode !== 'clear' && selectedStudentIds.size === 0) {
       alert('배정할 학생을 최소 1명 이상 선택해 주세요.');
       return;
@@ -136,15 +150,42 @@ export default function BatchAssignModal({
         </div>
 
         {/* 선택된 대상 시험지 안내 칩 */}
-        <div className="shrink-0 bg-slate-50 px-6 py-3 border-b border-slate-200/80">
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">배정 대상 시험지 ({selectedExams.length}개)</p>
+        <div className="shrink-0 bg-slate-50 px-6 py-3 border-b border-slate-200/80 space-y-2">
+          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            배정 대상 시험지 (적용 {eligibleExams.length}개{protectedPersonalExams.length > 0 ? ` · 개인전용 보호 제외 ${protectedPersonalExams.length}개` : ''})
+          </p>
           <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
-            {selectedExams.map(ex => (
-              <span key={ex.id} className="text-xs bg-white text-slate-700 font-bold px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
-                {ex.title}
-              </span>
-            ))}
+            {selectedExams.map(ex => {
+              const isPersonal = isPersonalOnlyExam(ex);
+              return (
+                <span
+                  key={ex.id}
+                  className={`text-xs font-bold px-2.5 py-1 rounded-lg border shadow-2xs inline-flex items-center gap-1 ${
+                    isPersonal
+                      ? 'bg-amber-50 text-amber-800 border-amber-300 line-through decoration-amber-400/70'
+                      : 'bg-white text-slate-700 border-slate-200'
+                  }`}
+                  title={isPersonal ? '1인 전용(보물회수/오답) 시험지는 일괄 배정에서 자동 제외됩니다' : ex.title}
+                >
+                  {isPersonal && <Lock size={11} className="text-amber-600 shrink-0" />}
+                  <span>{ex.title}</span>
+                  {isPersonal && (
+                    <span className="text-[10px] font-black bg-amber-200/80 text-amber-900 px-1.5 py-0.2 rounded no-underline">
+                      {ex.target_student_name ? `${ex.target_student_name} 전용(제외)` : '개인전용(제외)'}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
           </div>
+          {protectedPersonalExams.length > 0 && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-3 py-2 text-[11px] font-bold">
+              <AlertCircle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+              <span>
+                1인 전용 보물회수·개인 오답 시험지 {protectedPersonalExams.length}개는 다른 학생이 섞여 배정되지 않도록 일괄 배정 대상에서 자동 제외됩니다.
+              </span>
+            </div>
+          )}
         </div>
 
         {/* 모달 본문 */}
@@ -291,9 +332,11 @@ export default function BatchAssignModal({
         {/* 푸터 */}
         <div className="shrink-0 px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
           <p className="text-xs text-slate-500 font-medium">
-            {assignMode === 'clear' 
-              ? `선택한 ${selectedExams.length}개 시험지의 모든 학생 배정이 해제됩니다.`
-              : `${selectedExams.length}개 시험지에 학생 ${selectedStudentIds.size}명이 일괄 배정됩니다.`}
+            {eligibleExams.length === 0
+              ? '적용 가능한 일반 시험지가 없습니다 (개인 전용 시험지는 자동 보호됨).'
+              : assignMode === 'clear'
+              ? `일반 시험지 ${eligibleExams.length}개의 모든 학생 배정이 해제됩니다.`
+              : `일반 시험지 ${eligibleExams.length}개에 학생 ${selectedStudentIds.size}명이 일괄 배정됩니다.`}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -307,7 +350,7 @@ export default function BatchAssignModal({
             <button
               type="button"
               onClick={handleConfirm}
-              disabled={isApplying}
+              disabled={isApplying || eligibleExams.length === 0}
               className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-black shadow-md shadow-indigo-200 transition-all flex items-center gap-1.5 disabled:opacity-50"
             >
               {isApplying ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
