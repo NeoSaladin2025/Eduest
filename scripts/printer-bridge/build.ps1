@@ -8,6 +8,7 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $srcCs = Join-Path $PSScriptRoot "EduestPrinterBridge.cs"
 $outDir = Join-Path $repoRoot "public\downloads"
 $outExe = Join-Path $outDir "EduestPrinterBridge.exe"
+$outZip = Join-Path $outDir "EduestPrinterBridge.zip"
 
 if (-not (Test-Path $outDir)) {
   New-Item -ItemType Directory -Path $outDir -Force | Out-Null
@@ -34,4 +35,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "EduestPrinterBridge.exe build failed with code $LASTEXITCODE"
 }
 
+Compress-Archive -Path $outExe -DestinationPath $outZip -Force
+
 Write-Host "Built successfully:" $outExe ((Get-Item $outExe).Length) "bytes"
+Write-Host "Packaged ZIP:" $outZip ((Get-Item $outZip).Length) "bytes"

@@ -2050,12 +2050,12 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                   <div className="pt-1">
                     <a
                       href={PRINTER_BRIDGE_DOWNLOAD_URL}
-                      download="EduestPrinterBridge.exe"
+                      download="EduestPrinterBridge.zip"
                       className="w-full py-1.5 px-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-[10.5px] font-black transition-all flex items-center justify-center gap-1.5"
-                      title="기존 트레이 브릿지를 종료한 뒤 새 버전을 실행하면 출력 속도가 대폭 빨라집니다."
+                      title="기존 트레이 브릿지를 종료한 뒤 압축을 풀고 새 버전을 실행하면 출력 속도가 대폭 빨라집니다."
                     >
                       <Download size={12} />
-                      <span>고속 엔진 v{LATEST_PRINTER_BRIDGE_VERSION} 업데이트 (.exe)</span>
+                      <span>고속 엔진 v{LATEST_PRINTER_BRIDGE_VERSION} 업데이트 (.zip)</span>
                     </a>
                   </div>
                 )}
@@ -2063,15 +2063,15 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             ) : (
               <div className="space-y-2">
                 <p className="text-[10.5px] text-slate-400 leading-relaxed">
-                  현재는 <strong className="text-slate-200">브라우저 인쇄창</strong> 모드로 동작 중입니다. 아래 트레이 도우미를 실행하면 작업표시줄 오른쪽에 상주하며 여기서 프린터를 바로 고를 수 있습니다.
+                  현재는 <strong className="text-slate-200">브라우저 인쇄창</strong> 모드로 동작 중입니다. 아래 트레이 도우미 압축을 풀어 실행하면 작업표시줄 오른쪽에 상주하며 여기서 프린터를 바로 고를 수 있습니다.
                 </p>
                 <a
                   href={PRINTER_BRIDGE_DOWNLOAD_URL}
-                  download="EduestPrinterBridge.exe"
+                  download="EduestPrinterBridge.zip"
                   className="w-full py-2 px-3 rounded-xl bg-violet-600/20 hover:bg-violet-600/35 border border-violet-500/40 text-violet-200 text-[11px] font-black transition-all flex items-center justify-center gap-1.5"
                 >
                   <Download size={13} />
-                  <span>Windows 트레이 도우미 받기 (.exe)</span>
+                  <span>Windows 트레이 도우미 받기 (.zip)</span>
                 </a>
               </div>
             )}

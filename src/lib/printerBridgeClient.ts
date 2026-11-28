@@ -1,7 +1,7 @@
 'use client';
 
 export const PRINTER_BRIDGE_BASE_URL = 'http://127.0.0.1:48921';
-export const PRINTER_BRIDGE_DOWNLOAD_URL = '/downloads/EduestPrinterBridge.exe';
+export const PRINTER_BRIDGE_DOWNLOAD_URL = '/downloads/EduestPrinterBridge.zip';
 export const LATEST_PRINTER_BRIDGE_VERSION = '1.1.0';
 
 export interface BridgePrinterItem {
