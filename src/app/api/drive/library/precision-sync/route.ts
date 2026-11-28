@@ -4,6 +4,12 @@ import { google } from "googleapis";
 import { cookies } from "next/headers";
 import { verifyAdminToken } from "@/lib/authUtils";
 import { normalizeCircledNumber, extractQuestionData as parseQuestionFromHtml } from "@/lib/extractQuestionUtils";
+import {
+  getAllExamPapersDb,
+  getAllSubmissionsDb,
+  upsertExamPapersDb,
+  upsertSubmissionsDb,
+} from "@/lib/test2DbStore";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -47,36 +53,13 @@ function getDriveClient() {
   }
 }
 
-// 헬퍼: DB 시험지 목록 가져오기 / 저장
+// 헬퍼: DB 시험지 목록 가져오기 / 저장 (정규화 exam_papers 테이블)
 async function getExamPapers(): Promise<any[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", EXAM_PAPERS_RECORD_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.exams) ? parsed.exams : [];
-  } catch {
-    return [];
-  }
+  return getAllExamPapersDb();
 }
 
 async function saveExamPapers(exams: any[]) {
-  const jsonString = JSON.stringify({ exams, updated_at: new Date().toISOString() });
-  await supabase.from("exam_library").upsert(
-    {
-      drive_id: EXAM_PAPERS_RECORD_ID,
-      name: "test2_exam_papers.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
+  await upsertExamPapersDb(exams);
 }
 
 // 헬퍼: DB 원천DB 목록 가져오기 / 저장
@@ -111,36 +94,13 @@ async function saveTestBankItems(items: any[]) {
   );
 }
 
-// 헬퍼: 학생 제출 기록 가져오기 / 저장
+// 헬퍼: 학생 제출 기록 가져오기 / 저장 (정규화 student_exam_submissions 테이블)
 async function getSubmissions(): Promise<any[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", SUBMISSIONS_RECORD_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.submissions) ? parsed.submissions : [];
-  } catch {
-    return [];
-  }
+  return getAllSubmissionsDb();
 }
 
 async function saveSubmissions(submissions: any[]) {
-  const jsonString = JSON.stringify({ submissions, updated_at: new Date().toISOString() });
-  await supabase.from("exam_library").upsert(
-    {
-      drive_id: SUBMISSIONS_RECORD_ID,
-      name: "test2_student_submissions.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
+  await upsertSubmissionsDb(submissions);
 }
 
 // 학생 이름 맵 생성

@@ -671,20 +671,13 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
         setStudents(studentList);
       }
 
-      // 3) 전체 학생 제출 기록 로드 (학생별 성적 요약 및 시험지 카드 점수 노출용)
-      const { data: subData } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', 'test2_student_submissions_data')
-        .maybeSingle();
-
-      if (subData?.file_data) {
-        try {
-          const parsed = JSON.parse(subData.file_data);
-          setAllSubmissions(Array.isArray(parsed.submissions) ? parsed.submissions : []);
-        } catch {
-          setAllSubmissions([]);
-        }
+      // 3) 전체 학생 제출 기록 로드 (정규화 student_exam_submissions 테이블)
+      const subRes = await fetch('/api/test2/student-exams?mode=all_submissions', { cache: 'no-store' });
+      const subData = await subRes.json();
+      if (subData?.success && Array.isArray(subData.submissions)) {
+        setAllSubmissions(subData.submissions);
+      } else {
+        setAllSubmissions([]);
       }
 
       // 4) 쌍둥이 메타데이터 로드
@@ -745,32 +738,54 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     try {
       if (!silent) setRefreshingStudent(true);
 
-      // 1) 전체 학생 제출 기록 최신화
-      const { data: subData } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', 'test2_student_submissions_data')
-        .maybeSingle();
+      const isSingleTarget = Boolean(targetStudentId && targetStudentId !== 'ALL');
 
-      if (subData?.file_data) {
-        try {
-          const parsed = JSON.parse(subData.file_data);
-          setAllSubmissions(Array.isArray(parsed.submissions) ? parsed.submissions : []);
-        } catch (e) {
-          console.error('Failed to parse submissions during refresh:', e);
+      if (isSingleTarget && targetStudentId) {
+        // 🎯 특정 학생 이벤트/최신화 시 해당 학생의 데이터만 증분 조회 (4.5MB -> 수십 KB)
+        const [subRes, examRes] = await Promise.all([
+          fetch(`/api/test2/student-exams?mode=submissions&studentId=${encodeURIComponent(targetStudentId)}`, { cache: 'no-store' }),
+          fetch(`/api/test2/exam?studentId=${encodeURIComponent(targetStudentId)}`, { cache: 'no-store' }),
+        ]);
+
+        const [subData, examData] = await Promise.all([subRes.json(), examRes.json()]);
+
+        if (subData?.success && Array.isArray(subData.submissions)) {
+          setAllSubmissions(prev => [
+            ...prev.filter(s => s.student_id !== targetStudentId),
+            ...subData.submissions,
+          ]);
         }
-      }
 
-      // 2) 시험지 목록 최신화 (새로 배정된 오답/보물회수 시험지가 있을 수 있으므로)
-      const examRes = await fetch('/api/test2/exam', { cache: 'no-store' });
-      const examData = await examRes.json();
-      if (examData.success && Array.isArray(examData.exams)) {
-        setExams(examData.exams);
+        if (examData?.success && Array.isArray(examData.exams)) {
+          const fetchedMap = new Map<string, ExamPaper>(examData.exams.map((ex: ExamPaper) => [ex.id, ex]));
+          setExams(prev => {
+            const existingIds = new Set(prev.map(e => e.id));
+            const merged = prev.map(e => fetchedMap.get(e.id) || e);
+            for (const ex of examData.exams as ExamPaper[]) {
+              if (!existingIds.has(ex.id)) merged.unshift(ex);
+            }
+            return merged;
+          });
+        }
+      } else {
+        // 1) 전체 학생 제출 기록 최신화
+        const subRes = await fetch('/api/test2/student-exams?mode=all_submissions', { cache: 'no-store' });
+        const subData = await subRes.json();
+        if (subData?.success && Array.isArray(subData.submissions)) {
+          setAllSubmissions(subData.submissions);
+        }
+
+        // 2) 시험지 목록 최신화
+        const examRes = await fetch('/api/test2/exam', { cache: 'no-store' });
+        const examData = await examRes.json();
+        if (examData.success && Array.isArray(examData.exams)) {
+          setExams(examData.exams);
+        }
       }
 
       // 3) 특정 학생의 실시간 임시 풀이 상태 동기화
       const studentIdToFetch = targetStudentId || (selectedStudentFilterId !== 'ALL' ? selectedStudentFilterId : undefined);
-      if (studentIdToFetch) {
+      if (studentIdToFetch && studentIdToFetch !== 'ALL') {
         await fetchStudentTempProgress(studentIdToFetch);
       }
 
@@ -789,11 +804,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     }
   };
 
-  // 🌟 특정 학생 필터링 시 실시간 풀이 상태 조회 및 10초 주기 자동 갱신
+  // 🌟 특정 학생 필터링 시 실시간 풀이 상태 조회 및 10초 주기 자동 갱신 (백그라운드 탭 일시정지)
   useEffect(() => {
     if (selectedStudentFilterId !== 'ALL') {
       fetchStudentTempProgress(selectedStudentFilterId);
       const interval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
         fetchStudentTempProgress(selectedStudentFilterId);
       }, 10000);
       return () => clearInterval(interval);
@@ -1840,71 +1856,33 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     try {
       setIsBatchOperating(true);
 
-      const { data: dbData } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', 'test2_exam_papers_data')
-        .maybeSingle();
-
-      let allCurrentExams: ExamPaper[] = [];
-      if (dbData?.file_data) {
-        try {
-          const parsed = JSON.parse(dbData.file_data);
-          allCurrentExams = Array.isArray(parsed.exams) ? parsed.exams : [];
-        } catch (e) {
-          allCurrentExams = [...exams];
-        }
-      } else {
-        allCurrentExams = [...exams];
+      const res = await fetch('/api/test2/exam', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'batch_assign',
+          examIds: targetIds,
+          mode,
+          targetStudentIds,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || '일괄 배정 실패');
       }
 
-      let appliedCount = 0;
-      let skippedPersonalCount = 0;
-
-      const updatedExams = allCurrentExams.map(ex => {
-        if (!selectedExamIds.has(ex.id)) return ex;
-        if (isPersonalOnlyExam(ex)) {
-          skippedPersonalCount++;
-          return ex;
-        }
-
-        appliedCount++;
-        let nextStudentIds: string[] = [];
-        if (mode === 'add') {
-          nextStudentIds = Array.from(new Set([...(ex.assigned_student_ids || []), ...targetStudentIds]));
-        } else if (mode === 'replace') {
-          nextStudentIds = [...targetStudentIds];
-        } else {
-          nextStudentIds = [];
-        }
-
-        return {
-          ...ex,
-          assigned_student_ids: nextStudentIds,
-          updated_at: new Date().toISOString(),
-        };
-      });
+      const appliedCount = data.appliedCount || 0;
+      const skippedPersonalCount = data.skippedPersonalCount || 0;
 
       if (appliedCount === 0) {
         alert('선택된 시험지가 모두 1인 전용(보물회수·오답) 시험지여서 일괄 배정이 적용되지 않았습니다.');
         return;
       }
 
-      const { error } = await supabase.from('exam_library').upsert(
-        {
-          drive_id: 'test2_exam_papers_data',
-          name: 'test2_exam_papers.json',
-          type: 'file',
-          grade: '공통',
-          file_data: JSON.stringify({ exams: updatedExams, updated_at: new Date().toISOString() }),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'drive_id' }
+      const updatedMap = new Map<string, ExamPaper>(
+        (Array.isArray(data.updatedExams) ? data.updatedExams : []).map((ex: ExamPaper) => [ex.id, ex])
       );
-
-      if (error) throw new Error(error.message);
-
-      setExams(updatedExams);
+      setExams(prev => prev.map(e => updatedMap.get(e.id) || e));
       setSelectedExamIds(new Set());
       const skippedNotice = skippedPersonalCount > 0 ? `\n(1인 전용 보물회수·오답 ${skippedPersonalCount}개는 보호를 위해 자동 제외됨)` : '';
       alert(`${appliedCount}개 시험지에 학생 배정이 성공적으로 반영되었습니다.${skippedNotice}`);
@@ -1924,63 +1902,27 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
     try {
       setIsBatchOperating(true);
 
-      const { data: dbData } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', 'test2_exam_papers_data')
-        .maybeSingle();
-
-      let allCurrentExams: ExamPaper[] = [];
-      if (dbData?.file_data) {
-        try {
-          const parsed = JSON.parse(dbData.file_data);
-          allCurrentExams = Array.isArray(parsed.exams) ? parsed.exams : [];
-        } catch (e) {
-          allCurrentExams = [...exams];
-        }
-      } else {
-        allCurrentExams = [...exams];
+      const res = await fetch('/api/test2/exam', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'batch_chips',
+          examIds: targetIds,
+          mode,
+          chipIds,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data?.error || '필터칩 일괄 업데이트 실패');
       }
 
-      const updatedExams = allCurrentExams.map(ex => {
-        if (!selectedExamIds.has(ex.id)) return ex;
-
-        const currentChips = Array.isArray(ex.filter_chip_ids) ? ex.filter_chip_ids : [];
-        let nextChips: string[] = [];
-
-        if (mode === 'add') {
-          nextChips = Array.from(new Set([...currentChips, ...chipIds]));
-        } else if (mode === 'remove') {
-          const toRemove = new Set(chipIds);
-          nextChips = currentChips.filter(id => !toRemove.has(id));
-        } else {
-          nextChips = [...chipIds];
-        }
-
-        return {
-          ...ex,
-          filter_chip_ids: nextChips,
-          updated_at: new Date().toISOString(),
-        };
-      });
-
-      const { error } = await supabase.from('exam_library').upsert(
-        {
-          drive_id: 'test2_exam_papers_data',
-          name: 'test2_exam_papers.json',
-          type: 'file',
-          grade: '공통',
-          file_data: JSON.stringify({ exams: updatedExams, updated_at: new Date().toISOString() }),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'drive_id' }
+      const updatedMap = new Map<string, ExamPaper>(
+        (Array.isArray(data.updatedExams) ? data.updatedExams : []).map((ex: ExamPaper) => [ex.id, ex])
       );
-
-      if (error) throw new Error(error.message);
-
-      setExams(updatedExams);
+      setExams(prev => prev.map(e => updatedMap.get(e.id) || e));
       setSelectedExamIds(new Set());
-      alert(`${targetIds.length}개 시험지의 필터칩이 성공적으로 업데이트되었습니다.`);
+      alert(`${data.appliedCount || targetIds.length}개 시험지의 필터칩이 성공적으로 업데이트되었습니다.`);
     } catch (err: any) {
       console.error('Batch chip error:', err);
       alert(`필터칩 일괄 업데이트 실패: ${err?.message || err}`);
@@ -2225,18 +2167,12 @@ export default function ExamManagerMain({ onNavigate }: { onNavigate?: (menu: st
       })
       .catch(() => setTempProgressMap({}));
     try {
-      const { data } = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', 'test2_student_submissions_data')
-        .maybeSingle();
-
-      if (data?.file_data) {
-        const parsed = JSON.parse(data.file_data);
-        const list = Array.isArray(parsed.submissions)
-          ? parsed.submissions.filter((s: any) => s.exam_id === exam.id)
-          : [];
-        setExamSubmissions(list);
+      const subRes = await fetch(`/api/test2/student-exams?mode=submissions&examId=${encodeURIComponent(exam.id)}`, {
+        cache: 'no-store',
+      });
+      const subData = await subRes.json();
+      if (subData?.success && Array.isArray(subData.submissions)) {
+        setExamSubmissions(subData.submissions);
       } else {
         setExamSubmissions([]);
       }

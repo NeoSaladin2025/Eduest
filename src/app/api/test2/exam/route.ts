@@ -3,6 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import type { TreasureConfig } from "@/app/teacher/exammgr/treasureTypes";
 import { getDisallowedExtraStudentsForPersonalExam, isPersonalOnlyExam } from "@/lib/personalExamLock";
+import {
+  getAllExamPapersDb,
+  getExamPapersByStudentDb,
+  getExamPaperByIdDb,
+  getExamPapersByIdsDb,
+  upsertExamPaperDb,
+  upsertExamPapersDb,
+  deleteExamPaperDb,
+  getSubmissionsByExamDb,
+  deleteSubmissionsByExamIdDb,
+} from "@/lib/test2DbStore";
 
 export type { TreasureConfig };
 
@@ -74,48 +85,36 @@ export interface ExamPaper {
   updated_at: string;
 }
 
-// 헬퍼: DB에서 전체 시험지 목록 가져오기
+// 헬퍼: DB에서 전체 시험지 목록 가져오기 (정규화 exam_papers 테이블 사용)
 async function getExamPapers(): Promise<ExamPaper[]> {
-  const { data, error } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (error || !data || !data.file_data) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.exams) ? parsed.exams : [];
-  } catch (e) {
-    console.error("Failed to parse exam papers:", e);
-    return [];
-  }
+  return getAllExamPapersDb();
 }
 
-// 헬퍼: DB에 전체 시험지 목록 저장하기
-async function saveExamPapers(exams: ExamPaper[]) {
-  const jsonString = JSON.stringify({
-    exams,
-    updated_at: new Date().toISOString(),
-  });
+// GET: 시험지 목록 또는 특정 시험지 상세 조회
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const examId = searchParams.get("examId");
+    const studentId = searchParams.get("studentId");
 
-  const { error } = await supabase.from("exam_library").upsert(
-    {
-      drive_id: RECORD_DRIVE_ID,
-      name: "test2_exam_papers.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
+    if (examId) {
+      const exam = await getExamPaperByIdDb(examId);
+      if (!exam) {
+        return NextResponse.json({ success: false, error: "시험지를 찾을 수 없습니다." }, { status: 404 });
+      }
+      return NextResponse.json({ success: true, exam });
+    }
 
-  if (error) {
-    throw new Error(`시험지 데이터 저장 실패: ${error.message}`);
+    if (studentId) {
+      const exams = await getExamPapersByStudentDb(studentId);
+      return NextResponse.json({ success: true, exams });
+    }
+
+    const exams = await getExamPapers();
+    return NextResponse.json({ success: true, exams });
+  } catch (error: any) {
+    console.error("Exam GET error:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 
@@ -136,70 +135,6 @@ function getDriveClient() {
   } catch (e) {
     console.error("Google Auth initialization error:", e);
     return null;
-  }
-}
-
-// 헬퍼: 제출 기록 목록 가져오기
-async function getSubmissions(): Promise<any[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", SUBMISSIONS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.submissions) ? parsed.submissions : [];
-  } catch {
-    return [];
-  }
-}
-
-// 헬퍼: 제출 기록 저장하기
-async function saveSubmissions(submissions: any[]) {
-  const jsonString = JSON.stringify({
-    submissions,
-    updated_at: new Date().toISOString(),
-  });
-
-  const { error } = await supabase.from("exam_library").upsert(
-    {
-      drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
-      name: "test2_student_submissions.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
-
-  if (error) {
-    console.error("제출 데이터 갱신 저장 실패:", error.message);
-  }
-}
-
-// GET: 시험지 목록 또는 특정 시험지 상세 조회
-export async function GET(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const examId = searchParams.get("examId");
-
-    const exams = await getExamPapers();
-
-    if (examId) {
-      const exam = exams.find((e) => e.id === examId);
-      if (!exam) {
-        return NextResponse.json({ success: false, error: "시험지를 찾을 수 없습니다." }, { status: 404 });
-      }
-      return NextResponse.json({ success: true, exam });
-    }
-
-    return NextResponse.json({ success: true, exams });
-  } catch (error: any) {
-    console.error("Exam GET error:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 
@@ -297,10 +232,7 @@ export async function POST(req: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    const existingExams = await getExamPapers();
-    const updatedExams = [newExam, ...existingExams];
-
-    await saveExamPapers(updatedExams);
+    await upsertExamPaperDb(newExam);
 
     return NextResponse.json({ success: true, exam: newExam });
   } catch (error: any) {
@@ -332,14 +264,11 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: "examId가 필요합니다." }, { status: 400 });
     }
 
-    const existingExams = await getExamPapers();
-    const idx = existingExams.findIndex((e) => e.id === examId);
+    const current = await getExamPaperByIdDb(examId);
 
-    if (idx === -1) {
+    if (!current) {
       return NextResponse.json({ success: false, error: "수정할 시험지를 찾을 수 없습니다." }, { status: 404 });
     }
-
-    const current = existingExams[idx];
 
     if (
       assigned_student_ids !== undefined &&
@@ -394,12 +323,104 @@ export async function PUT(req: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    existingExams[idx] = updatedExam;
-    await saveExamPapers(existingExams);
+    await upsertExamPaperDb(updatedExam);
 
     return NextResponse.json({ success: true, exam: updatedExam });
   } catch (error: any) {
     console.error("Exam PUT error:", error);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+
+// PATCH: 일괄 배정 / 일괄 필터칩 변경 (선택된 ID 행만 부분 업데이트)
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { action, examIds, mode, targetStudentIds, chipIds } = body;
+
+    if (!Array.isArray(examIds) || examIds.length === 0) {
+      return NextResponse.json({ success: false, error: "대상 시험지 ID가 필요합니다." }, { status: 400 });
+    }
+
+    const targetExams = await getExamPapersByIdsDb(examIds);
+    const now = new Date().toISOString();
+
+    if (action === "batch_assign") {
+      let appliedCount = 0;
+      let skippedPersonalCount = 0;
+      const toSave: ExamPaper[] = [];
+      const studentList = Array.isArray(targetStudentIds) ? targetStudentIds : [];
+
+      for (const ex of targetExams) {
+        if (isPersonalOnlyExam(ex)) {
+          skippedPersonalCount++;
+          continue;
+        }
+        appliedCount++;
+        let nextStudentIds: string[] = [];
+        if (mode === "add") {
+          nextStudentIds = Array.from(new Set([...(ex.assigned_student_ids || []), ...studentList]));
+        } else if (mode === "replace") {
+          nextStudentIds = [...studentList];
+        } else {
+          nextStudentIds = [];
+        }
+        toSave.push({
+          ...ex,
+          assigned_student_ids: nextStudentIds,
+          updated_at: now,
+        });
+      }
+
+      if (appliedCount === 0) {
+        return NextResponse.json({
+          success: true,
+          appliedCount: 0,
+          skippedPersonalCount,
+          updatedExams: [],
+        });
+      }
+
+      await upsertExamPapersDb(toSave);
+      return NextResponse.json({
+        success: true,
+        appliedCount,
+        skippedPersonalCount,
+        updatedExams: toSave,
+      });
+    }
+
+    if (action === "batch_chips") {
+      const nextChipInput = Array.isArray(chipIds) ? chipIds : [];
+      const toSave: ExamPaper[] = targetExams.map((ex) => {
+        const currentChips = Array.isArray(ex.filter_chip_ids) ? ex.filter_chip_ids : [];
+        let nextChips: string[] = [];
+        if (mode === "add") {
+          nextChips = Array.from(new Set([...currentChips, ...nextChipInput]));
+        } else if (mode === "remove") {
+          const toRemove = new Set(nextChipInput);
+          nextChips = currentChips.filter((id) => !toRemove.has(id));
+        } else {
+          nextChips = [...nextChipInput];
+        }
+        return {
+          ...ex,
+          filter_chip_ids: nextChips,
+          updated_at: now,
+        };
+      });
+
+      await upsertExamPapersDb(toSave);
+      return NextResponse.json({
+        success: true,
+        appliedCount: toSave.length,
+        updatedExams: toSave,
+      });
+    }
+
+    return NextResponse.json({ success: false, error: "지원하지 않는 action입니다." }, { status: 400 });
+  } catch (error: any) {
+    console.error("Exam PATCH error:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
@@ -415,14 +436,10 @@ export async function DELETE(req: NextRequest) {
     }
 
     // 1. 기존 시험지 목록에서 삭제
-    const existingExams = await getExamPapers();
-    const filteredExams = existingExams.filter((e) => e.id !== examId);
-    await saveExamPapers(filteredExams);
+    await deleteExamPaperDb(examId);
 
     // 2. 제출 기록 확인 및 삭제할 구글 드라이브 인증샷 fileId 수집
-    const allSubmissions = await getSubmissions();
-    const relatedSubmissions = allSubmissions.filter((s: any) => s.exam_id === examId);
-    const remainingSubmissions = allSubmissions.filter((s: any) => s.exam_id !== examId);
+    const relatedSubmissions = await getSubmissionsByExamDb(examId);
 
     const proofDriveIds = new Set<string>();
 
@@ -563,9 +580,9 @@ export async function DELETE(req: NextRequest) {
       }
     }
 
-    // 5. 연동된 제출 기록이 있다면 DB에서 정리 저장
+    // 5. 연동된 제출 기록이 있다면 DB에서 정리 삭제
     if (relatedSubmissions.length > 0) {
-      await saveSubmissions(remainingSubmissions);
+      await deleteSubmissionsByExamIdDb(examId);
     }
 
     return NextResponse.json({

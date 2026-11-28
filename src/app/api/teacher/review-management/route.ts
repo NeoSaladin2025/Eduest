@@ -3,6 +3,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ExamPaper } from '@/app/api/test2/exam/route';
 import { StudentSubmission } from '@/app/api/test2/student-exams/route';
 import { google } from 'googleapis';
+import {
+  deleteSubmissionByIdDb,
+  getSpecialExamPapersDb,
+  getSubmissionsByExamIdsDb,
+  getSubmissionsByStudentDb,
+  upsertSubmissionDb,
+} from '@/lib/test2DbStore';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -64,22 +71,16 @@ export async function GET(req: NextRequest) {
     // 모드 1: 특정 학생의 상세 복습 데이터 조회 (+ 해당 학생의 시험 제출 기록 통합)
     // ----------------------------------------------------
     if (studentId && mode !== 'special_exams') {
-      const [revRes, subsRes] = await Promise.all([
+      const [revRes, studentSubmissions] = await Promise.all([
         supabase
           .from('exam_library')
           .select('file_data')
           .eq('drive_id', `student_review_${studentId}`)
           .maybeSingle(),
-        supabase
-          .from('exam_library')
-          .select('file_data')
-          .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
-          .maybeSingle(),
+        getSubmissionsByStudentDb(studentId),
       ]);
 
       const reviewData = revRes.data?.file_data ? JSON.parse(revRes.data.file_data) : { folders: [], items: [] };
-      const allSubs: StudentSubmission[] = subsRes.data?.file_data ? JSON.parse(subsRes.data.file_data).submissions || [] : [];
-      const studentSubmissions = allSubs.filter(s => s.student_id === studentId);
 
       return NextResponse.json({
         success: true,
@@ -93,18 +94,14 @@ export async function GET(req: NextRequest) {
     // 모드 2: 스페셜 시험지 목록 및 제출 현황(인증샷 포함) 조회
     // ----------------------------------------------------
     if (mode === 'special_exams') {
-      const [examsRes, subsRes, studentsRes] = await Promise.all([
-        supabase.from('exam_library').select('file_data').eq('drive_id', EXAMS_RECORD_DRIVE_ID).maybeSingle(),
-        supabase.from('exam_library').select('file_data').eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID).maybeSingle(),
+      const [specialExams, studentsRes] = await Promise.all([
+        getSpecialExamPapersDb(),
         supabase.from('students').select('id, name, grade, drive_folder_id'),
       ]);
 
-      const allExams: ExamPaper[] = examsRes.data?.file_data ? JSON.parse(examsRes.data.file_data).exams || [] : [];
-      const allSubs: StudentSubmission[] = subsRes.data?.file_data ? JSON.parse(subsRes.data.file_data).submissions || [] : [];
+      const specialExamIds = specialExams.map(e => e.id).filter(Boolean);
+      const allSubs = await getSubmissionsByExamIdsDb(specialExamIds);
       const studentsMap = new Map((studentsRes.data || []).map(s => [s.id, s]));
-
-      // 스페셜 시험지만 필터링
-      const specialExams = allExams.filter(e => e.is_special || e.title.includes('[스페셜]'));
 
       const result = specialExams.map(exam => {
         const assignedStudents = (exam.assigned_student_ids || []).map(sid => {
@@ -315,70 +312,47 @@ async function handleMutation(req: NextRequest) {
       }
 
       if (sourceType === 'special_exam') {
-        const subsRes = await supabase
-          .from('exam_library')
-          .select('file_data')
-          .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
-          .maybeSingle();
+        const studentSubs = await getSubmissionsByStudentDb(studentId);
+        const sub = studentSubs.find(
+          (s: any) => s.id === submissionId || (s.student_id === studentId && s.id === submissionId)
+        );
 
-        if (subsRes.data?.file_data) {
-          const parsed = JSON.parse(subsRes.data.file_data);
-          let allSubs: any[] = parsed.submissions || [];
-          const subIdx = allSubs.findIndex(
-            (s: any) => s.id === submissionId || (s.student_id === studentId && s.id === submissionId)
-          );
+        if (sub) {
+          let driveFileToDelete = proofDriveId;
 
-          if (subIdx !== -1) {
-            const sub = allSubs[subIdx];
-            let driveFileToDelete = proofDriveId;
-
-            if (sub.answers && questionKey) {
-              if (!driveFileToDelete && sub.answers[questionKey]?.proof_image_drive_id) {
-                driveFileToDelete = sub.answers[questionKey].proof_image_drive_id;
-              }
-              delete sub.answers[questionKey];
+          if (sub.answers && questionKey) {
+            if (!driveFileToDelete && sub.answers[questionKey]?.proof_image_drive_id) {
+              driveFileToDelete = sub.answers[questionKey].proof_image_drive_id;
             }
+            delete sub.answers[questionKey];
+          }
 
-            if (Array.isArray(sub.proof_images)) {
-              if (!driveFileToDelete) {
-                const foundProof = sub.proof_images.find((p: any) => p.question_id === questionKey);
-                if (foundProof?.drive_id) driveFileToDelete = foundProof.drive_id;
-              }
-              sub.proof_images = sub.proof_images.filter(
-                (p: any) => p.question_id !== questionKey && p.drive_id !== driveFileToDelete
-              );
+          if (Array.isArray(sub.proof_images)) {
+            if (!driveFileToDelete) {
+              const foundProof = sub.proof_images.find((p: any) => p.question_id === questionKey);
+              if (foundProof?.drive_id) driveFileToDelete = foundProof.drive_id;
             }
-
-            const remainingKeys = Object.keys(sub.answers || {});
-            sub.total_questions = remainingKeys.length;
-            sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
-            sub.score =
-              sub.total_questions > 0
-                ? Math.round((sub.correct_count / sub.total_questions) * 100)
-                : 0;
-
-            if (remainingKeys.length === 0) {
-              allSubs.splice(subIdx, 1);
-            }
-
-            await supabase.from('exam_library').upsert(
-              {
-                drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
-                name: 'test2_student_submissions.json',
-                type: 'file',
-                grade: '공통',
-                file_data: JSON.stringify({
-                  submissions: allSubs,
-                  updated_at: new Date().toISOString(),
-                }),
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: 'drive_id' }
+            sub.proof_images = sub.proof_images.filter(
+              (p: any) => p.question_id !== questionKey && p.drive_id !== driveFileToDelete
             );
+          }
 
-            if (driveFileToDelete) {
-              await deleteDriveFileSafely(driveFileToDelete);
-            }
+          const remainingKeys = Object.keys(sub.answers || {});
+          sub.total_questions = remainingKeys.length;
+          sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
+          sub.score =
+            sub.total_questions > 0
+              ? Math.round((sub.correct_count / sub.total_questions) * 100)
+              : 0;
+
+          if (remainingKeys.length === 0) {
+            await deleteSubmissionByIdDb(sub.id);
+          } else {
+            await upsertSubmissionDb(sub);
+          }
+
+          if (driveFileToDelete) {
+            await deleteDriveFileSafely(driveFileToDelete);
           }
         }
 
@@ -425,82 +399,59 @@ async function handleMutation(req: NextRequest) {
         }
       }
 
-      // (2) test2_student_submissions_data 에서 이 학생의 해당 문항 답안 모두 제거
-      const subsRes = await supabase
-        .from('exam_library')
-        .select('file_data')
-        .eq('drive_id', SUBMISSIONS_RECORD_DRIVE_ID)
-        .maybeSingle();
+      // (2) student_exam_submissions 에서 이 학생의 해당 문항 답안 모두 제거
+      const studentSubs = await getSubmissionsByStudentDb(studentId);
+      const tDriveId = (targetDriveId || itemId || '').trim();
 
-      if (subsRes.data?.file_data) {
-        const parsed = JSON.parse(subsRes.data.file_data);
-        let allSubs: any[] = parsed.submissions || [];
+      for (const sub of studentSubs as any[]) {
+        if (!sub.answers) continue;
 
-        const tDriveId = (targetDriveId || itemId || '').trim();
+        const keysToDelete: string[] = [];
+        Object.keys(sub.answers).forEach((qKey) => {
+          const ans = sub.answers[qKey];
+          const isMatch =
+            (tDriveId && qKey.includes(tDriveId)) ||
+            (solutionUrl && ans?.solution_drive_id === solutionUrl) ||
+            (name && ans?.name === name);
 
-        allSubs = allSubs
-          .map((sub: any) => {
-            if (sub.student_id !== studentId || !sub.answers) return sub;
+          if (isMatch) {
+            keysToDelete.push(qKey);
+            if (ans?.proof_image_drive_id) {
+              proofsToDelete.add(ans.proof_image_drive_id);
+            }
+          }
+        });
 
-            const keysToDelete: string[] = [];
-            Object.keys(sub.answers).forEach((qKey) => {
-              const ans = sub.answers[qKey];
-              const isMatch =
-                (tDriveId && qKey.includes(tDriveId)) ||
-                (solutionUrl && ans?.solution_drive_id === solutionUrl) ||
-                (name && ans?.name === name);
-
-              if (isMatch) {
-                keysToDelete.push(qKey);
-                if (ans?.proof_image_drive_id) {
-                  proofsToDelete.add(ans.proof_image_drive_id);
-                }
+        if (keysToDelete.length > 0) {
+          keysToDelete.forEach((k) => delete sub.answers[k]);
+          if (Array.isArray(sub.proof_images)) {
+            sub.proof_images.forEach((p: any) => {
+              if (keysToDelete.includes(p.question_id) && p.drive_id) {
+                proofsToDelete.add(p.drive_id);
               }
             });
+            sub.proof_images = sub.proof_images.filter((p: any) => !keysToDelete.includes(p.question_id));
+          }
 
-            if (keysToDelete.length > 0) {
-              keysToDelete.forEach((k) => delete sub.answers[k]);
-              if (Array.isArray(sub.proof_images)) {
-                sub.proof_images.forEach((p: any) => {
-                  if (keysToDelete.includes(p.question_id) && p.drive_id) {
-                    proofsToDelete.add(p.drive_id);
-                  }
-                });
-                sub.proof_images = sub.proof_images.filter((p: any) => !keysToDelete.includes(p.question_id));
-              }
+          const remainingKeys = Object.keys(sub.answers || {});
+          sub.total_questions = remainingKeys.length;
+          sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
+          sub.score =
+            sub.total_questions > 0
+              ? Math.round((sub.correct_count / sub.total_questions) * 100)
+              : 0;
 
-              const remainingKeys = Object.keys(sub.answers || {});
-              sub.total_questions = remainingKeys.length;
-              sub.correct_count = remainingKeys.filter((k: string) => sub.answers[k]?.is_correct).length;
-              sub.score =
-                sub.total_questions > 0
-                  ? Math.round((sub.correct_count / sub.total_questions) * 100)
-                  : 0;
-            }
-
-            return sub;
-          })
-          .filter((sub: any) => Object.keys(sub.answers || {}).length > 0);
-
-        await supabase.from('exam_library').upsert(
-          {
-            drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
-            name: 'test2_student_submissions.json',
-            type: 'file',
-            grade: '공통',
-            file_data: JSON.stringify({
-              submissions: allSubs,
-              updated_at: new Date().toISOString(),
-            }),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'drive_id' }
-        );
-
-        // 연계된 모든 구글 드라이브 인증 사진 삭제
-        for (const fileId of Array.from(proofsToDelete)) {
-          await deleteDriveFileSafely(fileId);
+          if (remainingKeys.length === 0) {
+            await deleteSubmissionByIdDb(sub.id);
+          } else {
+            await upsertSubmissionDb(sub);
+          }
         }
+      }
+
+      // 연계된 모든 구글 드라이브 인증 사진 삭제
+      for (const fileId of Array.from(proofsToDelete)) {
+        await deleteDriveFileSafely(fileId);
       }
 
       return NextResponse.json({

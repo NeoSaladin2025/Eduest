@@ -2,72 +2,18 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
 import { StudentSubmission } from "../student-exams/route";
+import {
+  getExamPaperByIdDb,
+  getExamPapersByIdsDb,
+  getPendingDescriptiveSubmissionsDb,
+  getSubmissionByStudentAndExamDb,
+  upsertSubmissionDb,
+} from "@/lib/test2DbStore";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-const EXAMS_RECORD_DRIVE_ID = "test2_exam_papers_data";
-const SUBMISSIONS_RECORD_DRIVE_ID = "test2_student_submissions_data";
-
-// 헬퍼: 전체 시험지 가져오기
-async function getExamPapers(): Promise<ExamPaper[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", EXAMS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.exams) ? parsed.exams : [];
-  } catch {
-    return [];
-  }
-}
-
-// 헬퍼: 제출 기록 목록 가져오기
-async function getSubmissions(): Promise<StudentSubmission[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", SUBMISSIONS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.submissions) ? parsed.submissions : [];
-  } catch {
-    return [];
-  }
-}
-
-// 헬퍼: 제출 기록 저장하기
-async function saveSubmissions(submissions: StudentSubmission[]) {
-  const jsonString = JSON.stringify({
-    submissions,
-    updated_at: new Date().toISOString(),
-  });
-
-  const { error } = await supabase.from("exam_library").upsert(
-    {
-      drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
-      name: "test2_student_submissions.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
-
-  if (error) {
-    throw new Error(`제출 데이터 저장 실패: ${error.message}`);
-  }
-}
 
 // 헬퍼: 학생 이름 맵 생성
 async function getStudentsMap(): Promise<Map<string, string>> {
@@ -83,17 +29,19 @@ async function getStudentsMap(): Promise<Map<string, string>> {
   return map;
 }
 
-// GET: 서술형 채점 대기 중인 모든 문항 목록 조회
+// GET: 서술형 채점 대기 중인 모든 문항 목록 조회 (대기 중인 제출 행만 경량 조회)
 export async function GET() {
   try {
-    const [allExams, allSubmissions, studentsMap] = await Promise.all([
-      getExamPapers(),
-      getSubmissions(),
+    const [pendingSubs, studentsMap] = await Promise.all([
+      getPendingDescriptiveSubmissionsDb(),
       getStudentsMap(),
     ]);
 
+    const examIds = Array.from(new Set(pendingSubs.map((s) => s.exam_id).filter(Boolean)));
+    const relatedExams = await getExamPapersByIdsDb(examIds);
+
     const examsMap = new Map<string, ExamPaper>();
-    allExams.forEach((e) => examsMap.set(e.id, e));
+    relatedExams.forEach((e) => examsMap.set(e.id, e));
 
     const pendingItems: Array<{
       submission_id: string;
@@ -117,7 +65,7 @@ export async function GET() {
     }> = [];
 
     // 최신 제출순으로 정렬
-    const sortedSubmissions = [...allSubmissions].sort(
+    const sortedSubmissions = [...pendingSubs].sort(
       (a, b) => new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
     );
 
@@ -179,19 +127,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const allSubmissions = await getSubmissions();
-    const subIdx = allSubmissions.findIndex(
-      (s) => s.student_id === student_id && s.exam_id === exam_id
-    );
+    const submission = await getSubmissionByStudentAndExamDb(student_id, exam_id);
 
-    if (subIdx === -1) {
+    if (!submission) {
       return NextResponse.json(
         { success: false, error: "해당 학생의 제출 기록을 찾을 수 없습니다." },
         { status: 404 }
       );
     }
-
-    const submission = allSubmissions[subIdx];
     if (!submission.answers || !submission.answers[question_id]) {
       return NextResponse.json(
         { success: false, error: "해당 문항의 답안 기록을 찾을 수 없습니다." },
@@ -227,8 +170,7 @@ export async function POST(req: NextRequest) {
     // 🌟 시험지의 문항별 배점(points)을 조회하여 실시간 획득 점수 재계산
     let earnedPoints10 = 0;
     let totalExamPoints10 = 0;
-    const allExams = await getExamPapers();
-    const matchedExam = allExams.find((e) => e.id === submission.exam_id);
+    const matchedExam = await getExamPaperByIdDb(submission.exam_id);
 
     if (matchedExam && Array.isArray(matchedExam.questions)) {
       matchedExam.questions.forEach((q) => {
@@ -253,8 +195,7 @@ export async function POST(req: NextRequest) {
     submission.has_pending_review = remainingPending > 0;
     submission.pending_count = remainingPending;
 
-    allSubmissions[subIdx] = submission;
-    await saveSubmissions(allSubmissions);
+    await upsertSubmissionDb(submission);
 
     return NextResponse.json({
       success: true,

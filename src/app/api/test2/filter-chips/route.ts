@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
+import { getAllExamPapersDb, upsertExamPapersDb } from "@/lib/test2DbStore";
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -446,41 +447,19 @@ export async function DELETE(req: NextRequest) {
 
     // 3. 🛡️ [핵심 안전 보장]: 기존 시험지 목록에서 이 필터칩 ID만 안전하게 제거 (시험지 자체는 절대 삭제 안 됨!)
     try {
-      const { data: examData } = await supabase
-        .from("exam_library")
-        .select("file_data")
-        .eq("drive_id", EXAMS_RECORD_DRIVE_ID)
-        .maybeSingle();
-
-      if (examData && examData.file_data) {
-        const parsedExams = JSON.parse(examData.file_data);
-        if (Array.isArray(parsedExams.exams)) {
-          let hasChanges = false;
-          const cleanedExams = parsedExams.exams.map((exam: any) => {
-            if (Array.isArray(exam.filter_chip_ids) && (exam.filter_chip_ids.includes(effectiveId) || exam.filter_chip_ids.includes(chipId))) {
-              hasChanges = true;
-              return {
-                ...exam,
-                filter_chip_ids: exam.filter_chip_ids.filter((id: string) => id !== effectiveId && id !== chipId),
-              };
-            }
-            return exam;
+      const allExams = await getAllExamPapersDb();
+      const modifiedExams: any[] = [];
+      for (const exam of allExams) {
+        if (Array.isArray(exam.filter_chip_ids) && (exam.filter_chip_ids.includes(effectiveId) || exam.filter_chip_ids.includes(chipId))) {
+          modifiedExams.push({
+            ...exam,
+            filter_chip_ids: exam.filter_chip_ids.filter((id: string) => id !== effectiveId && id !== chipId),
+            updated_at: new Date().toISOString(),
           });
-
-          if (hasChanges) {
-            await supabase.from("exam_library").upsert(
-              {
-                drive_id: EXAMS_RECORD_DRIVE_ID,
-                name: "test2_exam_papers.json",
-                type: "file",
-                grade: "공통",
-                file_data: JSON.stringify({ ...parsedExams, exams: cleanedExams }),
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: "drive_id" }
-            );
-          }
         }
+      }
+      if (modifiedExams.length > 0) {
+        await upsertExamPapersDb(modifiedExams);
       }
     } catch (examCleanErr) {
       console.error("Failed to clean up deleted chipId from exams:", examCleanErr);

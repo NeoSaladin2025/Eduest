@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { ExamPaper } from "../exam/route";
 import { isPersonalOnlyExam } from "@/lib/personalExamLock";
+import { getAllExamPapersDb, upsertExamPapersDb } from "@/lib/test2DbStore";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -75,21 +76,9 @@ async function saveExamBundles(bundles: ExamBundle[]) {
   }
 }
 
-// 헬퍼: 전체 시험지 가져오기
+// 헬퍼: 전체 시험지 가져오기 (정규화 exam_papers 사용)
 async function getExamPapers(): Promise<ExamPaper[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", EXAMS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.exams) ? parsed.exams : [];
-  } catch {
-    return [];
-  }
+  return getAllExamPapersDb();
 }
 
 // GET: 전체 묶음 목록 또는 특정 묶음 또는 학생에게 배정된 묶음 조회
@@ -189,7 +178,7 @@ export async function POST(req: NextRequest) {
 
     // 또한 묶음에 배정된 학생들을 묶음 내부의 개별 시험지(ExamPaper)의 assigned_student_ids에도 자동 동기화
     if (updatedBundle.assigned_student_ids && updatedBundle.assigned_student_ids.length > 0) {
-      let examsModified = false;
+      const modifiedExams: ExamPaper[] = [];
       const studentIdsToAdd = updatedBundle.assigned_student_ids;
       for (const item of formattedItems) {
         const targetExam = allExams.find((e) => e.id === item.exam_id);
@@ -204,24 +193,13 @@ export async function POST(req: NextRequest) {
           }
           if (added) {
             targetExam.assigned_student_ids = Array.from(currentAssigned);
-            examsModified = true;
+            targetExam.updated_at = now;
+            modifiedExams.push(targetExam);
           }
         }
       }
-      if (examsModified) {
-        // 개별 시험지에도 배정 반영
-        const jsonString = JSON.stringify({ exams: allExams, updated_at: now });
-        await supabase.from("exam_library").upsert(
-          {
-            drive_id: EXAMS_RECORD_DRIVE_ID,
-            name: "test2_exam_papers.json",
-            type: "file",
-            grade: "공통",
-            file_data: jsonString,
-            updated_at: now,
-          },
-          { onConflict: "drive_id" }
-        );
+      if (modifiedExams.length > 0) {
+        await upsertExamPapersDb(modifiedExams);
       }
     }
 
@@ -280,7 +258,8 @@ export async function PUT(req: NextRequest) {
 
     // 묶음에 포함된 개별 시험지들에도 학생 배정 동기화
     const allExams = await getExamPapers();
-    let examsModified = false;
+    const modifiedExams: ExamPaper[] = [];
+    const syncNow = new Date().toISOString();
     for (const item of targetBundle.items) {
       const exam = allExams.find((e) => e.id === item.exam_id);
       if (exam && !isPersonalOnlyExam(exam)) {
@@ -289,21 +268,12 @@ export async function PUT(req: NextRequest) {
           currentSet.add(sId);
         }
         exam.assigned_student_ids = Array.from(currentSet);
-        examsModified = true;
+        exam.updated_at = syncNow;
+        modifiedExams.push(exam);
       }
     }
-    if (examsModified) {
-      await supabase.from("exam_library").upsert(
-        {
-          drive_id: EXAMS_RECORD_DRIVE_ID,
-          name: "test2_exam_papers.json",
-          type: "file",
-          grade: "공통",
-          file_data: JSON.stringify({ exams: allExams, updated_at: new Date().toISOString() }),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "drive_id" }
-      );
+    if (modifiedExams.length > 0) {
+      await upsertExamPapersDb(modifiedExams);
     }
 
     await saveExamBundles(bundles);

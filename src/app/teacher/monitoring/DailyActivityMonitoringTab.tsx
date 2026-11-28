@@ -960,14 +960,28 @@ ${logDetails}${logs.length > 5 ? `\n  ...외 ${logs.length - 5}건 추가 이탈
       })
       .subscribe();
 
-    // 30초마다 학생 핑 + DB 상태 백업 동기화 (웹소켓 일시 유실 자동 복구)
+    // 30초마다 학생 핑 + DB 상태 백업 동기화 (백그라운드 탭일 때는 일시 정지해 불필요한 Egress 절감)
     const periodicSyncTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       sendMonitoringPings();
       fetchActiveTestingStudents();
     }, 30000);
 
+    const handleVisibilityResume = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        sendMonitoringPings();
+        fetchActiveTestingStudents();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityResume);
+    }
+
     return () => {
       clearInterval(periodicSyncTimer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityResume);
+      }
       unsubscribeRoom();
       supabase.removeChannel(dbWatchChannel);
     };

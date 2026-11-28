@@ -4,6 +4,15 @@ import { ExamPaper } from "../exam/route";
 import { areMathAnswersEquivalent } from "@/lib/mathFormulaUtils";
 import { canStudentAccessExam } from "@/lib/personalExamLock";
 import {
+  getAllSubmissionsDb,
+  getExamPaperByIdDb,
+  getExamPapersByStudentDb,
+  getSubmissionByStudentAndExamDb,
+  getSubmissionsByExamDb,
+  getSubmissionsByStudentDb,
+  upsertSubmissionDb,
+} from "@/lib/test2DbStore";
+import {
   getInstallmentActiveQuestions,
   getInstallmentGlobalRound,
 } from "@/app/teacher/exammgr/treasureTypes";
@@ -75,64 +84,6 @@ export interface StudentSubmission {
     url?: string;
     file_name?: string;
   }>;
-}
-
-// 헬퍼: 전체 시험지 가져오기
-async function getExamPapers(): Promise<ExamPaper[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", EXAMS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.exams) ? parsed.exams : [];
-  } catch {
-    return [];
-  }
-}
-
-// 헬퍼: 제출 기록 목록 가져오기
-async function getSubmissions(): Promise<StudentSubmission[]> {
-  const { data } = await supabase
-    .from("exam_library")
-    .select("file_data")
-    .eq("drive_id", SUBMISSIONS_RECORD_DRIVE_ID)
-    .maybeSingle();
-
-  if (!data?.file_data) return [];
-  try {
-    const parsed = JSON.parse(data.file_data);
-    return Array.isArray(parsed.submissions) ? parsed.submissions : [];
-  } catch {
-    return [];
-  }
-}
-
-// 헬퍼: 제출 기록 저장하기
-async function saveSubmissions(submissions: StudentSubmission[]) {
-  const jsonString = JSON.stringify({
-    submissions,
-    updated_at: new Date().toISOString(),
-  });
-
-  const { error } = await supabase.from("exam_library").upsert(
-    {
-      drive_id: SUBMISSIONS_RECORD_DRIVE_ID,
-      name: "test2_student_submissions.json",
-      type: "file",
-      grade: "공통",
-      file_data: jsonString,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "drive_id" }
-  );
-
-  if (error) {
-    throw new Error(`제출 데이터 저장 실패: ${error.message}`);
-  }
 }
 
 // 원형 숫자 및 선분/변 기호 등 정규화
@@ -235,39 +186,59 @@ function checkAnswerMatch(
   return false;
 }
 
-// GET: 학생에게 배정된 시험지 목록 & 응시 상태
+// GET: 학생에게 배정된 시험지 목록 & 응시 상태 (및 관리자 부분 조회 모드)
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
+    const mode = searchParams.get("mode");
     const studentId = searchParams.get("studentId");
     const examId = searchParams.get("examId");
+
+    if (mode === "all_submissions") {
+      const submissions = await getAllSubmissionsDb();
+      return NextResponse.json({ success: true, submissions });
+    }
+
+    if (mode === "submissions") {
+      if (examId) {
+        const submissions = await getSubmissionsByExamDb(examId);
+        return NextResponse.json({ success: true, submissions });
+      }
+      if (studentId) {
+        const submissions = await getSubmissionsByStudentDb(studentId);
+        return NextResponse.json({ success: true, submissions });
+      }
+      return NextResponse.json({ success: false, error: "studentId 또는 examId가 필요합니다." }, { status: 400 });
+    }
+
+    if (mode === "teacher_student_bundle") {
+      if (!studentId) {
+        return NextResponse.json({ success: false, error: "studentId가 필요합니다." }, { status: 400 });
+      }
+      const [exams, submissions] = await Promise.all([
+        getExamPapersByStudentDb(studentId),
+        getSubmissionsByStudentDb(studentId),
+      ]);
+      return NextResponse.json({ success: true, exams, submissions });
+    }
 
     if (!studentId) {
       return NextResponse.json({ success: false, error: "studentId가 필요합니다." }, { status: 400 });
     }
 
-    const allExams = await getExamPapers();
-    const allSubmissions = await getSubmissions();
-
-    // 이 학생에게 배정된 시험지만 필터링 (1인 전용 target_student_id 2중 검증 포함)
-    const assignedExams = allExams.filter((e) => canStudentAccessExam(e, studentId));
-
-    const submissionsMap = new Map<string, StudentSubmission>();
-    allSubmissions
-      .filter((s) => s.student_id === studentId)
-      .forEach((s) => submissionsMap.set(s.exam_id, s));
-
-    // 특정 시험지 1개 요청인 경우 (응시용 상세 데이터)
+    // 특정 시험지 1개 요청인 경우 (단건 2행만 조회 -> 초경량)
     if (examId) {
-      const exam = assignedExams.find((e) => e.id === examId);
-      if (!exam) {
+      const [exam, submission] = await Promise.all([
+        getExamPaperByIdDb(examId),
+        getSubmissionByStudentAndExamDb(studentId, examId),
+      ]);
+      if (!exam || !canStudentAccessExam(exam, studentId)) {
         return NextResponse.json(
           { success: false, error: "배정된 시험지를 찾을 수 없습니다." },
           { status: 404 }
         );
       }
 
-      const submission = submissionsMap.get(examId) || null;
       const isSubmitted = !!submission;
 
       // 제출 전에는 보안을 위해 정답(answer)을 클라이언트에 노출하지 않음
@@ -337,7 +308,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 전체 배정 시험지 목록 요약 반환
+    // 전체 배정 시험지 목록 요약 반환 (본인 배정 시험지 및 본인 제출만 조회)
+    const [rawAssignedExams, studentSubmissions] = await Promise.all([
+      getExamPapersByStudentDb(studentId),
+      getSubmissionsByStudentDb(studentId),
+    ]);
+    const assignedExams = rawAssignedExams.filter((e) => canStudentAccessExam(e, studentId));
+    const submissionsMap = new Map<string, StudentSubmission>();
+    studentSubmissions.forEach((s) => submissionsMap.set(s.exam_id, s));
+
     const examList = assignedExams.map((e) => {
       const sub = submissionsMap.get(e.id);
       return {
@@ -399,8 +378,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const allExams = await getExamPapers();
-    const exam = allExams.find((e) => e.id === examId);
+    const exam = await getExamPaperByIdDb(examId);
 
     if (!exam) {
       return NextResponse.json({ success: false, error: "시험지를 찾을 수 없습니다." }, { status: 404 });
@@ -575,9 +553,7 @@ export async function POST(req: NextRequest) {
       roundSpentSec = Object.values(gradedAnswers).reduce((acc: number, a: any) => acc + (Number(a?.time_spent_sec) || 0), 0);
     }
 
-    const allSubmissions = await getSubmissions();
-    const existingIdx = allSubmissions.findIndex((s) => s.student_id === studentId && s.exam_id === examId);
-    const prevSub = existingIdx !== -1 ? allSubmissions[existingIdx] : null;
+    const prevSub = await getSubmissionByStudentAndExamDb(studentId, examId);
 
     // 🌟 [보물회수 회차 히스토리 누적 보존]
     let history: RoundHistoryItem[] = Array.isArray(prevSub?.round_history)
@@ -650,13 +626,7 @@ export async function POST(req: NextRequest) {
       round_history: history,
     };
 
-    if (existingIdx !== -1) {
-      allSubmissions[existingIdx] = newSubmission;
-    } else {
-      allSubmissions.push(newSubmission);
-    }
-
-    await saveSubmissions(allSubmissions);
+    await upsertSubmissionDb(newSubmission);
 
     // 학생 상태 DB 동기화: 시험 완료 상태로 변경
     try {
@@ -698,19 +668,14 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const allSubmissions = await getSubmissions();
-    const subIdx = allSubmissions.findIndex(
-      (s) => s.student_id === studentId && s.exam_id === examId
-    );
+    const submission = await getSubmissionByStudentAndExamDb(studentId, examId);
 
-    if (subIdx === -1) {
+    if (!submission) {
       return NextResponse.json(
         { success: false, error: "해당 학생의 시험 제출 기록을 찾을 수 없습니다." },
         { status: 404 }
       );
     }
-
-    const submission = allSubmissions[subIdx];
     const hasSetCoords = typeof setIndex === "number" && typeof setRound === "number";
     const hasRoundParam = typeof round === "number" && round > 0;
     const history = Array.isArray(submission.round_history) ? [...submission.round_history] : [];
@@ -806,8 +771,7 @@ export async function PATCH(req: NextRequest) {
       submission.pending_count = rootStats.remainingPending;
     }
 
-    allSubmissions[subIdx] = submission;
-    await saveSubmissions(allSubmissions);
+    await upsertSubmissionDb(submission);
 
     return NextResponse.json({
       success: true,

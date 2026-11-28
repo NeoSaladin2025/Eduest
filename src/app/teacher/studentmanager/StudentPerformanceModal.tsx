@@ -259,24 +259,14 @@ export default function StudentPerformanceModal({
       try {
         setLoading(true);
 
-        // 1. 시험지 목록 로드
-        const examPromise = supabase
-          .from('exam_library')
-          .select('file_data')
-          .eq('drive_id', 'test2_exam_papers_data')
-          .maybeSingle();
-
-        // 2. 제출 기록 로드
-        const subPromise = supabase
-          .from('exam_library')
-          .select('file_data')
-          .eq('drive_id', 'test2_student_submissions_data')
-          .maybeSingle();
-
-        // 3. 필터칩 목록 로드
-        const chipsPromise = fetch('/api/test2/filter-chips').then(r => r.json()).catch(() => ({ chips: [] }));
-
-        const [examRes, subRes, chipsData] = await Promise.all([examPromise, subPromise, chipsPromise]);
+        const [bundleData, chipsData] = await Promise.all([
+          fetch(`/api/test2/student-exams?mode=teacher_student_bundle&studentId=${encodeURIComponent(student.id)}`, {
+            cache: 'no-store',
+          })
+            .then(r => r.json())
+            .catch(() => ({ success: false })),
+          fetch('/api/test2/filter-chips').then(r => r.json()).catch(() => ({ chips: [] })),
+        ]);
 
         if (!isMounted) return;
 
@@ -285,30 +275,12 @@ export default function StudentPerformanceModal({
           setFilterChips(chipsData.chips);
         }
 
-        // 시험지 파싱
-        let loadedExams: ExamPaperLite[] = [];
-        if (examRes.data?.file_data) {
-          try {
-            const parsed = JSON.parse(examRes.data.file_data);
-            loadedExams = Array.isArray(parsed.exams) ? parsed.exams : [];
-          } catch (e) {
-            console.error('Failed to parse exams in PerformanceModal:', e);
-          }
-        }
-        setExams(loadedExams);
+        const loadedExams: ExamPaperLite[] = Array.isArray(bundleData?.exams) ? bundleData.exams : [];
+        const loadedSubs: StudentSubmissionLite[] = Array.isArray(bundleData?.submissions)
+          ? bundleData.submissions.filter((s: any) => s.student_id === student.id)
+          : [];
 
-        // 제출 기록 파싱
-        let loadedSubs: StudentSubmissionLite[] = [];
-        if (subRes.data?.file_data) {
-          try {
-            const parsed = JSON.parse(subRes.data.file_data);
-            const rawSubs: any[] = Array.isArray(parsed.submissions) ? parsed.submissions : [];
-            // 현재 학생의 제출 기록만 필터링
-            loadedSubs = rawSubs.filter((s: any) => s.student_id === student.id);
-          } catch (e) {
-            console.error('Failed to parse submissions in PerformanceModal:', e);
-          }
-        }
+        setExams(loadedExams);
         setSubmissions(loadedSubs);
 
       } catch (err) {

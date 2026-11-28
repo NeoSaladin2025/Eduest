@@ -112,6 +112,8 @@ export function useStudentData(studentId: string) {
     if (!studentId) return;
 
     const initPage = async () => {
+      let resolvedGrade: string = student?.grade || '';
+
       // 🌟 [1단계: 0.05초 초고속 학생 프로필 로드]
       // 메인 화면 진입 및 4자리 PIN 입력창 표출에 필요한 학생 기본 정보만 최우선 조회
       try {
@@ -122,6 +124,9 @@ export function useStudentData(studentId: string) {
           .single();
 
         if (studentData) {
+          if (studentData.grade) {
+            resolvedGrade = studentData.grade;
+          }
           // 비밀번호 설정 여부는 전용 보안 API로 확인 (비밀번호 내용은 전송하지 않음)
           let hasPassword = false;
           try {
@@ -172,18 +177,58 @@ export function useStudentData(studentId: string) {
         setStudentLoading(false);
       }
 
-      // 🌟 [2단계: 백그라운드 비동기 라이브러리 트리 로드]
-      // 학생이 비번을 치고 있거나 복습/숙제를 보는 동안 백그라운드에서 조용히 병렬로 가져옴! (화면 차단 0%)
+      // 🌟 [2단계: 학년 스코프 + IndexedDB 버전 캐시 기반 초경량 라이브러리 트리 로드]
       try {
         setLibraryLoading(true);
+
+        let treeCacheKey: string | null = null;
+        if (resolvedGrade) {
+          const [countRes, latestRes] = await Promise.all([
+            supabase
+              .from('exam_library')
+              .select('drive_id', { count: 'exact', head: true })
+              .is('file_data', null)
+              .eq('grade', resolvedGrade),
+            supabase
+              .from('exam_library')
+              .select('updated_at')
+              .is('file_data', null)
+              .eq('grade', resolvedGrade)
+              .order('updated_at', { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+          ]);
+
+          if (!countRes.error && !latestRes.error) {
+            treeCacheKey = `library_tree_v2_${resolvedGrade}_${countRes.count ?? 0}_${latestRes.data?.updated_at ?? 'none'}`;
+            try {
+              const cachedJson = await getCachedContent(treeCacheKey);
+              if (cachedJson) {
+                const cachedRows = JSON.parse(cachedJson);
+                if (Array.isArray(cachedRows) && cachedRows.length > 0) {
+                  setExamLibrary(buildTree(cachedRows));
+                  setLibraryLoading(false);
+                  return;
+                }
+              }
+            } catch {
+              // ignore cache parse errors
+            }
+          }
+        }
+
         const pageSize = 1000;
         let from = 0;
         const dbLibraryMap = new Map<string, any>();
         for (;;) {
-          const { data: page, error: libErr } = await supabase
+          let query = supabase
             .from('exam_library')
             .select('id, drive_id, parent_id, name, type, grade, path_tags, question_image_drive_id')
-            .is('file_data', null)
+            .is('file_data', null);
+          if (resolvedGrade) {
+            query = query.eq('grade', resolvedGrade);
+          }
+          const { data: page, error: libErr } = await query
             .order('drive_id', { ascending: true })
             .range(from, from + pageSize - 1);
           if (libErr) throw libErr;
@@ -200,6 +245,9 @@ export function useStudentData(studentId: string) {
         const dbLibrary = Array.from(dbLibraryMap.values());
         if (dbLibrary.length > 0) {
           setExamLibrary(buildTree(dbLibrary));
+          if (treeCacheKey) {
+            setCachedContent(treeCacheKey, JSON.stringify(dbLibrary)).catch(() => {});
+          }
         }
       } catch (err) {
         console.error("Library Load Error:", err);
