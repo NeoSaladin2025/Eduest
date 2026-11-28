@@ -25,7 +25,9 @@ import {
   ArrowUpDown,
   BookOpen,
   Users,
-  User
+  User,
+  RefreshCw,
+  CheckCircle2
 } from 'lucide-react';
 import { ExamPaper, ExamQuestion } from '@/app/api/test2/exam/route';
 import { parseExamRoundAndBaseTitle } from './treasureTypes';
@@ -33,6 +35,15 @@ import { downloadExamAsPdf, type DuplexBindingMode } from '@/lib/examPdfGenerato
 import ChoiceTextRenderer from '@/components/ChoiceTextRenderer';
 import { CIRCLED_NUMBERS, getCircledSymbol } from '@/lib/choiceGenerator';
 import { extractSourceFileName } from '@/lib/clientQuestionParser';
+import {
+  type BridgePrinterItem,
+  type BridgeDuplexMode,
+  PRINTER_BRIDGE_DOWNLOAD_URL,
+  fetchBridgePrinters,
+  sendPrintHtmlViaBridge,
+  collectInlineStylesForBridge,
+  inlineImagesInElement,
+} from '@/lib/printerBridgeClient';
 
 interface Student {
   id: string;
@@ -167,6 +178,53 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     studentName: string;
   } | null>(null);
   const cancelPrintRef = useRef(false);
+
+  // 🖨️ 로컬 윈도우 트레이 프린터 브릿지 연동 상태
+  const [bridgeConnected, setBridgeConnected] = useState(false);
+  const [bridgeChecking, setBridgeChecking] = useState(false);
+  const [bridgePrinters, setBridgePrinters] = useState<BridgePrinterItem[]>([]);
+  const [selectedPrinterName, setSelectedPrinterName] = useState<string>('');
+  const [useBridgeDirectPrint, setUseBridgeDirectPrint] = useState<boolean>(true);
+  const [bridgeDuplexMode, setBridgeDuplexMode] = useState<BridgeDuplexMode>('default');
+  const [bridgeCopies, setBridgeCopies] = useState<number>(1);
+  const [bridgePrintToast, setBridgePrintToast] = useState<string | null>(null);
+
+  const refreshBridgePrinters = async () => {
+    setBridgeChecking(true);
+    try {
+      const result = await fetchBridgePrinters();
+      setBridgeConnected(result.connected);
+      setBridgePrinters(result.printers);
+      if (result.connected && result.printers.length > 0) {
+        const savedPrinter = localStorage.getItem('eduest_selected_printer_name') || '';
+        const hasSaved = result.printers.some(p => p.name === savedPrinter);
+        if (hasSaved) {
+          setSelectedPrinterName(savedPrinter);
+        } else if (result.defaultPrinter && result.printers.some(p => p.name === result.defaultPrinter)) {
+          setSelectedPrinterName(result.defaultPrinter);
+        } else {
+          setSelectedPrinterName(result.printers[0].name);
+        }
+      }
+    } finally {
+      setBridgeChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      const savedDirect = localStorage.getItem('eduest_use_bridge_direct_print');
+      if (savedDirect !== null) setUseBridgeDirectPrint(savedDirect === 'true');
+      const savedBridgeDuplex = localStorage.getItem('eduest_bridge_duplex_mode');
+      if (savedBridgeDuplex === 'default' || savedBridgeDuplex === 'simplex' || savedBridgeDuplex === 'long' || savedBridgeDuplex === 'short') {
+        setBridgeDuplexMode(savedBridgeDuplex);
+      }
+    } catch {
+      // ignore
+    }
+    refreshBridgePrinters();
+  }, [isOpen]);
 
   // 컴포넌트 언마운트 시 인쇄 플래그 정리
   useEffect(() => {
@@ -1265,14 +1323,14 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
       const paddingVal = resolvedMargins.cssPadding;
 
       // 공통 완벽한 A4 인쇄 HTML 빌더
-      const buildDocumentHtml = (contentHtml: string) => `
+      const buildDocumentHtml = (contentHtml: string, stylesOverride?: string) => `
         <!DOCTYPE html>
         <html>
           <head>
             <meta charset="utf-8" />
             <base href="${window.location.origin}/" />
             <title>${exam.title} - 시험지 인쇄</title>
-            ${combinedStyles}
+            ${stylesOverride ?? combinedStyles}
             <style>
               @page {
                 size: A4 portrait;
@@ -1356,6 +1414,98 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
           }
         });
       };
+
+      // 🖨️ 로컬 트레이 브릿지 다이렉트 인쇄 모드
+      if (bridgeConnected && useBridgeDirectPrint && selectedPrinterName) {
+        const bridgeStyles = collectInlineStylesForBridge();
+        const baseDiv = document.createElement('div');
+        baseDiv.innerHTML = printArea.innerHTML;
+        filterSelectedSheets(baseDiv);
+        await inlineImagesInElement(baseDiv);
+
+        if (selectedStudentIds.length <= 1) {
+          setIsPreparingPrint(false);
+          setPrintingProgress({
+            current: 1,
+            total: 1,
+            studentName: customStudentName || selectedPrinterName,
+          });
+          const res = await sendPrintHtmlViaBridge({
+            printerName: selectedPrinterName,
+            jobTitle: `${exam.title}${customStudentName ? ` - ${customStudentName}` : ''}`,
+            html: buildDocumentHtml(baseDiv.innerHTML, bridgeStyles),
+            copies: bridgeCopies,
+            duplex: bridgeDuplexMode,
+          });
+          setPrintingProgress(null);
+          if (!res.ok) {
+            alert(`프린터 전송 실패: ${res.error || '알 수 없는 오류'}`);
+          } else {
+            setBridgePrintToast(`'${res.printer || selectedPrinterName}' 프린터로 전송 완료 (${res.pages || effectiveSelectedPages.size}쪽)`);
+            setTimeout(() => setBridgePrintToast(null), 4500);
+          }
+          return;
+        }
+
+        const selectedStudents = assignedStudents.filter(s => selectedStudentIds.includes(s.id));
+        setIsPreparingPrint(false);
+        let sentCount = 0;
+
+        for (let i = 0; i < selectedStudents.length; i++) {
+          if (cancelPrintRef.current) break;
+
+          const st = selectedStudents[i];
+          setPrintingProgress({
+            current: i + 1,
+            total: selectedStudents.length,
+            studentName: st.name,
+          });
+
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = baseDiv.innerHTML;
+
+          const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
+          nameCells.forEach(cell => {
+            cell.textContent = st.name;
+          });
+          const classCells = tempDiv.querySelectorAll('[data-field="class-name"]');
+          classCells.forEach(cell => {
+            cell.textContent = st.grade || exam.grade || '';
+          });
+
+          if (nameCells.length === 0 && customStudentName) {
+            const walkAndReplace = (node: Node) => {
+              if (node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim() === customStudentName.trim()) {
+                node.nodeValue = st.name;
+              } else {
+                node.childNodes.forEach(walkAndReplace);
+              }
+            };
+            walkAndReplace(tempDiv);
+          }
+
+          const res = await sendPrintHtmlViaBridge({
+            printerName: selectedPrinterName,
+            jobTitle: `${exam.title} - ${st.name}`,
+            html: buildDocumentHtml(tempDiv.innerHTML, bridgeStyles),
+            copies: 1,
+            duplex: bridgeDuplexMode,
+          });
+          if (!res.ok) {
+            setPrintingProgress(null);
+            alert(`${st.name} 학생 인쇄 중 오류 발생 (${sentCount}/${selectedStudents.length}명 완료): ${res.error}`);
+            return;
+          }
+          sentCount++;
+        }
+
+        setPrintingProgress(null);
+        if (sentCount > 0) {
+          setBridgePrintToast(`'${selectedPrinterName}'로 ${sentCount}명 개별 스테이플 작업 전송 완료!`);
+          setTimeout(() => setBridgePrintToast(null), 5000);
+        }
+        return;
+      }
 
       // 1명 이하 인쇄 (단일 Print Job)
       if (selectedStudentIds.length <= 1) {
@@ -1646,12 +1796,23 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             </button>
           </div>
 
+          {bridgePrintToast && (
+            <div className="hidden xl:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 text-[11px] font-black animate-in fade-in">
+              <CheckCircle2 size={14} className="shrink-0" />
+              <span className="max-w-[260px] truncate">{bridgePrintToast}</span>
+            </div>
+          )}
+
           {/* 인쇄 실행 버튼 */}
           <button
             type="button"
             onClick={handleTriggerPrint}
             disabled={isPreparingPrint || printingProgress !== null}
-            className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 active:scale-98 text-white text-xs font-black rounded-xl shadow-lg shadow-violet-600/30 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60"
+            className={`px-5 py-2.5 active:scale-98 text-white text-xs font-black rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60 ${
+              bridgeConnected && useBridgeDirectPrint && selectedPrinterName
+                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30'
+                : 'bg-violet-600 hover:bg-violet-500 shadow-violet-600/30'
+            }`}
           >
             {isPreparingPrint ? (
               <>
@@ -1666,7 +1827,13 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
             ) : (
               <>
                 <Printer size={16} />
-                {selectedStudentIds.length > 1 ? (
+                {bridgeConnected && useBridgeDirectPrint && selectedPrinterName ? (
+                  selectedStudentIds.length > 1 ? (
+                    <span className="max-w-[240px] truncate">{selectedStudentIds.length}명 [{selectedPrinterName}] 일괄 바로 인쇄</span>
+                  ) : (
+                    <span className="max-w-[220px] truncate">[{selectedPrinterName}] 바로 인쇄</span>
+                  )
+                ) : selectedStudentIds.length > 1 ? (
                   <span>학생 {selectedStudentIds.length}명 일괄 인쇄 (개별 스테이플 철)</span>
                 ) : (
                   <span>인쇄하기 (PDF 저장)</span>
@@ -1713,6 +1880,124 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
         {/* 좌측 사이드바: 레이아웃 & 옵션 패널 (no-print) */}
         <aside className="no-print w-84 bg-slate-900/90 border-r border-slate-800 p-5 overflow-y-auto space-y-5 shrink-0 text-slate-200">
           
+          {/* 🖨️ 출력 프린터 직접 선택 (로컬 트레이 브릿지 연동) */}
+          <div className={`p-3.5 rounded-2xl border space-y-2.5 ${
+            bridgeConnected
+              ? 'bg-emerald-950/30 border-emerald-500/40'
+              : 'bg-slate-800/70 border-slate-700/80'
+          }`}>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-black text-slate-100 flex items-center gap-1.5">
+                <Printer size={14} className={bridgeConnected ? 'text-emerald-400' : 'text-slate-400'} />
+                <span>출력 프린터 선택</span>
+              </label>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                  bridgeConnected
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                    : 'bg-slate-700/70 text-slate-400 border-slate-600'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${bridgeConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                  {bridgeConnected ? `연결됨 (${bridgePrinters.length})` : '미실행'}
+                </span>
+                <button
+                  type="button"
+                  onClick={refreshBridgePrinters}
+                  disabled={bridgeChecking}
+                  className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition-colors cursor-pointer disabled:opacity-50"
+                  title="내 PC 프린터 브릿지 다시 탐색"
+                >
+                  <RefreshCw size={12} className={bridgeChecking ? 'animate-spin' : ''} />
+                </button>
+              </div>
+            </div>
+
+            {bridgeConnected ? (
+              <div className="space-y-2">
+                <select
+                  value={selectedPrinterName}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedPrinterName(val);
+                    try { localStorage.setItem('eduest_selected_printer_name', val); } catch {}
+                  }}
+                  className="w-full bg-slate-950/90 border border-emerald-500/40 rounded-xl px-2.5 py-2 text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40 cursor-pointer"
+                >
+                  {bridgePrinters.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.isDefault ? `★ ${p.name} (기본)` : p.name}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={useBridgeDirectPrint}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setUseBridgeDirectPrint(next);
+                        try { localStorage.setItem('eduest_use_bridge_direct_print', String(next)); } catch {}
+                      }}
+                      className="w-3.5 h-3.5 rounded accent-emerald-500 cursor-pointer"
+                    />
+                    <span>크롬 인쇄창 없이 바로 출력</span>
+                  </label>
+                </div>
+
+                {useBridgeDirectPrint && (
+                  <div className="grid grid-cols-3 gap-1.5 pt-1">
+                    <div className="col-span-2">
+                      <select
+                        value={bridgeDuplexMode}
+                        onChange={(e) => {
+                          const val = e.target.value as BridgeDuplexMode;
+                          setBridgeDuplexMode(val);
+                          try { localStorage.setItem('eduest_bridge_duplex_mode', val); } catch {}
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[10.5px] font-bold text-slate-200 focus:outline-none cursor-pointer"
+                        title="프린터 드라이버 단면/양면 설정"
+                      >
+                        <option value="default">드라이버 기본값(스테이플 등)</option>
+                        <option value="simplex">단면 인쇄 강제</option>
+                        <option value="long">양면 (긴 쪽 책넘김)</option>
+                        <option value="short">양면 (짧은 쪽 위로넘김)</option>
+                      </select>
+                    </div>
+                    {selectedStudentIds.length <= 1 && (
+                      <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 justify-between">
+                        <span className="text-[10px] text-slate-400 font-bold">매수</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={bridgeCopies}
+                          onChange={(e) => setBridgeCopies(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                          className="w-9 bg-transparent text-right text-[11px] font-black text-white focus:outline-none"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-[10.5px] text-slate-400 leading-relaxed">
+                  현재는 <strong className="text-slate-200">브라우저 인쇄창</strong> 모드로 동작 중입니다. 아래 트레이 도우미를 실행하면 작업표시줄 오른쪽에 상주하며 여기서 프린터를 바로 고를 수 있습니다.
+                </p>
+                <a
+                  href={PRINTER_BRIDGE_DOWNLOAD_URL}
+                  download="EduestPrinterBridge.exe"
+                  className="w-full py-2 px-3 rounded-xl bg-violet-600/20 hover:bg-violet-600/35 border border-violet-500/40 text-violet-200 text-[11px] font-black transition-all flex items-center justify-center gap-1.5"
+                >
+                  <Download size={13} />
+                  <span>Windows 트레이 도우미 받기 (.exe)</span>
+                </a>
+              </div>
+            )}
+          </div>
+
           {/* 👥 0. 배정 학생 인쇄 대상 선택기 (assignedStudents가 있을 때) */}
           {assignedStudents.length > 0 && (
             <div className="p-3.5 bg-violet-950/40 border border-violet-500/30 rounded-2xl space-y-2.5">
