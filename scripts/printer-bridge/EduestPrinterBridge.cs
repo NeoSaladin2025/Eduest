@@ -7,16 +7,18 @@ using System.Drawing.Imaging;
 using System.Drawing.Printing;
 using System.IO;
 using System.Net;
+using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Windows.Data.Pdf;
 using Windows.Foundation;
-using Windows.Storage;
 using Windows.Storage.Streams;
 
 namespace EduestPrinterBridge
@@ -41,6 +43,35 @@ namespace EduestPrinterBridge
     }
 
     [DataContract]
+    internal class PrintHtmlBatchItem
+    {
+        [DataMember(Name = "jobTitle")]
+        public string JobTitle { get; set; }
+
+        [DataMember(Name = "firstSheetHtml")]
+        public string FirstSheetHtml { get; set; }
+    }
+
+    [DataContract]
+    internal class PrintHtmlBatchRequest
+    {
+        [DataMember(Name = "printerName")]
+        public string PrinterName { get; set; }
+
+        [DataMember(Name = "copies")]
+        public int Copies { get; set; }
+
+        [DataMember(Name = "duplex")]
+        public string Duplex { get; set; }
+
+        [DataMember(Name = "sharedRestHtml")]
+        public string SharedRestHtml { get; set; }
+
+        [DataMember(Name = "jobs")]
+        public PrintHtmlBatchItem[] Jobs { get; set; }
+    }
+
+    [DataContract]
     internal class PrintPdfRequest
     {
         [DataMember(Name = "printerName")]
@@ -62,9 +93,11 @@ namespace EduestPrinterBridge
     internal sealed class TrayBridgeContext : ApplicationContext
     {
         private const int BridgePort = 48921;
-        private const string BridgeVersion = "1.0.1";
+        private const string BridgeVersion = "1.1.0";
         private const string RunRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
         private const string RunRegistryKey = "EduestPrinterBridge";
+        private const double RenderDpi = 240.0;
+        private static readonly Guid BmpEncoderGuid = new Guid("69be8bb4-d66d-47c8-865a-ed1589433782");
 
         private readonly NotifyIcon _trayIcon;
         private readonly ToolStripMenuItem _statusMenuItem;
@@ -72,11 +105,21 @@ namespace EduestPrinterBridge
         private readonly HttpListener _listener;
         private readonly Thread _serverThread;
         private readonly object _printLock = new object();
+        private readonly object _cdpLock = new object();
+        private readonly string _cdpProfileDir;
+        private Process _warmBrowserProc;
+        private string _warmBrowserWsUrl;
         private volatile bool _running = true;
 
         public TrayBridgeContext()
         {
-            _statusMenuItem = new ToolStripMenuItem("상태: 127.0.0.1:" + BridgePort + " 대기 중")
+            _cdpProfileDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "EduestPrinterBridge",
+                "cdp-profile"
+            );
+
+            _statusMenuItem = new ToolStripMenuItem("상태: 127.0.0.1:" + BridgePort + " 대기 중 (v" + BridgeVersion + ")")
             {
                 Enabled = false
             };
@@ -125,11 +168,14 @@ namespace EduestPrinterBridge
             };
             _serverThread.Start();
 
+            // 백그라운드에서 상주 헤드리스 브라우저 사전 예열 (첫 출력 반응속도 단축)
+            WarmUpBrowserAsync();
+
             RefreshPrintersNotification(false);
             _trayIcon.ShowBalloonTip(
                 3500,
-                "Eduest 프린터 브릿지 시작됨",
-                "작업표시줄 오른쪽 트레이에서 백그라운드 실행 중입니다. 시험지 인쇄 화면에서 프린터를 바로 선택할 수 있습니다.",
+                "Eduest 고속 프린터 브릿지 v" + BridgeVersion + " 시작됨",
+                "백그라운드 고속 엔진이 예열 중입니다. 시험지 인쇄 화면에서 프린터를 바로 선택해 출력할 수 있습니다.",
                 ToolTipIcon.Info
             );
         }
@@ -138,10 +184,10 @@ namespace EduestPrinterBridge
         {
             int count = PrinterSettings.InstalledPrinters.Count;
             string defaultPrinter = GetDefaultPrinterName();
-            string tip = string.Format("Eduest 프린터 브릿지 ({0}대 감지)", count);
+            string tip = string.Format("Eduest 고속 프린터 브릿지 v{0} ({1}대)", BridgeVersion, count);
             if (tip.Length > 63) tip = tip.Substring(0, 63);
             _trayIcon.Text = tip;
-            _statusMenuItem.Text = string.Format("실행 중 (127.0.0.1:{0} · {1}대)", BridgePort, count);
+            _statusMenuItem.Text = string.Format("실행 중 v{0} (127.0.0.1:{1} · {2}대)", BridgeVersion, BridgePort, count);
 
             if (showBalloon)
             {
@@ -158,7 +204,7 @@ namespace EduestPrinterBridge
         {
             string defaultPrinter = GetDefaultPrinterName();
             var sb = new StringBuilder();
-            sb.AppendLine("Eduest 프린터 브릿지 v" + BridgeVersion);
+            sb.AppendLine("Eduest 고속 프린터 브릿지 v" + BridgeVersion);
             sb.AppendLine("로컬 주소: http://127.0.0.1:" + BridgePort);
             sb.AppendLine();
             sb.AppendLine("감지된 프린터 목록 (" + PrinterSettings.InstalledPrinters.Count + "대):");
@@ -231,6 +277,10 @@ namespace EduestPrinterBridge
             _running = false;
             try { if (_listener.IsListening) _listener.Stop(); } catch { }
             try { _listener.Close(); } catch { }
+            lock (_cdpLock)
+            {
+                KillWarmBrowserLocked();
+            }
             try
             {
                 _trayIcon.Visible = false;
@@ -348,7 +398,8 @@ namespace EduestPrinterBridge
                         items.Add(string.Format("{{\"name\":{0},\"isDefault\":{1}}}", JsonEscape(name), isDef ? "true" : "false"));
                     }
                     string json = string.Format(
-                        "{{\"ok\":true,\"defaultPrinter\":{0},\"printers\":[{1}]}}",
+                        "{{\"ok\":true,\"version\":{0},\"defaultPrinter\":{1},\"printers\":[{2}]}}",
+                        JsonEscape(BridgeVersion),
                         JsonEscape(def),
                         string.Join(",", items.ToArray())
                     );
@@ -371,6 +422,27 @@ namespace EduestPrinterBridge
 
                     int pagesPrinted = PrintHtmlSilently(payload.Html, targetPrinter, jobTitle, copies, payload.Duplex);
                     WriteJson(res, 200, string.Format("{{\"ok\":true,\"printer\":{0},\"pages\":{1}}}", JsonEscape(targetPrinter), pagesPrinted));
+                    return;
+                }
+
+                if (req.HttpMethod == "POST" && path == "/print-html-batch")
+                {
+                    string body = ReadBodyString(req);
+                    var payload = DeserializeJson<PrintHtmlBatchRequest>(body);
+                    if (payload == null || payload.Jobs == null || payload.Jobs.Length == 0)
+                    {
+                        WriteJson(res, 400, "{\"ok\":false,\"error\":\"일괄 인쇄 작업 목록이 비어 있습니다.\"}");
+                        return;
+                    }
+                    string targetPrinter = ResolvePrinterName(payload.PrinterName);
+                    int copies = payload.Copies > 0 ? Math.Min(99, payload.Copies) : 1;
+
+                    int totalPages = PrintHtmlBatchSilently(payload, targetPrinter, copies);
+                    WriteJson(
+                        res,
+                        200,
+                        string.Format("{{\"ok\":true,\"printer\":{0},\"jobs\":{1},\"pages\":{2}}}", JsonEscape(targetPrinter), payload.Jobs.Length, totalPages)
+                    );
                     return;
                 }
 
@@ -476,6 +548,318 @@ namespace EduestPrinterBridge
             return found;
         }
 
+        private void WarmUpBrowserAsync()
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                if (!_running) return;
+                lock (_cdpLock)
+                {
+                    try { EnsureWarmBrowserLocked(); } catch { }
+                }
+            });
+        }
+
+        private void KillWarmBrowserLocked()
+        {
+            if (_warmBrowserProc != null)
+            {
+                try
+                {
+                    if (!_warmBrowserProc.HasExited)
+                    {
+                        int pid = _warmBrowserProc.Id;
+                        try
+                        {
+                            var killer = Process.Start(new ProcessStartInfo
+                            {
+                                FileName = "taskkill",
+                                Arguments = "/T /F /PID " + pid,
+                                CreateNoWindow = true,
+                                UseShellExecute = false,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            });
+                            if (killer != null) killer.WaitForExit(1500);
+                        }
+                        catch { }
+                        try { if (!_warmBrowserProc.HasExited) _warmBrowserProc.Kill(); } catch { }
+                    }
+                }
+                catch { }
+                try { _warmBrowserProc.Dispose(); } catch { }
+                _warmBrowserProc = null;
+            }
+            _warmBrowserWsUrl = null;
+        }
+
+        private bool EnsureWarmBrowserLocked()
+        {
+            if (_warmBrowserProc != null && !_warmBrowserProc.HasExited && !string.IsNullOrEmpty(_warmBrowserWsUrl))
+            {
+                return true;
+            }
+
+            KillWarmBrowserLocked();
+
+            var browserPaths = FindHeadlessBrowserPaths();
+            if (browserPaths.Count == 0) return false;
+
+            string activePortFile = Path.Combine(_cdpProfileDir, "DevToolsActivePort");
+
+            foreach (string browserPath in browserPaths)
+            {
+                try
+                {
+                    Directory.CreateDirectory(_cdpProfileDir);
+                    try { if (File.Exists(activePortFile)) File.Delete(activePortFile); } catch { }
+
+                    string args = string.Format(
+                        "--headless=new --disable-gpu --no-first-run --no-default-browser-check --disable-extensions --disable-background-networking --disable-sync --no-pdf-header-footer --remote-debugging-port=0 --user-data-dir=\"{0}\" about:blank",
+                        _cdpProfileDir
+                    );
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = browserPath,
+                        Arguments = args,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+
+                    var proc = Process.Start(psi);
+                    if (proc == null) continue;
+
+                    var sw = Stopwatch.StartNew();
+                    string wsUrl = null;
+                    while (sw.ElapsedMilliseconds < 7000 && !proc.HasExited)
+                    {
+                        if (File.Exists(activePortFile))
+                        {
+                            try
+                            {
+                                string[] lines = File.ReadAllLines(activePortFile, Encoding.UTF8);
+                                if (lines.Length >= 2 && !string.IsNullOrWhiteSpace(lines[0]) && !string.IsNullOrWhiteSpace(lines[1]))
+                                {
+                                    wsUrl = "ws://127.0.0.1:" + lines[0].Trim() + lines[1].Trim();
+                                    break;
+                                }
+                            }
+                            catch { }
+                        }
+                        Thread.Sleep(40);
+                    }
+
+                    if (!string.IsNullOrEmpty(wsUrl) && !proc.HasExited)
+                    {
+                        _warmBrowserProc = proc;
+                        _warmBrowserWsUrl = wsUrl;
+                        return true;
+                    }
+
+                    try { if (!proc.HasExited) proc.Kill(); } catch { }
+                    try { proc.Dispose(); } catch { }
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
+        private static JavaScriptSerializer CreateCdpSerializer()
+        {
+            var serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = int.MaxValue;
+            serializer.RecursionLimit = 64;
+            return serializer;
+        }
+
+        private static string ReceiveWebSocketText(ClientWebSocket ws, CancellationToken token)
+        {
+            byte[] buffer = new byte[65536];
+            using (var ms = new MemoryStream())
+            {
+                while (true)
+                {
+                    var seg = new ArraySegment<byte>(buffer);
+                    var result = ws.ReceiveAsync(seg, token).GetAwaiter().GetResult();
+                    if (result.MessageType == WebSocketMessageType.Close)
+                        throw new InvalidOperationException("CDP WebSocket closed.");
+                    if (result.Count > 0)
+                        ms.Write(buffer, 0, result.Count);
+                    if (result.EndOfMessage)
+                        break;
+                }
+                return Encoding.UTF8.GetString(ms.ToArray());
+            }
+        }
+
+        private static Dictionary<string, object> SendCdpCommand(
+            ClientWebSocket ws,
+            JavaScriptSerializer serializer,
+            ref int nextId,
+            string sessionId,
+            string method,
+            Dictionary<string, object> paramDict,
+            int timeoutMs)
+        {
+            int cmdId = ++nextId;
+            var msg = new Dictionary<string, object>();
+            msg["id"] = cmdId;
+            msg["method"] = method;
+            if (paramDict != null) msg["params"] = paramDict;
+            if (!string.IsNullOrEmpty(sessionId)) msg["sessionId"] = sessionId;
+
+            string json = serializer.Serialize(msg);
+            byte[] bytes = Encoding.UTF8.GetBytes(json);
+
+            using (var cts = new CancellationTokenSource(timeoutMs))
+            {
+                ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, cts.Token).GetAwaiter().GetResult();
+
+                while (true)
+                {
+                    string respText = ReceiveWebSocketText(ws, cts.Token);
+                    var obj = serializer.DeserializeObject(respText) as Dictionary<string, object>;
+                    if (obj == null) continue;
+
+                    object idObj;
+                    if (obj.TryGetValue("id", out idObj) && Convert.ToInt32(idObj) == cmdId)
+                    {
+                        object errObj;
+                        if (obj.TryGetValue("error", out errObj) && errObj != null)
+                        {
+                            var errDict = errObj as Dictionary<string, object>;
+                            string errMsg = (errDict != null && errDict.ContainsKey("message")) ? Convert.ToString(errDict["message"]) : "CDP Error";
+                            throw new InvalidOperationException(method + ": " + errMsg);
+                        }
+                        object resObj;
+                        if (obj.TryGetValue("result", out resObj))
+                            return resObj as Dictionary<string, object>;
+                        return new Dictionary<string, object>();
+                    }
+                }
+            }
+        }
+
+        private static void WaitCdpEvent(
+            ClientWebSocket ws,
+            JavaScriptSerializer serializer,
+            string sessionId,
+            string eventName,
+            int timeoutMs)
+        {
+            using (var cts = new CancellationTokenSource(timeoutMs))
+            {
+                while (true)
+                {
+                    string text = ReceiveWebSocketText(ws, cts.Token);
+                    var obj = serializer.DeserializeObject(text) as Dictionary<string, object>;
+                    if (obj == null) continue;
+
+                    object methodObj;
+                    if (!obj.TryGetValue("method", out methodObj)) continue;
+                    if (!string.Equals(Convert.ToString(methodObj), eventName, StringComparison.Ordinal)) continue;
+
+                    if (!string.IsNullOrEmpty(sessionId))
+                    {
+                        object sidObj;
+                        if (!obj.TryGetValue("sessionId", out sidObj) || !string.Equals(Convert.ToString(sidObj), sessionId, StringComparison.Ordinal))
+                            continue;
+                    }
+                    return;
+                }
+            }
+        }
+
+        private byte[] RenderHtmlViaCdp(string fileUri)
+        {
+            lock (_cdpLock)
+            {
+                if (!EnsureWarmBrowserLocked())
+                    throw new InvalidOperationException("상주 헤드리스 브라우저를 시작할 수 없습니다.");
+
+                var serializer = CreateCdpSerializer();
+                int nextId = 0;
+                string targetId = null;
+
+                using (var ws = new ClientWebSocket())
+                {
+                    using (var connCts = new CancellationTokenSource(5000))
+                    {
+                        ws.ConnectAsync(new Uri(_warmBrowserWsUrl), connCts.Token).GetAwaiter().GetResult();
+                    }
+
+                    try
+                    {
+                        var createRes = SendCdpCommand(ws, serializer, ref nextId, null, "Target.createTarget", new Dictionary<string, object>
+                        {
+                            { "url", "about:blank" }
+                        }, 5000);
+                        targetId = Convert.ToString(createRes["targetId"]);
+
+                        var attachRes = SendCdpCommand(ws, serializer, ref nextId, null, "Target.attachToTarget", new Dictionary<string, object>
+                        {
+                            { "targetId", targetId },
+                            { "flatten", true }
+                        }, 5000);
+                        string sessionId = Convert.ToString(attachRes["sessionId"]);
+
+                        SendCdpCommand(ws, serializer, ref nextId, sessionId, "Page.enable", null, 5000);
+                        SendCdpCommand(ws, serializer, ref nextId, sessionId, "Page.navigate", new Dictionary<string, object>
+                        {
+                            { "url", fileUri }
+                        }, 10000);
+
+                        WaitCdpEvent(ws, serializer, sessionId, "Page.loadEventFired", 20000);
+
+                        // 웹폰트/이미지 디코딩 완료 보장
+                        try
+                        {
+                            SendCdpCommand(ws, serializer, ref nextId, sessionId, "Runtime.evaluate", new Dictionary<string, object>
+                            {
+                                { "expression", "(document.fonts && document.fonts.ready) ? document.fonts.ready.then(function(){return true;}) : true" },
+                                { "awaitPromise", true },
+                                { "returnByValue", true }
+                            }, 5000);
+                        }
+                        catch { }
+
+                        var pdfRes = SendCdpCommand(ws, serializer, ref nextId, sessionId, "Page.printToPDF", new Dictionary<string, object>
+                        {
+                            { "printBackground", true },
+                            { "preferCSSPageSize", true },
+                            { "marginTop", 0.0 },
+                            { "marginBottom", 0.0 },
+                            { "marginLeft", 0.0 },
+                            { "marginRight", 0.0 },
+                            { "transferMode", "ReturnAsBase64" }
+                        }, 35000);
+
+                        string b64 = pdfRes != null && pdfRes.ContainsKey("data") ? Convert.ToString(pdfRes["data"]) : null;
+                        if (string.IsNullOrEmpty(b64))
+                            throw new InvalidOperationException("CDP printToPDF returned empty data.");
+
+                        return Convert.FromBase64String(b64);
+                    }
+                    finally
+                    {
+                        if (!string.IsNullOrEmpty(targetId))
+                        {
+                            try
+                            {
+                                SendCdpCommand(ws, serializer, ref nextId, null, "Target.closeTarget", new Dictionary<string, object>
+                                {
+                                    { "targetId", targetId }
+                                }, 1500);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+        }
+
         private static bool RunHeadlessPdfAttempt(string browserPath, string profileDir, string pdfPath, string fileUri, bool useShellHidden, out string diag)
         {
             diag = "";
@@ -523,23 +907,40 @@ namespace EduestPrinterBridge
             }
         }
 
-        private int PrintHtmlSilently(string html, string printerName, string jobTitle, int copies, string duplex)
+        private byte[] ConvertHtmlToPdfBytes(string html)
         {
-            var browserPaths = FindHeadlessBrowserPaths();
-            if (browserPaths.Count == 0)
-                throw new InvalidOperationException("HTML을 인쇄용 PDF로 변환할 Chrome 또는 Edge 브라우저를 찾을 수 없습니다.");
-
             string workDir = Path.Combine(Path.GetTempPath(), "eduest_print_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(workDir);
             string htmlPath = Path.Combine(workDir, "exam.html");
-            string pdfPath = Path.Combine(workDir, "exam.pdf");
-            string profileDir = Path.Combine(workDir, "profile");
 
             try
             {
                 File.WriteAllText(htmlPath, html, new UTF8Encoding(false));
                 string fileUri = new Uri(htmlPath).AbsoluteUri;
 
+                // 1차 고속 경로: 상주 CDP 브라우저 (콜드 스타트 0ms)
+                try
+                {
+                    byte[] cdpPdf = RenderHtmlViaCdp(fileUri);
+                    if (cdpPdf != null && cdpPdf.Length > 0)
+                        return cdpPdf;
+                }
+                catch
+                {
+                    lock (_cdpLock)
+                    {
+                        KillWarmBrowserLocked();
+                    }
+                    WarmUpBrowserAsync();
+                }
+
+                // 2차 폴백 경로: 기존 CLI headless 실행
+                var browserPaths = FindHeadlessBrowserPaths();
+                if (browserPaths.Count == 0)
+                    throw new InvalidOperationException("HTML을 인쇄용 PDF로 변환할 Chrome 또는 Edge 브라우저를 찾을 수 없습니다.");
+
+                string pdfPath = Path.Combine(workDir, "exam.pdf");
+                string profileDir = Path.Combine(workDir, "profile");
                 var diags = new List<string>();
                 bool generated = false;
 
@@ -553,7 +954,6 @@ namespace EduestPrinterBridge
                     }
                     diags.Add(diag);
 
-                    // 일부 Edge 환경에서는 CreateNoWindow 대신 Hidden Shell 실행이 필요함
                     if (RunHeadlessPdfAttempt(browserPath, profileDir, pdfPath, fileUri, true, out diag))
                     {
                         generated = true;
@@ -565,8 +965,7 @@ namespace EduestPrinterBridge
                 if (!generated || !File.Exists(pdfPath) || new FileInfo(pdfPath).Length == 0)
                     throw new InvalidOperationException("인쇄용 PDF 생성에 실패했습니다. (" + string.Join("; ", diags.ToArray()) + ")");
 
-                byte[] pdfBytes = File.ReadAllBytes(pdfPath);
-                return PrintPdfBytesSilently(pdfBytes, printerName, jobTitle, copies, duplex);
+                return File.ReadAllBytes(pdfPath);
             }
             finally
             {
@@ -574,105 +973,305 @@ namespace EduestPrinterBridge
             }
         }
 
-        private int PrintPdfBytesSilently(byte[] pdfBytes, string printerName, string jobTitle, int copies, string duplex)
+        private int PrintHtmlSilently(string html, string printerName, string jobTitle, int copies, string duplex)
         {
-            string tempPdf = Path.Combine(Path.GetTempPath(), "eduest_job_" + Guid.NewGuid().ToString("N") + ".pdf");
-            try
+            byte[] pdfBytes = ConvertHtmlToPdfBytes(html);
+            return PrintPdfBytesSilently(pdfBytes, printerName, jobTitle, copies, duplex);
+        }
+
+        private static InMemoryRandomAccessStream CreatePdfStream(byte[] pdfBytes, out PdfDocument pdfDoc)
+        {
+            var memStream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(memStream.GetOutputStreamAt(0)))
             {
-                File.WriteAllBytes(tempPdf, pdfBytes);
+                writer.WriteBytes(pdfBytes);
+                WaitWinRT(writer.StoreAsync());
+                WaitWinRT(writer.FlushAsync());
+                writer.DetachStream();
+            }
+            memStream.Seek(0);
+            pdfDoc = WaitWinRT(PdfDocument.LoadFromStreamAsync(memStream));
+            return memStream;
+        }
+
+        private static byte[] RenderSinglePdfPageToBmpBytes(PdfPage pdfPage)
+        {
+            uint renderW = Math.Max(600u, (uint)Math.Round(pdfPage.Size.Width * RenderDpi / 96.0));
+            uint renderH = Math.Max(800u, (uint)Math.Round(pdfPage.Size.Height * RenderDpi / 96.0));
+            var opts = new PdfPageRenderOptions
+            {
+                DestinationWidth = renderW,
+                DestinationHeight = renderH,
+                BitmapEncoderId = BmpEncoderGuid,
+                BackgroundColor = Windows.UI.Color.FromArgb(255, 255, 255, 255)
+            };
+
+            using (var memStream = new InMemoryRandomAccessStream())
+            {
+                WaitWinRTAction(pdfPage.RenderToStreamAsync(memStream, opts));
+                uint imgSize = (uint)memStream.Size;
+                byte[] bmpBytes = new byte[imgSize];
+                using (var reader = new DataReader(memStream.GetInputStreamAt(0)))
+                {
+                    WaitWinRT(reader.LoadAsync(imgSize));
+                    reader.ReadBytes(bmpBytes);
+                }
+                return bmpBytes;
+            }
+        }
+
+        private static byte[][] RenderAllPdfPagesToBmpBytes(byte[] pdfBytes)
+        {
+            PdfDocument pdfDoc;
+            using (CreatePdfStream(pdfBytes, out pdfDoc))
+            {
+                int totalPages = (int)pdfDoc.PageCount;
+                if (totalPages <= 0)
+                    throw new InvalidOperationException("인쇄할 페이지가 없습니다.");
+
+                var results = new byte[totalPages][];
+                int concurrency = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
+                var docLock = new object();
+
+                Parallel.For(0, totalPages, new ParallelOptions { MaxDegreeOfParallelism = concurrency }, i =>
+                {
+                    PdfPage page;
+                    lock (docLock)
+                    {
+                        page = pdfDoc.GetPage((uint)i);
+                    }
+                    using (page)
+                    {
+                        results[i] = RenderSinglePdfPageToBmpBytes(page);
+                    }
+                });
+
+                return results;
+            }
+        }
+
+        private static PrintDocument CreateConfiguredPrintDocument(string printerName, string jobTitle, int copies, string duplex)
+        {
+            var pd = new PrintDocument();
+            pd.DocumentName = jobTitle;
+            pd.PrintController = new StandardPrintController();
+            pd.PrinterSettings.PrinterName = printerName;
+            if (!pd.PrinterSettings.IsValid)
+            {
+                pd.Dispose();
+                throw new InvalidOperationException("유효하지 않은 프린터입니다: " + printerName);
+            }
+
+            pd.PrinterSettings.Copies = (short)copies;
+
+            if (!string.IsNullOrEmpty(duplex))
+            {
+                string d = duplex.ToLowerInvariant();
+                if (d == "simplex") pd.PrinterSettings.Duplex = Duplex.Simplex;
+                else if (d == "long" && pd.PrinterSettings.CanDuplex) pd.PrinterSettings.Duplex = Duplex.Vertical;
+                else if (d == "short" && pd.PrinterSettings.CanDuplex) pd.PrinterSettings.Duplex = Duplex.Horizontal;
+            }
+
+            foreach (PaperSize ps in pd.PrinterSettings.PaperSizes)
+            {
+                if (ps.Kind == PaperKind.A4)
+                {
+                    pd.DefaultPageSettings.PaperSize = ps;
+                    break;
+                }
+            }
+
+            return pd;
+        }
+
+        private static void DrawBmpBytesToGraphics(byte[] bmpBytes, PrintPageEventArgs ev)
+        {
+            using (var netStream = new MemoryStream(bmpBytes))
+            using (var bmp = new Bitmap(netStream))
+            {
+                ev.Graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                ev.Graphics.SmoothingMode = SmoothingMode.HighSpeed;
+                ev.Graphics.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+                ev.Graphics.CompositingQuality = CompositingQuality.HighSpeed;
+
+                // GDI+ 인쇄 하드웨어 여백 오프셋 보정 -> A4 물리 좌표 (0,0) 기준 1:1 정렬
+                ev.Graphics.TranslateTransform(-ev.PageSettings.HardMarginX, -ev.PageSettings.HardMarginY);
+                ev.Graphics.DrawImage(bmp, 0, 0, ev.PageBounds.Width, ev.PageBounds.Height);
+            }
+        }
+
+        private int PrintHtmlBatchSilently(PrintHtmlBatchRequest req, string printerName, int copies)
+        {
+            // 2페이지~끝 공유 페이지는 단 1회만 PDF 변환 + BMP 래스터화
+            byte[][] sharedRestBmps = null;
+            if (!string.IsNullOrWhiteSpace(req.SharedRestHtml))
+            {
+                byte[] restPdf = ConvertHtmlToPdfBytes(req.SharedRestHtml);
+                sharedRestBmps = RenderAllPdfPagesToBmpBytes(restPdf);
+            }
+
+            int totalPrintedPages = 0;
+            int restCount = sharedRestBmps != null ? sharedRestBmps.Length : 0;
+
+            foreach (var job in req.Jobs)
+            {
+                byte[][] firstPageBmps = null;
+                if (job != null && !string.IsNullOrWhiteSpace(job.FirstSheetHtml))
+                {
+                    byte[] firstPdf = ConvertHtmlToPdfBytes(job.FirstSheetHtml);
+                    firstPageBmps = RenderAllPdfPagesToBmpBytes(firstPdf);
+                }
+
+                int firstCount = firstPageBmps != null ? firstPageBmps.Length : 0;
+                int jobPageCount = firstCount + restCount;
+                if (jobPageCount == 0) continue;
+
+                string title = (job != null && !string.IsNullOrWhiteSpace(job.JobTitle)) ? job.JobTitle : "Eduest Exam Print";
 
                 lock (_printLock)
                 {
-                    var storageFile = WaitWinRT(StorageFile.GetFileFromPathAsync(tempPdf));
-                    var pdfDoc = WaitWinRT(PdfDocument.LoadFromFileAsync(storageFile));
-                    uint totalPages = pdfDoc.PageCount;
-                    if (totalPages == 0)
-                        throw new InvalidOperationException("인쇄할 페이지가 없습니다.");
-
-                    using (var pd = new PrintDocument())
+                    using (var pd = CreateConfiguredPrintDocument(printerName, title, copies, req.Duplex))
                     {
-                        pd.DocumentName = jobTitle;
-                        pd.PrintController = new StandardPrintController();
-                        pd.PrinterSettings.PrinterName = printerName;
-                        if (!pd.PrinterSettings.IsValid)
-                            throw new InvalidOperationException("유효하지 않은 프린터입니다: " + printerName);
-
-                        pd.PrinterSettings.Copies = (short)copies;
-
-                        if (!string.IsNullOrEmpty(duplex))
-                        {
-                            string d = duplex.ToLowerInvariant();
-                            if (d == "simplex") pd.PrinterSettings.Duplex = Duplex.Simplex;
-                            else if (d == "long" && pd.PrinterSettings.CanDuplex) pd.PrinterSettings.Duplex = Duplex.Vertical;
-                            else if (d == "short" && pd.PrinterSettings.CanDuplex) pd.PrinterSettings.Duplex = Duplex.Horizontal;
-                        }
-
-                        // A4 용지 크기가 지원되면 명시적으로 A4 매칭
-                        foreach (PaperSize ps in pd.PrinterSettings.PaperSizes)
-                        {
-                            if (ps.Kind == PaperKind.A4)
-                            {
-                                pd.DefaultPageSettings.PaperSize = ps;
-                                break;
-                            }
-                        }
-
-                        uint pageIndex = 0;
+                        int pageIdx = 0;
                         pd.PrintPage += (s, ev) =>
                         {
-                            if (pageIndex >= totalPages)
+                            if (pageIdx >= jobPageCount)
                             {
                                 ev.HasMorePages = false;
                                 return;
                             }
 
-                            using (var pdfPage = pdfDoc.GetPage(pageIndex))
-                            using (var memStream = new InMemoryRandomAccessStream())
-                            {
-                                // 300 DPI 고해상도 래스터화 (DIP 96DPI 기준 환산)
-                                uint renderW = Math.Max(600u, (uint)Math.Round(pdfPage.Size.Width * 300.0 / 96.0));
-                                uint renderH = Math.Max(800u, (uint)Math.Round(pdfPage.Size.Height * 300.0 / 96.0));
-                                var opts = new PdfPageRenderOptions
-                                {
-                                    DestinationWidth = renderW,
-                                    DestinationHeight = renderH,
-                                    BackgroundColor = Windows.UI.Color.FromArgb(255, 255, 255, 255)
-                                };
-                                WaitWinRTAction(pdfPage.RenderToStreamAsync(memStream, opts));
-                                uint imgSize = (uint)memStream.Size;
-                                byte[] pngBytes = new byte[imgSize];
-                                using (var reader = new DataReader(memStream.GetInputStreamAt(0)))
-                                {
-                                    WaitWinRT(reader.LoadAsync(imgSize));
-                                    reader.ReadBytes(pngBytes);
-                                }
+                            byte[] bmpBytes = pageIdx < firstCount
+                                ? firstPageBmps[pageIdx]
+                                : sharedRestBmps[pageIdx - firstCount];
 
-                                using (var netStream = new MemoryStream(pngBytes))
-                                using (var bmp = new Bitmap(netStream))
-                                {
-                                    ev.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                    ev.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                                    ev.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                            DrawBmpBytesToGraphics(bmpBytes, ev);
 
-                                    // GDI+ 인쇄 하드웨어 여백 오프셋 보정 -> A4 물리 좌표 (0,0) 기준 1:1 정렬
-                                    ev.Graphics.TranslateTransform(-ev.PageSettings.HardMarginX, -ev.PageSettings.HardMarginY);
-                                    ev.Graphics.DrawImage(bmp, 0, 0, ev.PageBounds.Width, ev.PageBounds.Height);
-                                }
-                            }
-
-                            pageIndex++;
-                            ev.HasMorePages = pageIndex < totalPages;
+                            pageIdx++;
+                            ev.HasMorePages = pageIdx < jobPageCount;
                         };
-
                         pd.Print();
                     }
-
-                    return (int)totalPages;
                 }
+
+                totalPrintedPages += jobPageCount;
             }
-            finally
+
+            return totalPrintedPages;
+        }
+
+        private int PrintPdfBytesSilently(byte[] pdfBytes, string printerName, string jobTitle, int copies, string duplex)
+        {
+            lock (_printLock)
             {
-                try { if (File.Exists(tempPdf)) File.Delete(tempPdf); } catch { }
+                PdfDocument pdfDoc;
+                using (CreatePdfStream(pdfBytes, out pdfDoc))
+                {
+                    int totalPages = (int)pdfDoc.PageCount;
+                    if (totalPages == 0)
+                        throw new InvalidOperationException("인쇄할 페이지가 없습니다.");
+
+                    // 최대 4페이지 선행 병렬 렌더링 버퍼 (메모리 절약 + 즉시 첫 장 스풀 시작)
+                    var pageSlots = new byte[totalPages][];
+                    var readyEvents = new ManualResetEventSlim[totalPages];
+                    for (int i = 0; i < totalPages; i++)
+                    {
+                        readyEvents[i] = new ManualResetEventSlim(false);
+                    }
+
+                    Exception renderError = null;
+                    int concurrency = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
+                    var docLock = new object();
+
+                    var producerTask = Task.Factory.StartNew(() =>
+                    {
+                        try
+                        {
+                            using (var lookaheadThrottle = new SemaphoreSlim(concurrency))
+                            {
+                                var tasks = new List<Task>(totalPages);
+                                for (int idx = 0; idx < totalPages; idx++)
+                                {
+                                    lookaheadThrottle.Wait();
+                                    int pageNum = idx;
+                                    tasks.Add(Task.Factory.StartNew(() =>
+                                    {
+                                        try
+                                        {
+                                            PdfPage page;
+                                            lock (docLock)
+                                            {
+                                                page = pdfDoc.GetPage((uint)pageNum);
+                                            }
+                                            using (page)
+                                            {
+                                                pageSlots[pageNum] = RenderSinglePdfPageToBmpBytes(page);
+                                            }
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            Interlocked.CompareExchange(ref renderError, ex, null);
+                                        }
+                                        finally
+                                        {
+                                            readyEvents[pageNum].Set();
+                                            lookaheadThrottle.Release();
+                                        }
+                                    }));
+                                }
+                                Task.WaitAll(tasks.ToArray());
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Interlocked.CompareExchange(ref renderError, ex, null);
+                            for (int i = 0; i < totalPages; i++) readyEvents[i].Set();
+                        }
+                    });
+
+                    try
+                    {
+                        using (var pd = CreateConfiguredPrintDocument(printerName, jobTitle, copies, duplex))
+                        {
+                            int pageIndex = 0;
+                            pd.PrintPage += (s, ev) =>
+                            {
+                                if (pageIndex >= totalPages)
+                                {
+                                    ev.HasMorePages = false;
+                                    return;
+                                }
+
+                                readyEvents[pageIndex].Wait();
+                                if (renderError != null)
+                                    throw new InvalidOperationException("PDF 페이지 렌더링 오류: " + renderError.Message, renderError);
+
+                                byte[] bmpBytes = pageSlots[pageIndex];
+                                pageSlots[pageIndex] = null; // 스풀 완료 후 즉시 GC 회수 가능
+                                DrawBmpBytesToGraphics(bmpBytes, ev);
+
+                                pageIndex++;
+                                ev.HasMorePages = pageIndex < totalPages;
+                            };
+
+                            pd.Print();
+                        }
+
+                        producerTask.Wait();
+                        if (renderError != null)
+                            throw new InvalidOperationException("PDF 페이지 렌더링 오류: " + renderError.Message, renderError);
+
+                        return totalPages;
+                    }
+                    finally
+                    {
+                        try { producerTask.Wait(2000); } catch { }
+                        for (int i = 0; i < totalPages; i++)
+                        {
+                            try { readyEvents[i].Dispose(); } catch { }
+                        }
+                    }
+                }
             }
         }
 

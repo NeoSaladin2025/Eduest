@@ -39,8 +39,11 @@ import {
   type BridgePrinterItem,
   type BridgeDuplexMode,
   PRINTER_BRIDGE_DOWNLOAD_URL,
+  LATEST_PRINTER_BRIDGE_VERSION,
+  isBridgeVersionAtLeast,
   fetchBridgePrinters,
   sendPrintHtmlViaBridge,
+  sendPrintHtmlBatchViaBridge,
   collectInlineStylesForBridge,
   inlineImagesInElement,
 } from '@/lib/printerBridgeClient';
@@ -181,6 +184,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
   // 🖨️ 로컬 윈도우 트레이 프린터 브릿지 연동 상태
   const [bridgeConnected, setBridgeConnected] = useState(false);
+  const [bridgeVersion, setBridgeVersion] = useState<string | undefined>(undefined);
   const [bridgeChecking, setBridgeChecking] = useState(false);
   const [bridgePrinters, setBridgePrinters] = useState<BridgePrinterItem[]>([]);
   const [selectedPrinterName, setSelectedPrinterName] = useState<string>('');
@@ -194,6 +198,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
     try {
       const result = await fetchBridgePrinters();
       setBridgeConnected(result.connected);
+      setBridgeVersion(result.version);
       setBridgePrinters(result.printers);
       if (result.connected && result.printers.length > 0) {
         const savedPrinter = localStorage.getItem('eduest_selected_printer_name') || '';
@@ -1449,6 +1454,85 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
         const selectedStudents = assignedStudents.filter(s => selectedStudentIds.includes(s.id));
         setIsPreparingPrint(false);
+
+        const applyStudentFields = (root: HTMLElement, st: Student) => {
+          const nameCells = root.querySelectorAll('[data-field="student-name"]');
+          nameCells.forEach(cell => {
+            cell.textContent = st.name;
+          });
+          const classCells = root.querySelectorAll('[data-field="class-name"]');
+          classCells.forEach(cell => {
+            cell.textContent = st.grade || exam.grade || '';
+          });
+
+          if (nameCells.length === 0 && customStudentName) {
+            const walkAndReplace = (node: Node) => {
+              if (node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim() === customStudentName.trim()) {
+                node.nodeValue = st.name;
+              } else {
+                node.childNodes.forEach(walkAndReplace);
+              }
+            };
+            walkAndReplace(root);
+          }
+        };
+
+        // v1.1.0+ 고속 일괄 경로: 2페이지~끝은 단 1회만 PDF/래스터화하고 학생별 1페이지만 교체해 개별 스테이플 Job 전송
+        const sheets = Array.from(baseDiv.querySelectorAll('.a4-print-sheet')) as HTMLElement[];
+        const restHasDynamicField = sheets.slice(1).some(s =>
+          s.querySelector('[data-field="student-name"], [data-field="class-name"]') !== null
+        );
+        if (isBridgeVersionAtLeast(bridgeVersion, '1.1.0') && sheets.length >= 1 && !restHasDynamicField) {
+          const firstTemplate = sheets[0];
+          const firstHasField =
+            firstTemplate.querySelector('[data-field="student-name"], [data-field="class-name"]') !== null ||
+            Boolean(customStudentName && firstTemplate.textContent?.includes(customStudentName.trim()));
+
+          const sharedRestInner = firstHasField
+            ? sheets.slice(1).map(s => s.outerHTML).join('')
+            : sheets.map(s => s.outerHTML).join('');
+          const sharedRestHtml = sharedRestInner ? buildDocumentHtml(sharedRestInner, bridgeStyles) : '';
+
+          const batchJobs = selectedStudents.map((st) => {
+            let firstSheetHtml = '';
+            if (firstHasField) {
+              const firstClone = firstTemplate.cloneNode(true) as HTMLElement;
+              applyStudentFields(firstClone, st);
+              firstSheetHtml = buildDocumentHtml(firstClone.outerHTML, bridgeStyles);
+            }
+            return {
+              jobTitle: `${exam.title} - ${st.name}`,
+              firstSheetHtml,
+            };
+          });
+
+          setPrintingProgress({
+            current: 1,
+            total: selectedStudents.length,
+            studentName: `${selectedStudents[0].name} 외 ${selectedStudents.length - 1}명 (고속 일괄 처리 중)`,
+          });
+
+          const batchRes = await sendPrintHtmlBatchViaBridge({
+            printerName: selectedPrinterName,
+            copies: 1,
+            duplex: bridgeDuplexMode,
+            sharedRestHtml,
+            jobs: batchJobs,
+          });
+
+          if (batchRes.ok) {
+            setPrintingProgress(null);
+            setBridgePrintToast(`'${selectedPrinterName}'로 ${selectedStudents.length}명 고속 개별 스테이플 전송 완료!`);
+            setTimeout(() => setBridgePrintToast(null), 5000);
+            return;
+          }
+          if (batchRes.status !== 404) {
+            setPrintingProgress(null);
+            alert(`일괄 인쇄 중 오류 발생: ${batchRes.error}`);
+            return;
+          }
+        }
+
         let sentCount = 0;
 
         for (let i = 0; i < selectedStudents.length; i++) {
@@ -1463,26 +1547,7 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
 
           const tempDiv = document.createElement('div');
           tempDiv.innerHTML = baseDiv.innerHTML;
-
-          const nameCells = tempDiv.querySelectorAll('[data-field="student-name"]');
-          nameCells.forEach(cell => {
-            cell.textContent = st.name;
-          });
-          const classCells = tempDiv.querySelectorAll('[data-field="class-name"]');
-          classCells.forEach(cell => {
-            cell.textContent = st.grade || exam.grade || '';
-          });
-
-          if (nameCells.length === 0 && customStudentName) {
-            const walkAndReplace = (node: Node) => {
-              if (node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim() === customStudentName.trim()) {
-                node.nodeValue = st.name;
-              } else {
-                node.childNodes.forEach(walkAndReplace);
-              }
-            };
-            walkAndReplace(tempDiv);
-          }
+          applyStudentFields(tempDiv, st);
 
           const res = await sendPrintHtmlViaBridge({
             printerName: selectedPrinterName,
@@ -1978,6 +2043,20 @@ export default function ExamPrintModal({ isOpen, onClose, exam, students }: Exam
                         />
                       </div>
                     )}
+                  </div>
+                )}
+
+                {!isBridgeVersionAtLeast(bridgeVersion, LATEST_PRINTER_BRIDGE_VERSION) && (
+                  <div className="pt-1">
+                    <a
+                      href={PRINTER_BRIDGE_DOWNLOAD_URL}
+                      download="EduestPrinterBridge.exe"
+                      className="w-full py-1.5 px-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/40 text-amber-200 text-[10.5px] font-black transition-all flex items-center justify-center gap-1.5"
+                      title="기존 트레이 브릿지를 종료한 뒤 새 버전을 실행하면 출력 속도가 대폭 빨라집니다."
+                    >
+                      <Download size={12} />
+                      <span>고속 엔진 v{LATEST_PRINTER_BRIDGE_VERSION} 업데이트 (.exe)</span>
+                    </a>
                   </div>
                 )}
               </div>

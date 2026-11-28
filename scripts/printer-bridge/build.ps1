@@ -23,6 +23,7 @@ if (-not (Test-Path $outDir)) {
   /r:"$fw\System.Runtime.WindowsRuntime.dll" `
   /r:"$fw\System.Runtime.InteropServices.WindowsRuntime.dll" `
   /r:"$fw\System.Threading.Tasks.dll" `
+  /r:"$fw\System.Web.Extensions.dll" `
   /r:"$winmd\Windows.Data.winmd" `
   /r:"$winmd\Windows.Foundation.winmd" `
   /r:"$winmd\Windows.Storage.winmd" `
